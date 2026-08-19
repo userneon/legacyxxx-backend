@@ -1,0 +1,21 @@
+# Copy this file to .env on the VPS. Do not commit .env.
+
+# Runtime
+NODE_ENV=production
+HOST=127.0.0.1
+PORT=3000
+TRUST_PROXY=1
+API_RATE_LIMIT_MAX=120
+
+# Supabase legacy_x (server only)
+SUPABASE_URL=https://your-project-ref.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=replace_with_service_role_key
+STEAM_WEB_API_KEY=replace_with_your_server_only_steam_web_api_key
+
+# Steam/OpenID session signing and cross-subdomain browser flow
+JWT_SECRET=replace_with_a_random_secret_of_at_least_32_characters
+PUBLIC_API_ORIGIN=https://api.legacyx.cc
+STEAM_OPENID_ORIGIN=https://legacyx.cc
+FRONTEND_ORIGIN=https://legacyx.cc
+AUTH_COOKIE_DOMAIN=.legacyx.cc
+POST_LOGIN_REDIRECT=https://legacyx.cc/
