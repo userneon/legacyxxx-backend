@@ -8,9 +8,9 @@
 
 | Component | LEGACY-X deployment role | Recommended exposure |
 |---|---|---|
-| `adminplus/frontend` | React/Vite admin dashboard | HTTPS-ийн цаана, зөвхөн staff хэрэглэгчдэд |
-| `adminplus/backend` | Express API, auth guard, RCON client, audit/Discord bridge | `127.0.0.1:3001`, Nginx-ээр proxy хийх |
-| `adminplus/plugin/AdminPlus` | CS2 server дээр ажиллах CounterStrikeSharp command bridge | CS2 host доторх plugin folder |
+| `legacyxxx-frontend` | Одоогоор хоосон; ирээдүйн React/Vite dashboard | Дараа нь HTTPS staff-only domain |
+| `legacyxxx-backend/adminplus/backend` | Express API, auth guard, RCON client, audit/Discord bridge | `127.0.0.1:3001`, Nginx-ээр proxy хийх |
+| `legacyxxx-plugins/adminplus/plugin/AdminPlus` | CS2 server дээр ажиллах CounterStrikeSharp command bridge | CS2 host доторх plugin folder |
 | Supabase `legacy_x.adminplus_audit_logs` | Admin action history | Server-only service role access |
 | Discord webhook | Optional action notification | Backend `.env`-д хадгалсан webhook URL |
 
@@ -32,7 +32,7 @@ Migration нь `legacy_x.adminplus_audit_logs` table, `created_at` болон `a
 ## 4. Environment setup
 
 ```bash
-cd /srv/legacyxxx
+cd /srv/legacyxxx-backend
 cp adminplus/backend/.env.example adminplus/backend/.env
 chmod 600 adminplus/backend/.env
 ${EDITOR:-vi} adminplus/backend/.env
@@ -56,11 +56,13 @@ Production-д дараах утгуудыг бодит secret-ээр солин�
 ## 5. Install and build
 
 ```bash
-cd /srv/legacyxxx
+cd /srv/legacyxxx-backend
 pnpm install --frozen-lockfile
+pnpm build
 pnpm adminplus:install
-pnpm adminplus:build
-pnpm adminplus:plugin:build
+
+cd /srv/legacyxxx-plugins/adminplus/plugin/AdminPlus
+dotnet build -c Release
 ```
 
 Plugin build-ийн output нь `adminplus/plugin/AdminPlus/bin/Release/net8.0/AdminPlus.dll` байна. CS2 host дээр дараах folder руу зөвхөн build болсон DLL-г байрлуулна.
@@ -83,9 +85,8 @@ Startup log-д `[LEGACY-X AdminPlus] Loaded — production command bridge ready.
 AdminPlus backend-ийг LEGACY-X API-тай заавал нэг process болгох шаардлагагүй. Security болон failure isolation-ийн хувьд тусдаа PM2 process болгохыг зөвлөж байна.
 
 ```bash
-cd /srv/legacyxxx
-pnpm adminplus:build
-pm2 start adminplus/backend/src/index.js --name legacy-x-adminplus --cwd /srv/legacyxxx --update-env
+cd /srv/legacyxxx-backend
+pm2 start adminplus/backend/src/index.js --name legacy-x-adminplus --cwd /srv/legacyxxx-backend --update-env
 pm2 save
 pm2 startup
 ```
@@ -126,7 +127,7 @@ AdminPlus backend-ийн `HOST=127.0.0.1` тохиргоог public `0.0.0.0` б
 
 | Check | Command or expected result |
 |---|---|
-| Frontend build | `pnpm adminplus:build` exits with code 0 |
+| Frontend repository | `legacyxxx-frontend` intentionally remains empty until frontend work begins |
 | Backend health | `curl -fsS https://admin.legacyx.cc/health` returns `ok: true` |
 | Auth guard | `/api/players` without `x-api-secret` returns HTTP 401 |
 | Raw RCON guard | `/api/rcon` returns HTTP 403 when `ALLOW_RAW_RCON=false` |
