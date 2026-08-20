@@ -64,3 +64,15 @@
 - [ ] Real CS2 server дээр spectator/alive voice-text matrix болон MatchZy `.ready` command pass-through smoke test хийх.
 - [x] GitHub commit болон production deployment runbook бэлдэх.
 - [x] GitHub push хийж backend/plugins remote clean status-ийг баталгаажуулах.
+
+## LEGACY-X Unified Match System Refactor
+
+- [x] MatchZy configuration, MatchFlow remnants, CounterStrikeSharp plugins, backend routes, SQL schema, player identity, existing XP/result and overlay behavior-г audit хийх.
+- [x] Match lifecycle (`WAITING`, `LIVE`, `PAUSED`, `FINISHED`, `CANCELLED`), unique match ID, participant snapshot, server restart/recovery болон state ownership contract-г батлах.
+- [x] Original participant reconnect, temporary fill, fill replacement, active-slot lock, team integrity болон unpause protection policy-г contract/test matrix болгон тодорхойлох.
+- [x] Match/session/participant/result/history/idempotency schema migration болон backend Match Service/API хэрэгжүүлэх.
+- [x] MatchZy-aware LEGACY-X Match Core plugin үүсгэж waiting/live/pause/reconnect/fill/team integrity, state snapshot/restore болон backend event bridge хэрэгжүүлэх.
+- [x] Match-time chat/EXP/rank/damage spam suppression, player welcome overlay, five-minute match number overlay, final result/reward summary хэрэгжүүлэх.
+- [x] Backend syntax, rank/reconnect/Match Core contracts, MatchZy Release build, idempotent final-result/fill lifecycle guards болон secret hygiene-г local validation хийх.
+- [ ] Real ten-player CS2 server дээр duplicate result/XP, restart/crash, reconnect, fill, wrong-team join, backend timeout болон race-condition end-to-end validation хийх.
+- [ ] GitHub commit/push, remote clean status болон production server deployment verification хүргэх.

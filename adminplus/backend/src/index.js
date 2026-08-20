@@ -9,6 +9,7 @@ const communityRoutes = require('./routes/community')
 const seasonRoutes = require('./routes/seasons')
 const reconnectRoutes = require('./routes/reconnect')
 const pluginEventRoutes = require('./routes/plugin-events')
+const matchCoreRoutes = require('./routes/match-core')
 const authMiddleware = require('./middleware/auth')
 const pluginAuthMiddleware = require('./middleware/plugin-auth')
 const { value, validate } = require('./config')
@@ -28,6 +29,7 @@ app.get('/health', (_req, res) => res.json({
   rcon: Boolean(process.env.RCON_HOST),
   rankIngestion: true,
   communityProgression: true,
+  matchCore: true,
   monthlySeasonScheduler: value('LEGACYX_SEASON_SCHEDULER_ENABLED', 'true') === 'true',
   audit: value('LEGACYX_AUDIT_ENABLED', 'true') === 'true',
 }))
@@ -38,12 +40,12 @@ createRconClient().then(() => {
   console.error('[AdminPlus] RCON connection failed:', error.message)
 })
 
-// MatchZy sends server-to-server events here using x-plugin-secret. This route intentionally
-// lives outside the dashboard/admin API secret so a leaked operator token cannot impersonate a game server.
+// Server-to-server ingestion is isolated from the operator secret. A leaked operator token cannot impersonate a game server.
 app.use('/api/plugin/matchzy', pluginAuthMiddleware, pluginEventRoutes)
 app.use('/api/plugin/reconnect', pluginAuthMiddleware, reconnectRoutes)
+app.use('/api/plugin/match-core', pluginAuthMiddleware, matchCoreRoutes)
 
-// Operator API: RCON actions and rank reads. No static frontend is served by this service.
+// Operator API: RCON actions and read models. No static frontend is served by this service.
 app.use('/api', authMiddleware)
 app.use('/api/players', playerRoutes)
 app.use('/api/server', serverRoutes)
@@ -51,6 +53,7 @@ app.use('/api/rank', rankRoutes)
 app.use('/api/community', communityRoutes)
 app.use('/api/seasons', seasonRoutes)
 app.use('/api/reconnect', (req, res, next) => { req.pluginId = 'operator'; next() }, reconnectRoutes)
+app.use('/api/match-core', matchCoreRoutes)
 
 app.post('/api/rcon', async (req, res) => {
   if (value('ALLOW_RAW_RCON', 'false') !== 'true') return res.status(403).json({ error: 'Raw RCON is disabled in production' })
