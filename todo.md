@@ -11,4 +11,5 @@
 - [x] Backend, plugin builds, API auth, secret hygiene-г local environment дээр шалгах.
 - [ ] Supabase дээр `legacy_x_rank.sql` migration apply хийж service-role grants-ийг live project дээр баталгаажуулах.
 - [ ] CS2 MatchZy private rank cfg-г бодит URL/secret-тэй байршуулж 5v5 match-аар end-to-end smoke test хийх.
-- [ ] GitHub commit/push болон production integration runbook/changelog хүргэх.
+- [x] GitHub commit болон production integration runbook/changelog бэлдэх.
+- [ ] GitHub push хийж remote branch clean эсэхийг баталгаажуулах.
