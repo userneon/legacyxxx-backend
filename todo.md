@@ -53,3 +53,13 @@
 - [ ] Intended Supabase project migration apply болон real disconnect/server-B-reconnect CS2 end-to-end test хийх.
 - [x] GitHub commit болон production deployment runbook бэлдэх.
 - [x] GitHub push хийж backend/plugins remote clean status-ийг баталгаажуулах.
+
+## LEGACY-X Spectator Communication Rules
+
+- [x] CounterStrikeSharp spectator voice/text interception API болон MatchZy coach/AFK interaction-г audit хийх.
+- [x] Spectator/alive communication matrix, legitimate coach/admin exemption болон anti-ghosting policy-г тодорхойлох.
+- [x] LEGACY-X Spectator Comms plugin үүсгэж spectator-to-spectator-only voice/text policy хэрэгжүүлэх.
+- [x] Config, player feedback, MatchZy/AFK compatibility, private exception policy болон documentation нэмэх.
+- [x] Plugin build болон private config exclusion-г шалгах.
+- [ ] Real CS2 server дээр spectator/alive voice-text matrix болон MatchZy `.ready` command pass-through smoke test хийх.
+- [ ] GitHub commit/push болон production deployment runbook хүргэх.
