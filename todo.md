@@ -26,4 +26,5 @@
 - [x] MatchZy, AdminPlus, AFK Manager, Community plugin-ийн config, branding, responsibility boundary-г нэгтгэх.
 - [x] Migration/API/plugin build, idempotency болон secret hygiene-г local environment дээр шалгах.
 - [ ] Supabase migration apply болон real exact-5v5 CS2 smoke test хийх.
-- [ ] GitHub commit/push, deployment guide болон customization changelog хүргэх.
+- [x] GitHub commit, deployment guide болон customization changelog бэлдэх.
+- [ ] GitHub push хийж backend/plugins remote branch clean эсэхийг баталгаажуулах.
