@@ -40,4 +40,4 @@
 - [x] Build, security test, documentation болон live migration runbook бэлдэх.
 - [ ] Intended Supabase project дээр migration apply хийж, real completed 5v5 event болон сарын rollover-ийг end-to-end шалгах.
 - [x] GitHub commit болон monthly reset runbook/changelog бэлдэх.
-- [ ] GitHub push хийж backend/plugins remote clean status-ийг баталгаажуулах.
+- [x] GitHub push хийж backend/plugins remote clean status-ийг баталгаажуулах.
