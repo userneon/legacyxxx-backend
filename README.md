@@ -4,8 +4,8 @@
 
 | Repository | Хариуцлага |
 |---|---|
-| `legacyxxx-backend` | API, auth, Supabase migrations, rank ingestion, AdminPlus API/RCON bridge |
-| `legacyxxx-plugins` | CounterStrikeSharp source, MatchZy, AdminPlus, AFK Manager, server-only config |
+| `legacyxxx-backend` | API, auth, Supabase migrations, rank/EXP/clan ingestion, AdminPlus API/RCON bridge |
+| `legacyxxx-plugins` | CounterStrikeSharp source, MatchZy, AdminPlus, AFK Manager, Community plugin, server-only config |
 | `legacyxxx-frontend` | Одоогоор intentionally empty; UI хэрэгтэй болсон үед тусдаа хөгжүүлнэ |
 
 ## Runtime layout
@@ -14,8 +14,8 @@
 MatchZy map_result
   → x-plugin-secret
   → AdminPlus API /api/plugin/matchzy/events
-  → Supabase RPC legacy_x.ingest_rank_map_result
-  → rank_player_seasons + rank_match_results + rank_leaderboard
+  → Supabase RPC legacy_x.ingest_rank_map_result + ingest_community_map_result
+  → rating + XP/level + clan season score
 ```
 
 AdminPlus API нь static dashboard serve хийдэггүй. Operator endpoint-ууд `x-api-secret` ашиглана; MatchZy ingestion endpoint нь тусдаа `x-plugin-secret` ашигладаг. Энэ хоёр secret заавал өөр байна.
@@ -40,6 +40,7 @@ Supabase дээр дараах migration-уудыг дарааллаар apply �
 ```text
 supabase/legacy_x_adminplus.sql
 supabase/legacy_x_rank.sql
+supabase/legacy_x_progression_clans.sql
 ```
 
 `legacy_x_rank.sql` нь `season-1` season, idempotent plugin event receipt, rank state, per-map result history, rank leaderboard view болон service-role-only RPC үүсгэнэ.
@@ -52,9 +53,13 @@ supabase/legacy_x_rank.sql
 | `POST /api/plugin/matchzy/events` | `x-plugin-secret` | MatchZy remote event; зөвхөн final `map_result` rank update хийнэ |
 | `GET /api/rank/leaderboard` | `x-api-secret` | Season leaderboard API |
 | `GET /api/rank/players/:steamId` | `x-api-secret` | Player rank/profile API |
+| `GET /api/community/experience` | `x-api-secret` | EXP/level leaderboard |
+| `GET /api/community/clans` | `x-api-secret` | Clan season leaderboard |
+| `GET /api/community/players/:steamId` | `x-api-secret` | Staff community profile |
+| `GET /api/plugin/matchzy/community/players/:steamId` | `x-plugin-secret` | CS2 Community plugin profile lookup |
 | `/api/players`, `/api/server`, `/api/rcon` | `x-api-secret` | AdminPlus staff/RCON actions |
 
-Rank API болон MatchZy deployment-ийн дэлгэрэнгүйг [`docs/LEADERBOARD_RANK_INTEGRATION.md`](docs/LEADERBOARD_RANK_INTEGRATION.md), AdminPlus API-only hardening-ийг [`docs/ADMINPLUS_API_ONLY.md`](docs/ADMINPLUS_API_ONLY.md) файлаас үзнэ үү.
+Rank API болон MatchZy deployment-ийн дэлгэрэнгүйг [`docs/LEADERBOARD_RANK_INTEGRATION.md`](docs/LEADERBOARD_RANK_INTEGRATION.md), EXP/Clan policy-г [`docs/COMMUNITY_PROGRESSION_CLANS.md`](docs/COMMUNITY_PROGRESSION_CLANS.md), AdminPlus API-only hardening-ийг [`docs/ADMINPLUS_API_ONLY.md`](docs/ADMINPLUS_API_ONLY.md) файлаас үзнэ үү.
 
 ## Production safety
 

@@ -5,6 +5,7 @@ const { createRconClient, executeCommand } = require('./rcon')
 const playerRoutes = require('./routes/players')
 const serverRoutes = require('./routes/server')
 const rankRoutes = require('./routes/rank')
+const communityRoutes = require('./routes/community')
 const pluginEventRoutes = require('./routes/plugin-events')
 const authMiddleware = require('./middleware/auth')
 const pluginAuthMiddleware = require('./middleware/plugin-auth')
@@ -23,6 +24,7 @@ app.get('/health', (_req, res) => res.json({
   mode: 'api-only',
   rcon: Boolean(process.env.RCON_HOST),
   rankIngestion: true,
+  communityProgression: true,
   audit: value('LEGACYX_AUDIT_ENABLED', 'true') === 'true',
 }))
 
@@ -41,6 +43,7 @@ app.use('/api', authMiddleware)
 app.use('/api/players', playerRoutes)
 app.use('/api/server', serverRoutes)
 app.use('/api/rank', rankRoutes)
+app.use('/api/community', communityRoutes)
 
 app.post('/api/rcon', async (req, res) => {
   if (value('ALLOW_RAW_RCON', 'false') !== 'true') return res.status(403).json({ error: 'Raw RCON is disabled in production' })
