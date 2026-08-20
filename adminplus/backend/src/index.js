@@ -1,35 +1,28 @@
 const path = require('path')
-const fs = require('fs')
 require('dotenv').config({ path: path.resolve(__dirname, '../.env') })
 const express = require('express')
-const cors = require('cors')
 const { createRconClient, executeCommand } = require('./rcon')
 const playerRoutes = require('./routes/players')
 const serverRoutes = require('./routes/server')
+const rankRoutes = require('./routes/rank')
+const pluginEventRoutes = require('./routes/plugin-events')
 const authMiddleware = require('./middleware/auth')
-const { value, list, validate } = require('./config')
+const pluginAuthMiddleware = require('./middleware/plugin-auth')
+const { value, validate } = require('./config')
 
 const app = express()
-const frontendDist = path.resolve(__dirname, '../../frontend/dist')
 const { port } = validate()
-const allowedOrigins = list('FRONTEND_URL')
 
 app.disable('x-powered-by')
 app.set('trust proxy', Number.parseInt(value('TRUST_PROXY', '1'), 10))
-app.use(cors({
-  origin(origin, callback) {
-    if (!origin || allowedOrigins.length === 0 || allowedOrigins.includes(origin)) return callback(null, true)
-    return callback(new Error('CORS origin denied'))
-  },
-  methods: ['GET', 'POST', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'x-api-secret'],
-}))
-app.use(express.json({ limit: '32kb' }))
+app.use(express.json({ limit: '128kb' }))
 
 app.get('/health', (_req, res) => res.json({
   ok: true,
-  service: 'legacy-x-adminplus',
+  service: 'legacy-x-adminplus-api',
+  mode: 'api-only',
   rcon: Boolean(process.env.RCON_HOST),
+  rankIngestion: true,
   audit: value('LEGACYX_AUDIT_ENABLED', 'true') === 'true',
 }))
 
@@ -39,9 +32,15 @@ createRconClient().then(() => {
   console.error('[AdminPlus] RCON connection failed:', error.message)
 })
 
+// MatchZy sends server-to-server events here using x-plugin-secret. This route intentionally
+// lives outside the dashboard/admin API secret so a leaked operator token cannot impersonate a game server.
+app.use('/api/plugin/matchzy', pluginAuthMiddleware, pluginEventRoutes)
+
+// Operator API: RCON actions and rank reads. No static frontend is served by this service.
 app.use('/api', authMiddleware)
 app.use('/api/players', playerRoutes)
 app.use('/api/server', serverRoutes)
+app.use('/api/rank', rankRoutes)
 
 app.post('/api/rcon', async (req, res) => {
   if (value('ALLOW_RAW_RCON', 'false') !== 'true') return res.status(403).json({ error: 'Raw RCON is disabled in production' })
@@ -55,18 +54,8 @@ app.post('/api/rcon', async (req, res) => {
   }
 })
 
-if (fs.existsSync(frontendDist)) {
-  app.use(express.static(frontendDist, { index: false }))
-  app.get('*', (req, res, next) => {
-    if (req.path.startsWith('/api/')) return next()
-    res.sendFile(path.join(frontendDist, 'index.html'))
-  })
-} else {
-  console.warn('[AdminPlus] frontend/dist not found; run `npm run build` from adminplus/.')
-}
-
 const server = app.listen(port, value('HOST', '127.0.0.1'), () => {
-  console.log(`[AdminPlus] listening on ${value('HOST', '127.0.0.1')}:${port}`)
+  console.log(`[AdminPlus] API-only service listening on ${value('HOST', '127.0.0.1')}:${port}`)
 })
 
 function shutdown(signal) {
