@@ -39,4 +39,5 @@
 - [x] Duplicate scheduler run, scheduler-disabled runtime болон closed-season event backend binding-г local environment дээр шалгах.
 - [x] Build, security test, documentation болон live migration runbook бэлдэх.
 - [ ] Intended Supabase project дээр migration apply хийж, real completed 5v5 event болон сарын rollover-ийг end-to-end шалгах.
-- [ ] GitHub commit/push болон remote clean status-ийг баталгаажуулах.
+- [x] GitHub commit болон monthly reset runbook/changelog бэлдэх.
+- [ ] GitHub push хийж backend/plugins remote clean status-ийг баталгаажуулах.
