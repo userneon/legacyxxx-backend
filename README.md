@@ -41,6 +41,7 @@ Supabase дээр дараах migration-уудыг дарааллаар apply �
 supabase/legacy_x_adminplus.sql
 supabase/legacy_x_rank.sql
 supabase/legacy_x_progression_clans.sql
+supabase/legacy_x_monthly_rank_reset.sql
 ```
 
 `legacy_x_rank.sql` нь `season-1` season, idempotent plugin event receipt, rank state, per-map result history, rank leaderboard view болон service-role-only RPC үүсгэнэ.
@@ -57,9 +58,15 @@ supabase/legacy_x_progression_clans.sql
 | `GET /api/community/clans` | `x-api-secret` | Clan season leaderboard |
 | `GET /api/community/players/:steamId` | `x-api-secret` | Staff community profile |
 | `GET /api/plugin/matchzy/community/players/:steamId` | `x-plugin-secret` | CS2 Community plugin profile lookup |
+| `GET /api/seasons/current` | `x-api-secret` | Active UTC monthly rank season |
+| `POST /api/seasons/rollover` | `x-api-secret` | Emergency manual rollover; disabled by default |
 | `/api/players`, `/api/server`, `/api/rcon` | `x-api-secret` | AdminPlus staff/RCON actions |
 
 Rank API болон MatchZy deployment-ийн дэлгэрэнгүйг [`docs/LEADERBOARD_RANK_INTEGRATION.md`](docs/LEADERBOARD_RANK_INTEGRATION.md), EXP/Clan policy-г [`docs/COMMUNITY_PROGRESSION_CLANS.md`](docs/COMMUNITY_PROGRESSION_CLANS.md), AdminPlus API-only hardening-ийг [`docs/ADMINPLUS_API_ONLY.md`](docs/ADMINPLUS_API_ONLY.md) файлаас үзнэ үү.
+
+## Monthly rank reset
+
+Competitive rank and clan season points roll over automatically on the UTC month boundary. The API process checks once at boot and hourly thereafter; the database function is idempotent so restart, missed midnight uptime or duplicate process checks cannot create a second season. XP and level are not reset. See [`docs/MONTHLY_RANK_RESET.md`](docs/MONTHLY_RANK_RESET.md).
 
 ## Production safety
 

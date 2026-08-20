@@ -125,4 +125,4 @@ async function getPlayerRank(season, steamId) {
   return rows[0] || null
 }
 
-module.exports = { normalizeMatchzyResult, ingestMatchzyResult, getLeaderboard, getPlayerRank }
+module.exports = { normalizeMatchzyResult, ingestMatchzyResult, getLeaderboard, getPlayerRank, rpc, readRows }

@@ -28,3 +28,15 @@
 - [ ] Supabase migration apply болон real exact-5v5 CS2 smoke test хийх.
 - [x] GitHub commit, deployment guide болон customization changelog бэлдэх.
 - [x] GitHub push хийж backend/plugins remote branch clean эсэхийг баталгаажуулах.
+
+## Monthly Rank Season Reset
+
+- [x] Existing rank season, leaderboard, clan score болон MatchZy season configuration-г audit хийх.
+- [x] Monthly season boundary, UTC reset policy, archive retention болон XP/level preservation policy-г тодорхойлох.
+- [x] Idempotent monthly season rollover/archive database migration болон RPC function бичих.
+- [x] Backend scheduler болон staff season status/rollover API нэмэх.
+- [x] MatchZy rank season config-ийг active backend season-тэй production-safe синк хийх.
+- [x] Duplicate scheduler run, scheduler-disabled runtime болон closed-season event backend binding-г local environment дээр шалгах.
+- [x] Build, security test, documentation болон live migration runbook бэлдэх.
+- [ ] Intended Supabase project дээр migration apply хийж, real completed 5v5 event болон сарын rollover-ийг end-to-end шалгах.
+- [ ] GitHub commit/push болон remote clean status-ийг баталгаажуулах.

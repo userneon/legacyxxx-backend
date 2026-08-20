@@ -1,6 +1,7 @@
 const express = require('express')
 const { normalizeMatchzyResult, ingestMatchzyResult } = require('../rank')
 const { getCommunityProfile, ingestCommunityProgression } = require('../community')
+const { getActiveSeason } = require('../seasons')
 
 const router = express.Router()
 
@@ -12,6 +13,9 @@ router.post('/events', async (req, res) => {
 
   try {
     const payload = normalizeMatchzyResult(req.body)
+    const activeSeason = await getActiveSeason()
+    if (!activeSeason) throw new Error('No active rank season is configured')
+    payload.season = activeSeason.slug
     const rankResult = await ingestMatchzyResult(req.pluginId, payload)
     const communityResult = await ingestCommunityProgression(req.pluginId, payload)
     const duplicate = rankResult?.status === 'duplicate' && communityResult?.status === 'duplicate'
