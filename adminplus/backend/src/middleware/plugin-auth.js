@@ -28,7 +28,7 @@ module.exports = function pluginAuthMiddleware(req, res, next) {
 
   const pluginId = String(req.headers['x-plugin-id'] || 'matchzy').trim().toLowerCase()
   const secret = req.headers['x-plugin-secret']
-  const allowedPluginIds = new Set(['matchzy', 'legacyx-community'])
+  const allowedPluginIds = new Set(['matchzy', 'legacyx-community', 'legacyx-reconnect'])
   if (!allowedPluginIds.has(pluginId) || !safeEqual(secret, value('PLUGIN_INGEST_SECRET'))) {
     return res.status(401).json({ error: 'Unauthorized plugin', requestId })
   }

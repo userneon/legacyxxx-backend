@@ -42,6 +42,7 @@ supabase/legacy_x_adminplus.sql
 supabase/legacy_x_rank.sql
 supabase/legacy_x_progression_clans.sql
 supabase/legacy_x_monthly_rank_reset.sql
+supabase/legacy_x_reconnect.sql
 ```
 
 `legacy_x_rank.sql` нь `season-1` season, idempotent plugin event receipt, rank state, per-map result history, rank leaderboard view болон service-role-only RPC үүсгэнэ.
@@ -60,6 +61,9 @@ supabase/legacy_x_monthly_rank_reset.sql
 | `GET /api/plugin/matchzy/community/players/:steamId` | `x-plugin-secret` | CS2 Community plugin profile lookup |
 | `GET /api/seasons/current` | `x-api-secret` | Active UTC monthly rank season |
 | `POST /api/seasons/rollover` | `x-api-secret` | Emergency manual rollover; disabled by default |
+| `GET /api/reconnect/players/:steamId` | `x-api-secret` | Private Last Played sessions for staff/backend features |
+| `POST /api/plugin/reconnect/events` | `x-plugin-secret` | Reconnect plugin server heartbeat and session events |
+| `GET /api/plugin/reconnect/players/:steamId` | `x-plugin-secret` | Reconnect plugin's private Last Played lookup |
 | `/api/players`, `/api/server`, `/api/rcon` | `x-api-secret` | AdminPlus staff/RCON actions |
 
 Rank API болон MatchZy deployment-ийн дэлгэрэнгүйг [`docs/LEADERBOARD_RANK_INTEGRATION.md`](docs/LEADERBOARD_RANK_INTEGRATION.md), EXP/Clan policy-г [`docs/COMMUNITY_PROGRESSION_CLANS.md`](docs/COMMUNITY_PROGRESSION_CLANS.md), AdminPlus API-only hardening-ийг [`docs/ADMINPLUS_API_ONLY.md`](docs/ADMINPLUS_API_ONLY.md) файлаас үзнэ үү.
@@ -67,6 +71,10 @@ Rank API болон MatchZy deployment-ийн дэлгэрэнгүйг [`docs/LE
 ## Monthly rank reset
 
 Competitive rank and clan season points roll over automatically on the UTC month boundary. The API process checks once at boot and hourly thereafter; the database function is idempotent so restart, missed midnight uptime or duplicate process checks cannot create a second season. XP and level are not reset. See [`docs/MONTHLY_RANK_RESET.md`](docs/MONTHLY_RANK_RESET.md).
+
+## Reconnect and Last Played
+
+The Reconnect plugin records private connect/disconnect sessions and server heartbeat state. A game server is accepted only when its `server_id=host:port` mapping exactly matches `RECONNECT_SERVER_REGISTRY`; the player command asks the authenticated backend for a recent, online, different server and validates the returned target before issuing a reconnect command. See [`docs/RECONNECT_LAST_PLAYED.md`](docs/RECONNECT_LAST_PLAYED.md).
 
 ## Production safety
 

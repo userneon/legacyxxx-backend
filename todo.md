@@ -41,3 +41,14 @@
 - [ ] Intended Supabase project дээр migration apply хийж, real completed 5v5 event болон сарын rollover-ийг end-to-end шалгах.
 - [x] GitHub commit болон monthly reset runbook/changelog бэлдэх.
 - [x] GitHub push хийж backend/plugins remote clean status-ийг баталгаажуулах.
+
+## LEGACY-X Reconnect & Last Played
+
+- [x] Existing MatchZy player connect/disconnect lifecycle, backend player/session tables болон server connection contract-г audit хийх.
+- [x] Reconnect session, last-played retention, privacy and server availability policy-г тодорхойлох.
+- [x] Reconnect session migration, plugin event ingestion болон player/profile API endpoints хэрэгжүүлэх.
+- [x] LEGACY-X Reconnect CounterStrikeSharp plugin, `css_reconnect` command болон MatchZy-aware state tracking нэмэх.
+- [x] Reconnect plugin private config, server address validation, player privacy, README/changelog болон stack ownership-г цэгцлэх.
+- [x] Backend/plugin build, API auth/idempotency, secret hygiene болон mismatched server event smoke test хийх.
+- [ ] Intended Supabase project migration apply болон real disconnect/server-B-reconnect CS2 end-to-end test хийх.
+- [ ] GitHub commit/push болон production deployment runbook хүргэх.

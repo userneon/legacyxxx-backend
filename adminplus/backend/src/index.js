@@ -7,6 +7,7 @@ const serverRoutes = require('./routes/server')
 const rankRoutes = require('./routes/rank')
 const communityRoutes = require('./routes/community')
 const seasonRoutes = require('./routes/seasons')
+const reconnectRoutes = require('./routes/reconnect')
 const pluginEventRoutes = require('./routes/plugin-events')
 const authMiddleware = require('./middleware/auth')
 const pluginAuthMiddleware = require('./middleware/plugin-auth')
@@ -40,6 +41,7 @@ createRconClient().then(() => {
 // MatchZy sends server-to-server events here using x-plugin-secret. This route intentionally
 // lives outside the dashboard/admin API secret so a leaked operator token cannot impersonate a game server.
 app.use('/api/plugin/matchzy', pluginAuthMiddleware, pluginEventRoutes)
+app.use('/api/plugin/reconnect', pluginAuthMiddleware, reconnectRoutes)
 
 // Operator API: RCON actions and rank reads. No static frontend is served by this service.
 app.use('/api', authMiddleware)
@@ -48,6 +50,7 @@ app.use('/api/server', serverRoutes)
 app.use('/api/rank', rankRoutes)
 app.use('/api/community', communityRoutes)
 app.use('/api/seasons', seasonRoutes)
+app.use('/api/reconnect', (req, res, next) => { req.pluginId = 'operator'; next() }, reconnectRoutes)
 
 app.post('/api/rcon', async (req, res) => {
   if (value('ALLOW_RAW_RCON', 'false') !== 'true') return res.status(403).json({ error: 'Raw RCON is disabled in production' })

@@ -6,8 +6,9 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
-    "check": "node --check src/index.js && node --check src/rank.js && node --check src/community.js && node --check src/seasons.js && node --check src/routes/plugin-events.js && node --check src/routes/rank.js && node --check src/routes/community.js && node --check src/routes/seasons.js",
-    "test:rank": "node test/rank-contract.test.js"
+    "check": "node --check src/index.js && node --check src/rank.js && node --check src/community.js && node --check src/seasons.js && node --check src/reconnect.js && node --check src/routes/plugin-events.js && node --check src/routes/rank.js && node --check src/routes/community.js && node --check src/routes/seasons.js && node --check src/routes/reconnect.js",
+    "test:rank": "node test/rank-contract.test.js",
+    "test:reconnect": "node test/reconnect-contract.test.js"
   },
   "dependencies": {
     "dotenv": "^16.4.5",
