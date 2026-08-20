@@ -52,4 +52,4 @@
 - [x] Backend/plugin build, API auth/idempotency, secret hygiene болон mismatched server event smoke test хийх.
 - [ ] Intended Supabase project migration apply болон real disconnect/server-B-reconnect CS2 end-to-end test хийх.
 - [x] GitHub commit болон production deployment runbook бэлдэх.
-- [ ] GitHub push хийж backend/plugins remote clean status-ийг баталгаажуулах.
+- [x] GitHub push хийж backend/plugins remote clean status-ийг баталгаажуулах.
