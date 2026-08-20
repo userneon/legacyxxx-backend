@@ -75,4 +75,5 @@
 - [x] Match-time chat/EXP/rank/damage spam suppression, player welcome overlay, five-minute match number overlay, final result/reward summary хэрэгжүүлэх.
 - [x] Backend syntax, rank/reconnect/Match Core contracts, MatchZy Release build, idempotent final-result/fill lifecycle guards болон secret hygiene-г local validation хийх.
 - [ ] Real ten-player CS2 server дээр duplicate result/XP, restart/crash, reconnect, fill, wrong-team join, backend timeout болон race-condition end-to-end validation хийх.
-- [ ] GitHub commit/push, remote clean status болон production server deployment verification хүргэх.
+- [x] GitHub commit/push болон remote clean status-г баталгаажуулах.
+- [ ] Production CS2 server private cfg placement болон real ten-player end-to-end smoke test хийх.
