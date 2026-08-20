@@ -63,4 +63,4 @@
 - [x] Plugin build болон private config exclusion-г шалгах.
 - [ ] Real CS2 server дээр spectator/alive voice-text matrix болон MatchZy `.ready` command pass-through smoke test хийх.
 - [x] GitHub commit болон production deployment runbook бэлдэх.
-- [ ] GitHub push хийж backend/plugins remote clean status-ийг баталгаажуулах.
+- [x] GitHub push хийж backend/plugins remote clean status-ийг баталгаажуулах.
