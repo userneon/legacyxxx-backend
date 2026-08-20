@@ -27,4 +27,4 @@
 - [x] Migration/API/plugin build, idempotency болон secret hygiene-г local environment дээр шалгах.
 - [ ] Supabase migration apply болон real exact-5v5 CS2 smoke test хийх.
 - [x] GitHub commit, deployment guide болон customization changelog бэлдэх.
-- [ ] GitHub push хийж backend/plugins remote branch clean эсэхийг баталгаажуулах.
+- [x] GitHub push хийж backend/plugins remote branch clean эсэхийг баталгаажуулах.
