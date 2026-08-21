@@ -46,6 +46,14 @@ function bearer(req: Request) {
   apiError(401, "Bearer token is required");
 }
 
+function pluginCredential(req: Request) {
+  const value = req.header("authorization");
+  if (value?.startsWith("Bearer ")) return value.slice(7).trim();
+  const legacyHeader = req.header("x-plugin-secret")?.trim();
+  if (legacyHeader) return legacyHeader;
+  apiError(401, "Plugin credential is required");
+}
+
 function refreshTokenFromRequest(req: Request) {
   const input = z.object({ refreshToken: z.string().min(20).optional() }).parse(req.body ?? {});
   return input.refreshToken ?? parseCookieHeader(req.headers.cookie ?? "").legacyx_refresh_token ?? apiError(401, "Refresh token is required");
@@ -70,7 +78,7 @@ function staffRoute(handler: (req: ApiRequest, res: Response, user: LegacyUser) 
 
 function pluginRoute(scope: string, handler: (req: ApiRequest, res: Response, plugin: PluginPrincipal) => Promise<void>) {
   return asyncRoute(async (req, res) => {
-    const plugin = await authenticatePlugin(bearer(req), scope);
+    const plugin = await authenticatePlugin(pluginCredential(req), scope);
     req.plugin = plugin;
     await handler(req, res, plugin);
   });
@@ -1088,6 +1096,58 @@ export function createLegacyXRouter() {
     });
     legacyXError(error, "Unable to ingest player match result");
     res.status(201).json({ historyId: data });
+  }));
+
+  router.post("/plugin/match-core/events", pluginRoute("matches:write", async (req, res, plugin) => {
+    const input = z.object({ event_id: z.string().uuid(), event: z.enum(["match_created", "state_transition", "player_disconnected", "player_returned", "fill_assigned", "fill_removed", "snapshot_saved", "result_final", "match_cancelled"]), match_id: z.string().uuid().optional() }).passthrough().parse(req.body);
+    const pluginId = req.header("x-plugin-id")?.trim() || plugin.name;
+    if (pluginId !== "legacyx-match-core") apiError(403, "Match Core plugin identity is required");
+    const { data, error } = await db().schema("legacy_x").rpc("ingest_core_match_event", { p_plugin_id: pluginId, p_event_id: input.event_id, p_payload: input });
+    legacyXError(error, "Unable to ingest Match Core event");
+    res.status(200).json({ result: data ?? {} });
+  }));
+  router.post("/plugin/matchzy/events", pluginRoute("stats:write", async (req, res, plugin) => {
+    const input = z.object({ event_id: z.string().uuid(), event: z.string().min(1).max(64) }).passthrough().parse(req.body);
+    const pluginId = req.header("x-plugin-id")?.trim() || plugin.name;
+    if (pluginId !== "matchzy") apiError(403, "MatchZy plugin identity is required");
+    if (input.event !== "map_result") return res.status(202).json({ accepted: true, ignored: true });
+    const [rankResult, communityResult] = await Promise.all([
+      db().schema("legacy_x").rpc("ingest_rank_map_result", { p_plugin_id: pluginId, p_event_id: input.event_id, p_payload: input }),
+      db().schema("legacy_x").rpc("ingest_community_map_result", { p_plugin_id: pluginId, p_event_id: input.event_id, p_payload: input }),
+    ]);
+    legacyXError(rankResult.error || communityResult.error, "Unable to ingest MatchZy map result");
+    res.status(201).json({ accepted: true, rank: rankResult.data ?? null, community: communityResult.data ?? null });
+  }));
+  router.get("/plugin/community/players/:steamId", pluginRoute("stats:write", async (req, res) => {
+    const steamId = String(req.params.steamId || "").trim();
+    if (!/^\d{15,20}$/.test(steamId)) apiError(400, "steamId must be a 15-20 digit SteamID64");
+    const { data, error } = await db().from("community_player_profiles").select("steam_id,username,avatar,level,experience,rating,rank_tier,clan_id,clan_name,clan_tag,clan_role").eq("steam_id", steamId).maybeSingle();
+    legacyXError(error, "Unable to load plugin community player profile");
+    if (!data) apiError(404, "Player profile not found");
+    res.json({ profile: data });
+  }));
+  router.post("/plugin/reconnect/events", pluginRoute("servers:write", async (req, res, plugin) => {
+    const input = z.object({ event: z.enum(["player_connected", "player_disconnected", "server_heartbeat"]), event_id: z.string().min(8).max(180), server_id: z.string().min(1).max(120), server_address: z.string().min(1).max(255), map_name: z.string().max(128).optional().default(""), mode: z.string().max(128).optional().default(""), player_count: z.coerce.number().int().min(0).max(128).optional(), session_id: z.string().uuid().optional(), steam_id: z.string().regex(/^\d{15,20}$/).optional(), player_name: z.string().max(128).optional().default(""), disconnect_reason: z.string().max(96).optional().default(""), reconnect_window_minutes: z.coerce.number().int().min(5).max(1440).optional().default(720) }).parse(req.body);
+    const pluginId = req.header("x-plugin-id")?.trim() || plugin.name;
+    if (pluginId !== "legacyx-reconnect") apiError(403, "Reconnect plugin identity is required");
+    if (input.event === "server_heartbeat") {
+      const { data, error } = await db().schema("legacy_x").rpc("ingest_reconnect_heartbeat", { p_event_id: input.event_id, p_plugin_id: pluginId, p_server_id: input.server_id, p_server_address: input.server_address, p_map_name: input.map_name, p_mode: input.mode, p_player_count: input.player_count ?? 0 });
+      legacyXError(error, "Unable to ingest reconnect server heartbeat");
+      return res.status(200).json({ result: data ?? {} });
+    }
+    if (!input.session_id || !input.steam_id) apiError(400, "session_id and steam_id are required for player reconnect events");
+    const { data, error } = await db().schema("legacy_x").rpc("ingest_reconnect_event", { p_event_id: input.event_id, p_plugin_id: pluginId, p_event_type: input.event, p_session_id: input.session_id, p_steam_id: input.steam_id, p_player_name: input.player_name, p_server_id: input.server_id, p_server_address: input.server_address, p_map_name: input.map_name, p_mode: input.mode, p_disconnect_reason: input.disconnect_reason || null, p_reconnect_window_minutes: input.reconnect_window_minutes });
+    legacyXError(error, "Unable to ingest reconnect player event");
+    res.status(200).json({ result: data ?? {} });
+  }));
+  router.get("/plugin/reconnect/players/:steamId", pluginRoute("servers:write", async (req, res) => {
+    const steamId = String(req.params.steamId || "").trim();
+    if (!/^\d{15,20}$/.test(steamId)) apiError(400, "steamId must be a 15-20 digit SteamID64");
+    const excludedServerId = typeof req.query.exclude_server_id === "string" ? req.query.exclude_server_id.trim() : "";
+    const { data, error } = await db().schema("legacy_x").from("reconnect_last_played").select("session_id,steam_id,player_name,server_id,server_name,connect_address,map_name,mode,connected_at,disconnected_at,reconnectable_until,player_count,last_heartbeat_at,server_online").eq("steam_id", steamId).order("connected_at", { ascending: false }).limit(10);
+    legacyXError(error, "Unable to load reconnect sessions");
+    const now = Date.now();
+    res.json({ sessions: (data ?? []).filter(session => session.server_id !== excludedServerId).map(session => ({ ...session, reconnectable: session.server_online === true && new Date(session.reconnectable_until).getTime() >= now })) });
   }));
 
   router.use((_req, res) => {
