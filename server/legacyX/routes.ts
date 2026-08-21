@@ -89,6 +89,14 @@ function pluginRoute(scope: string, handler: (req: ApiRequest, res: Response, pl
   });
 }
 
+function botRoute(scope: string, handler: (req: ApiRequest, res: Response, bot: PluginPrincipal) => Promise<void>) {
+  return asyncRoute(async (req, res) => {
+    const bot = await authenticatePlugin(pluginCredential(req), scope);
+    req.plugin = bot;
+    await handler(req, res, bot);
+  });
+}
+
 function requestOrigin(req: Request) {
   const configuredOrigin = process.env.PUBLIC_API_ORIGIN?.trim().replace(/\/$/, "");
   if (configuredOrigin) return configuredOrigin;
@@ -407,6 +415,34 @@ export function createLegacyXRouter() {
     legacyXError(clans.error || matches.error, "Unable to load public overview");
     const online = servers.filter(server => server.status !== "offline");
     res.json({ playersOnline: online.reduce((total, server) => total + server.players, 0), liveServers: online.length, matchesToday: (matches.data ?? []).length, activeClans: (clans.data ?? []).length });
+  }));
+
+  // Server-side community bots must authenticate with a scoped service token.
+  // Never return wallet, profile links, refresh/session data, or private account fields here.
+  router.get("/bot/players/:steamId", botRoute("bot:read", async (req, res) => {
+    const steamId = z.string().regex(/^7656\d{13}$/, "Invalid SteamID64").parse(req.params.steamId);
+    const { data, error } = await db()
+      .from("users")
+      .select("steam_id,username,avatar,level,rank,role,faceit_username,faceit_elo,faceit_level,player_stats(matches,wins,kills,deaths,headshots,kd_ratio,rating,experience,played_hours)")
+      .eq("steam_id", steamId)
+      .maybeSingle();
+    legacyXError(error, "Unable to load bot player summary");
+    if (!data) apiError(404, "Player was not found");
+    const row = data as DbRow;
+    const role: UserRole = isUserRole(row.role) ? row.role : "Player";
+    const payload: Record<string, unknown> = {
+      steamId: textValue(row.steam_id),
+      username: textValue(row.username),
+      avatar: textValue(row.avatar),
+      role,
+      level: numberValue(row.level),
+      rank: textValue(row.rank),
+      stats: mapProfileStats(statsRow(row)),
+    };
+    if (row.faceit_username && row.faceit_elo != null && row.faceit_level != null) {
+      payload.faceit = { username: textValue(row.faceit_username), elo: numberValue(row.faceit_elo), level: numberValue(row.faceit_level) };
+    }
+    res.json(payload);
   }));
 
   // Frontend contract: every route below is mounted by server/_core/index.ts under /api/v1.

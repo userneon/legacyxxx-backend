@@ -69,9 +69,10 @@ export async function handleCommand(interaction: ChatInputCommandInteraction) {
       case "level": {
         const steamId = interaction.options.getString("steamid", true);
         if (!/^7656\d{13}$/.test(steamId)) { await interaction.reply({ ephemeral: true, content: "Enter a valid 17-digit SteamID64 starting with `7656`." }); return; }
-        const profile = await apiGet<{ username: string; steamId: string; avatar?: string; role?: string; level?: number; rank?: string; balance?: number }>(`/profile/${steamId}`);
+        const profile = await apiGet<{ username: string; steamId: string; avatar?: string; role?: string; level?: number; rank?: string; stats?: { matches?: number; wins?: number; kdRatio?: number; rating?: number }; faceit?: { username: string; elo: number; level: number } }>(`/bot/players/${steamId}`, { token: true });
         const embed = new EmbedBuilder().setColor(0x10b981).setTitle(profile.username).setURL(`https://legacyx.cc/profile/${profile.steamId}`).addFields(
-          { name: "Role", value: profile.role ?? "Player", inline: true }, { name: "Rank", value: profile.rank ?? "Unranked", inline: true }, { name: "Level", value: String(profile.level ?? 0), inline: true });
+          { name: "Role", value: profile.role ?? "Player", inline: true }, { name: "Rank", value: profile.rank ?? "Unranked", inline: true }, { name: "Level", value: String(profile.level ?? 0), inline: true },
+          { name: "Matches", value: String(profile.stats?.matches ?? 0), inline: true }, { name: "K/D", value: String(profile.stats?.kdRatio ?? 0), inline: true }, { name: "FACEIT", value: profile.faceit ? `Lv. ${profile.faceit.level} · ${profile.faceit.elo} ELO` : "Not linked", inline: true });
         if (profile.avatar) embed.setThumbnail(profile.avatar);
         await interaction.reply({ embeds: [embed] });
         return;
