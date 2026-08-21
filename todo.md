@@ -84,3 +84,10 @@
 - [x] Existing AdminPlus, Rank, Community, Reconnect болон Match Core API contracts-т data model mapping хийх.
 - [x] Existing color system, layout, route structure, visual component and UI/UX behavior-г өөрчлөхгүйгээр frontend API client, endpoint adapter, loading/error states болон browser-safe public data boundary-г production-safe байдлаар хэрэгжүүлэх.
 - [ ] Frontend production build, responsive behavior, API integration smoke test болон deployment handoff-г баталгаажуулах.
+
+## LEGACY-X Frontend Authentication Profile Fix
+
+- [x] Steam callback query/fragment token handling, token persistence болон redirect cleanup flow-г audit хийх.
+- [x] Login completion дараах auth context profile refresh болон protected profile route rendering-г existing UI/UX-г өөрчлөхгүйгээр засах.
+- [x] Production build болон dependency audit regression-г шалгах.
+- [ ] Configured Steam auth backend дээр successful login, browser refresh болон logout real-session smoke test хийх.
