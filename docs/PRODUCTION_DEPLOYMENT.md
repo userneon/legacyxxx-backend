@@ -14,13 +14,13 @@ The repository root is the **LEGACY-X consumer API**. Its source entrypoint is `
 
 ## Clean production-server sequence
 
-Use the package manager pinned by the repository lockfile for dependency installation. The runtime commands remain compatible with `npm run` as requested.
+Use the package manager pinned by the repository lockfile for dependency installation. The runtime commands remain compatible with `npm run` as requested. If `pnpm` is not already installed on the server, install the repository-pinned major/minor version directly; this avoids relying on a potentially stale Corepack signing-key cache.
 
 ```bash
 git clone https://github.com/userneon/legacyxxx-backend.git
 cd legacyxxx-backend
 
-corepack enable
+pnpm --version || npm install --global pnpm@10.4.1
 pnpm install --frozen-lockfile --prod=false
 
 # Copy the private deployment values. Never commit this file.
@@ -76,3 +76,4 @@ pm2 reload ecosystem.config.cjs --env production --update-env
 | `[startup] Production build artifact is missing` | `dist/index.js` was deleted after build | Re-run `npm run build` |
 | `Missing required environment variable` | Root API `.env` is incomplete | Set the listed server-local production variables and restart |
 | PM2 still serves old code | PM2 was reloaded without rebuilding | Run `npm run build`, then `pm2 reload ... --update-env` |
+| `corepack` reports a signing key error | Corepack's cached signing key is stale | Use the direct pinned `pnpm` installation command in the clean-server sequence |
