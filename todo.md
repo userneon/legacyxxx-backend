@@ -91,3 +91,9 @@
 - [x] Login completion дараах auth context profile refresh болон protected profile route rendering-г existing UI/UX-г өөрчлөхгүйгээр засах.
 - [x] Production build болон dependency audit regression-г шалгах.
 - [ ] Configured Steam auth backend дээр successful login, browser refresh болон logout real-session smoke test хийх.
+
+## LEGACY-X Backend Production Build Fix
+
+- [ ] Existing package scripts, Node source entrypoint, TypeScript/build configuration болон deployment assumption-г audit хийх.
+- [ ] `npm run build` нь production runtime output үүсгэж, `npm start` нь тэр output-оос эсвэл architecture-д таарсан source entrypoint-оос найдвартай асдаг minimal fix хэрэгжүүлэх.
+- [ ] Clean clone, dependency install, `.env` placement, build, startup health check болон API regression-ийг production-equivalent flow-оор шалгах.

@@ -1,7 +1,7 @@
 import { Router, type NextFunction, type Request, type Response } from "express";
 import rateLimit from "express-rate-limit";
-import { parse as parseCookie } from "cookie";
 import { z } from "zod";
+import { parseCookieHeader } from "../_core/cookieHeader";
 import {
   authenticatePlugin,
   createRefreshSession,
@@ -41,14 +41,14 @@ function asyncRoute(handler: AsyncHandler) {
 function bearer(req: Request) {
   const value = req.header("authorization");
   if (value?.startsWith("Bearer ")) return value.slice(7).trim();
-  const cookieToken = parseCookie(req.headers.cookie ?? "").legacyx_access_token;
+  const cookieToken = parseCookieHeader(req.headers.cookie ?? "").legacyx_access_token;
   if (cookieToken) return cookieToken;
   apiError(401, "Bearer token is required");
 }
 
 function refreshTokenFromRequest(req: Request) {
   const input = z.object({ refreshToken: z.string().min(20).optional() }).parse(req.body ?? {});
-  return input.refreshToken ?? parseCookie(req.headers.cookie ?? "").legacyx_refresh_token ?? apiError(401, "Refresh token is required");
+  return input.refreshToken ?? parseCookieHeader(req.headers.cookie ?? "").legacyx_refresh_token ?? apiError(401, "Refresh token is required");
 }
 
 async function requireUser(req: ApiRequest) {
@@ -312,7 +312,7 @@ export function createLegacyXRouter() {
   // Frontend contract: every route below is mounted by server/_core/index.ts under /api/v1.
   router.post("/auth/logout", userRoute(async (req, res, user) => {
     noBody(req);
-    const refreshToken = parseCookie(req.headers.cookie ?? "").legacyx_refresh_token;
+    const refreshToken = parseCookieHeader(req.headers.cookie ?? "").legacyx_refresh_token;
     if (refreshToken) await revokeRefreshSession(refreshToken);
     else await revokeUserRefreshSessions(user.id);
     res.clearCookie("legacyx_access_token", sessionCookieOptions(0));
@@ -322,7 +322,7 @@ export function createLegacyXRouter() {
   router.post("/auth/refresh", asyncRoute(async (req, res) => {
     noBody(req);
     const headerToken = req.header("authorization")?.startsWith("Bearer ") ? req.header("authorization")!.slice(7).trim() : undefined;
-    const refreshToken = headerToken || parseCookie(req.headers.cookie ?? "").legacyx_refresh_token;
+    const refreshToken = headerToken || parseCookieHeader(req.headers.cookie ?? "").legacyx_refresh_token;
     if (!refreshToken) apiError(401, "Refresh token is required");
     const principal = await rotateRefreshSession(refreshToken);
     const [accessToken, nextRefreshToken, profile] = await Promise.all([issueAccessToken(principal), createRefreshSession(principal.id), loadProfile(principal.id)]);
