@@ -282,7 +282,16 @@ export function createLegacyXRouter() {
     next();
   });
 
-  const resolveUserId = (rawUserId: string, caller: LegacyUser) => rawUserId === "me" ? caller.id : userIdSchema.parse(rawUserId);
+  const resolveUserId = async (rawUserId: string, caller: LegacyUser) => {
+    if (rawUserId === "me") return caller.id;
+    if (/^\d{15,20}$/.test(rawUserId)) {
+      const { data, error } = await db().from("users").select("id").eq("steam_id", rawUserId).maybeSingle();
+      legacyXError(error, "Unable to resolve Steam player");
+      if (!data) apiError(404, "Player was not found");
+      return textValue(data.id);
+    }
+    return userIdSchema.parse(rawUserId);
+  };
   const loadProfile = async (id: string) => {
     const [userResult, linksResult] = await Promise.all([
       db().from("users").select("id,steam_id,username,avatar,level,rank,balance,faceit_username,faceit_elo,faceit_level,is_staff,player_stats(*)").eq("id", id).maybeSingle(),
@@ -336,7 +345,7 @@ export function createLegacyXRouter() {
   }));
 
   router.get("/profile/:userId", userRoute(async (req, res, user) => {
-    const profile = await loadProfile(resolveUserId(req.params.userId, user));
+    const profile = await loadProfile(await resolveUserId(req.params.userId, user));
     res.json(mapUserProfile(profile.user, profile.links));
   }));
   router.put("/profile/me", userRoute(async (req, res, user) => {
@@ -348,14 +357,14 @@ export function createLegacyXRouter() {
     res.json(mapUserProfile(profile.user, profile.links));
   }));
   router.get("/profile/:userId/stats", userRoute(async (req, res, user) => {
-    const userId = resolveUserId(req.params.userId, user);
+    const userId = await resolveUserId(req.params.userId, user);
     const { data, error } = await db().from("player_stats").select("matches,wins,kd_ratio,rating").eq("user_id", userId).maybeSingle();
     legacyXError(error, "Unable to load player stats");
     if (!data) apiError(404, "Player stats were not found");
     res.json(mapProfileStats(data as DbRow));
   }));
   router.get("/profile/:userId/matches", userRoute(async (req, res, user) => {
-    const userId = resolveUserId(req.params.userId, user);
+    const userId = await resolveUserId(req.params.userId, user);
     const { data, error } = await db().from("player_match_history").select("map,result,score,kd").eq("user_id", userId).order("created_at", { ascending: false });
     legacyXError(error, "Unable to load match history");
     res.json(((data ?? []) as DbRow[]).map(mapRecentMatch));
@@ -368,7 +377,7 @@ export function createLegacyXRouter() {
     res.json({ links: input.links });
   }));
   router.get("/profile/:userId/penalties", userRoute(async (req, res, user) => {
-    const userId = resolveUserId(req.params.userId, user);
+    const userId = await resolveUserId(req.params.userId, user);
     const { data, error } = await db().from("penalties").select("*,users!penalties_user_id_fkey(username,avatar)").eq("user_id", userId).order("created_at", { ascending: false });
     legacyXError(error, "Unable to load penalties");
     res.json(((data ?? []) as DbRow[]).map(mapPenalty));
@@ -464,7 +473,7 @@ export function createLegacyXRouter() {
   router.get("/leaderboard", frontendLeaderboard);
   router.get("/players/leaderboard", frontendLeaderboard);
   router.get("/players/:playerId", userRoute(async (req, res) => {
-    const playerId = userIdSchema.parse(req.params.playerId);
+    const playerId = await resolveUserId(req.params.playerId, req.legacyUser!);
     const { data, error } = await db().from("player_stats").select("*,users!inner(id,username,avatar,level)").order("rating", { ascending: false });
     legacyXError(error, "Unable to load player");
     const rows = (data ?? []) as DbRow[];

@@ -99,6 +99,12 @@
 - [x] Clean clone, dependency install, build, strict placeholder runtime config, startup health check болон production dependency audit-г production-equivalent flow-оор шалгах.
 - [ ] Production Supabase болон Steam credentials-тэй server-local `.env` дээр external API integration test suite-г ажиллуулж баталгаажуулах.
 
+## Frontend–Backend Full Contract Alignment
+
+- [ ] Frontend API modules, TypeScript response types, page-level consumers болон backend route response shapes-ийг complete inventory/map хийх.
+- [ ] `/auth/me` profile payload, Steam auth state, public/community/rank/reconnect data adapters болон unsupported consumer endpoints-ийг truthful contract-т тааруулах.
+- [ ] Endpoint contract tests, frontend production build, authenticated profile rendering болон public API smoke verification-г хийх.
+
 ## Steam Browser Redirect and Session Exposure Fix
 
 - [x] Steam OpenID callback-ийн current Accept-header-driven JSON response behavior болон frontend session handoff contract-г audit хийх.
@@ -109,3 +115,15 @@
 
 - [ ] User-shared screenshot-д ил болсон Supabase service-role, Steam Web API болон JWT secrets-ийг rotate хийх.
 - [ ] Root `.env` дээр rotated secret values-ийг тохируулж, secret value хэвлэхгүйгээр startup болон Steam callback-г дахин баталгаажуулах.
+
+## VPS Domain and HTTPS Routing
+
+- [ ] VPS public IPv4, DNS provider ownership, current Nginx/Apache service, firewall rules болон frontend/API process ports-г audit хийх.
+- [ ] `legacyx.cc`, `www.legacyx.cc`, `api.legacyx.cc` DNS records, Nginx virtual hosts, Let’s Encrypt TLS болон secure reverse proxy routing-ийг тохируулах.
+- [ ] HTTPS redirect, API health, CORS/cookie domain behavior, Steam callback болон frontend profile hydration-г public domains дээр баталгаажуулах.
+
+## Steam Redirect Profile Hydration Regression
+
+- [ ] Frontend auth bootstrap, `credentials: include`, API cookie domain/same-site attributes болон production CORS origin contract-г audit хийх.
+- [ ] Redirect дараах frontend `/auth/me` session handoff-ийн root cause-д minimal frontend/backend configuration fix хэрэгжүүлэх.
+- [ ] Browser DevTools network result, Steam login redirect, profile rendering болон refresh persistence-г production domain дээр баталгаажуулах.
