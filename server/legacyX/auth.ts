@@ -16,7 +16,11 @@ export type PluginPrincipal = {
 };
 
 const accessLifetimeSeconds = 15 * 60;
-const refreshLifetimeMs = 30 * 24 * 60 * 60 * 1000;
+/**
+ * A refresh session stays valid for a bounded long-lived period when the
+ * browser is inactive. Active tabs rotate it before the access JWT expires.
+ */
+export const refreshLifetimeMs = 90 * 24 * 60 * 60 * 1000;
 
 function jwtKey() {
   const value = process.env.JWT_SECRET;

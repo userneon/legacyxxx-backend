@@ -6,6 +6,7 @@ import {
   authenticatePlugin,
   createRefreshSession,
   issueAccessToken,
+  refreshLifetimeMs,
   revokeRefreshSession,
   revokeUserRefreshSessions,
   rotateRefreshSession,
@@ -213,12 +214,12 @@ function mapMatch(match: DbRow, favorite = false) {
 
 function mapLeader(stats: DbRow, index: number) {
   const user = firstRow(stats.users) ?? {};
-  return { rank: index + 1, name: textValue(user.username), level: numberValue(user.level), experience: numberValue(stats.experience), kills: numberValue(stats.kills), deaths: numberValue(stats.deaths), kd: numberValue(stats.kd_ratio), headshots: numberValue(stats.headshots), playedHours: numberValue(stats.played_hours), lastPlayed: timestampValue(stats.last_played_at), avatar: textValue(user.avatar) };
+  return { id: textValue(user.id), rank: index + 1, name: textValue(user.username), level: numberValue(user.level), experience: numberValue(stats.experience), kills: numberValue(stats.kills), deaths: numberValue(stats.deaths), kd: numberValue(stats.kd_ratio), headshots: numberValue(stats.headshots), playedHours: numberValue(stats.played_hours), lastPlayed: timestampValue(stats.last_played_at), avatar: textValue(user.avatar) };
 }
 
 function mapLeaderFromUser(user: DbRow, index: number) {
   const stats = statsRow(user);
-  return { rank: index + 1, name: textValue(user.username), level: numberValue(user.level), experience: numberValue(stats.experience), kills: numberValue(stats.kills), deaths: numberValue(stats.deaths), kd: numberValue(stats.kd_ratio), headshots: numberValue(stats.headshots), playedHours: numberValue(stats.played_hours), lastPlayed: timestampValue(stats.last_played_at), avatar: textValue(user.avatar) };
+  return { id: textValue(user.id), rank: index + 1, name: textValue(user.username), level: numberValue(user.level), experience: numberValue(stats.experience), kills: numberValue(stats.kills), deaths: numberValue(stats.deaths), kd: numberValue(stats.kd_ratio), headshots: numberValue(stats.headshots), playedHours: numberValue(stats.played_hours), lastPlayed: timestampValue(stats.last_played_at), avatar: textValue(user.avatar) };
 }
 
 function memberCount(clan: DbRow) {
@@ -386,7 +387,7 @@ export function createLegacyXRouter() {
     const principal = await rotateRefreshSession(refreshToken);
     const [accessToken, nextRefreshToken, profile] = await Promise.all([issueAccessToken(principal), createRefreshSession(principal.id), loadProfile(principal.id)]);
     res.cookie("legacyx_access_token", accessToken, sessionCookieOptions(15 * 60 * 1000));
-    res.cookie("legacyx_refresh_token", nextRefreshToken, sessionCookieOptions(30 * 24 * 60 * 60 * 1000));
+    res.cookie("legacyx_refresh_token", nextRefreshToken, sessionCookieOptions(refreshLifetimeMs));
     res.json({ accessToken, refreshToken: nextRefreshToken, expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString(), user: mapUserProfile(profile.user, profile.links) });
   }));
   router.get("/auth/me", userRoute(async (_req, res, user) => {
@@ -1110,7 +1111,10 @@ export function createLegacyXRouter() {
     const input = z.object({ event_id: z.string().uuid(), event: z.string().min(1).max(64) }).passthrough().parse(req.body);
     const pluginId = req.header("x-plugin-id")?.trim() || plugin.name;
     if (pluginId !== "matchzy") apiError(403, "MatchZy plugin identity is required");
-    if (input.event !== "map_result") return res.status(202).json({ accepted: true, ignored: true });
+    if (input.event !== "map_result") {
+      res.status(202).json({ accepted: true, ignored: true });
+      return;
+    }
     const [rankResult, communityResult] = await Promise.all([
       db().schema("legacy_x").rpc("ingest_rank_map_result", { p_plugin_id: pluginId, p_event_id: input.event_id, p_payload: input }),
       db().schema("legacy_x").rpc("ingest_community_map_result", { p_plugin_id: pluginId, p_event_id: input.event_id, p_payload: input }),
@@ -1133,7 +1137,8 @@ export function createLegacyXRouter() {
     if (input.event === "server_heartbeat") {
       const { data, error } = await db().schema("legacy_x").rpc("ingest_reconnect_heartbeat", { p_event_id: input.event_id, p_plugin_id: pluginId, p_server_id: input.server_id, p_server_address: input.server_address, p_map_name: input.map_name, p_mode: input.mode, p_player_count: input.player_count ?? 0 });
       legacyXError(error, "Unable to ingest reconnect server heartbeat");
-      return res.status(200).json({ result: data ?? {} });
+      res.status(200).json({ result: data ?? {} });
+      return;
     }
     if (!input.session_id || !input.steam_id) apiError(400, "session_id and steam_id are required for player reconnect events");
     const { data, error } = await db().schema("legacy_x").rpc("ingest_reconnect_event", { p_event_id: input.event_id, p_plugin_id: pluginId, p_event_type: input.event, p_session_id: input.session_id, p_steam_id: input.steam_id, p_player_name: input.player_name, p_server_id: input.server_id, p_server_address: input.server_address, p_map_name: input.map_name, p_mode: input.mode, p_disconnect_reason: input.disconnect_reason || null, p_reconnect_window_minutes: input.reconnect_window_minutes });
