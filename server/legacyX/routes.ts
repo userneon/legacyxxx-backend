@@ -5,6 +5,8 @@ import { parseCookieHeader } from "../_core/cookieHeader";
 import {
   authenticatePlugin,
   createRefreshSession,
+  isStaffRole,
+  isUserRole,
   issueAccessToken,
   refreshLifetimeMs,
   revokeRefreshSession,
@@ -15,6 +17,7 @@ import {
   verifySteamCallback,
   type LegacyUser,
   type PluginPrincipal,
+  type UserRole,
 } from "./auth";
 import { apiRateLimitMax } from "./config";
 import { getFaceitProfileSnapshot, getFaceitProfileSnapshotForSteamId, resolveFaceitNickname } from "./faceit";
@@ -118,7 +121,7 @@ function postLoginRedirect() {
 async function getUserWithStats(id: string) {
   const { data, error } = await legacyXDb()
     .from("users")
-    .select("id,steam_id,username,avatar,level,rank,balance,faceit_username,faceit_elo,faceit_level,is_staff,created_at,updated_at,player_stats(*)")
+    .select("id,steam_id,username,avatar,level,rank,balance,faceit_username,faceit_elo,faceit_level,role,is_staff,created_at,updated_at,player_stats(*)")
     .eq("id", id)
     .maybeSingle();
   legacyXError(error, "Unable to load player");
@@ -156,6 +159,7 @@ const matchStatusSchema = z.enum(["live", "waiting", "finished", "locked"]);
 const serverStatusSchema = z.enum(["online", "offline", "full"]);
 const tournamentMatchStatusSchema = z.enum(["live", "upcoming", "completed"]);
 const penaltyTypeSchema = z.enum(["ban", "comm", "gag"]);
+const userRoleSchema = z.enum(["Owner", "Founder", "Manager", "Admin", "Player", "Designer", "Developer"]);
 const shopRaritySchema = z.enum(["Common", "Rare", "Epic", "Legendary"]);
 
 type DbRow = Record<string, any>;
@@ -183,6 +187,7 @@ function statsRow(user: DbRow) {
 }
 
 function mapUserProfile(user: DbRow, links: DbRow[] = []) {
+  const role: UserRole = isUserRole(user.role) ? user.role : user.is_staff ? "Admin" : "Player";
   const profile: Record<string, unknown> = {
     id: textValue(user.id),
     steamId: textValue(user.steam_id),
@@ -191,6 +196,7 @@ function mapUserProfile(user: DbRow, links: DbRow[] = []) {
     level: numberValue(user.level),
     rank: textValue(user.rank),
     balance: numberValue(user.balance),
+    role,
   };
   if (user.faceit_username && user.faceit_elo != null && user.faceit_level != null) {
     profile.faceit = { username: textValue(user.faceit_username), elo: numberValue(user.faceit_elo), level: numberValue(user.faceit_level) };
@@ -328,7 +334,7 @@ export function createLegacyXRouter() {
   };
   const loadProfile = async (id: string) => {
     const [userResult, linksResult] = await Promise.all([
-      db().from("users").select("id,steam_id,username,avatar,level,rank,balance,faceit_username,faceit_elo,faceit_level,is_staff,player_stats(*)").eq("id", id).maybeSingle(),
+      db().from("users").select("id,steam_id,username,avatar,level,rank,balance,faceit_username,faceit_elo,faceit_level,role,is_staff,player_stats(*)").eq("id", id).maybeSingle(),
       db().from("user_links").select("url").eq("user_id", id).order("created_at"),
     ]);
     legacyXError(userResult.error || linksResult.error, "Unable to load profile");
@@ -776,7 +782,8 @@ export function createLegacyXRouter() {
     if (!userId) apiError(500, "Steam user was not created");
     await syncSteamUserProfile(steamId);
     const user = await getUserWithStats(userId);
-    const principal: LegacyUser = { id: user.id, steamId: user.steam_id, username: user.username, isStaff: user.is_staff };
+    const role: UserRole = isUserRole(user.role) ? user.role : user.is_staff ? "Admin" : "Player";
+    const principal: LegacyUser = { id: user.id, steamId: user.steam_id, username: user.username, role, isStaff: isStaffRole(role) };
     const [accessToken, refreshToken] = await Promise.all([issueAccessToken(principal), createRefreshSession(principal.id)]);
     res.cookie("legacyx_access_token", accessToken, sessionCookieOptions(15 * 60 * 1000));
     res.cookie("legacyx_refresh_token", refreshToken, sessionCookieOptions(30 * 24 * 60 * 60 * 1000));
@@ -827,7 +834,7 @@ export function createLegacyXRouter() {
   }));
   router.put("/profile/me", userRoute(async (req, res, user) => {
     const updates = profileUpdateSchema.parse(req.body);
-    const { data, error } = await db().from("users").update(updates).eq("id", user.id).select("id,steam_id,username,avatar,level,rank,balance,faceit_username,faceit_elo,faceit_level,is_staff").single();
+    const { data, error } = await db().from("users").update(updates).eq("id", user.id).select("id,steam_id,username,avatar,level,rank,balance,faceit_username,faceit_elo,faceit_level,role,is_staff").single();
     legacyXError(error, "Unable to update profile");
     res.json({ profile: data });
   }));
