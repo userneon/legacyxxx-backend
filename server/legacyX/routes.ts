@@ -282,16 +282,7 @@ export function createLegacyXRouter() {
     next();
   });
 
-  const resolveUserId = async (rawUserId: string, caller: LegacyUser) => {
-    if (rawUserId === "me") return caller.id;
-    if (/^\d{15,20}$/.test(rawUserId)) {
-      const { data, error } = await db().from("users").select("id").eq("steam_id", rawUserId).maybeSingle();
-      legacyXError(error, "Unable to resolve Steam player");
-      if (!data) apiError(404, "Player was not found");
-      return textValue(data.id);
-    }
-    return userIdSchema.parse(rawUserId);
-  };
+  const resolveUserId = (rawUserId: string, caller: LegacyUser) => rawUserId === "me" ? caller.id : userIdSchema.parse(rawUserId);
   const loadProfile = async (id: string) => {
     const [userResult, linksResult] = await Promise.all([
       db().from("users").select("id,steam_id,username,avatar,level,rank,balance,faceit_username,faceit_elo,faceit_level,is_staff,player_stats(*)").eq("id", id).maybeSingle(),
@@ -317,6 +308,57 @@ export function createLegacyXRouter() {
     if (!data) apiError(404, "No active tournament was found");
     return data as DbRow;
   };
+
+  // Public website reads deliberately bypass AdminPlus. CS2 plugins/admin tools
+  // write to Supabase; the website reads these safe projections through root API.
+  const readLimit = (value: unknown) => z.coerce.number().int().min(1).max(100).default(50).parse(value);
+  const readSeason = (value: unknown) => {
+    const season = String(value || process.env.LEGACYX_DEFAULT_SEASON || "season-1").trim();
+    if (!/^[a-z0-9-]{1,64}$/i.test(season)) apiError(400, "season is invalid");
+    return season;
+  };
+  const readServers = async () => {
+    const { data, error } = await db().from("reconnect_servers").select("server_id,connect_address,display_name,current_map,current_mode,player_count,last_heartbeat_at").order("display_name").limit(100);
+    legacyXError(error, "Unable to load public servers");
+    return ((data ?? []) as DbRow[]).map(server => {
+      const heartbeat = new Date(String(server.last_heartbeat_at ?? "")).getTime();
+      const players = numberValue(server.player_count);
+      const online = Number.isFinite(heartbeat) && Date.now() - heartbeat <= 90_000;
+      return { id: textValue(server.server_id), name: textValue(server.display_name) || textValue(server.server_id), map: textValue(server.current_map) || "Unknown", players, maxPlayers: 10, mode: textValue(server.current_mode) || "Community", ping: 0, status: online ? (players >= 10 ? "full" : "online") : "offline", connectAddress: textValue(server.connect_address) };
+    });
+  };
+  router.get("/public/rank/leaderboard", asyncRoute(async (req, res) => {
+    const season = readSeason(req.query.season);
+    const { data, error } = await db().from("rank_leaderboard").select("season_slug,season_name,rank,steam_id,username,rating,tier,matches_played,wins,losses,kills,deaths,assists,kd_ratio,last_match_at").eq("season_slug", season).order("rank").limit(readLimit(req.query.limit));
+    legacyXError(error, "Unable to load public rank leaderboard");
+    res.json({ season, entries: data ?? [] });
+  }));
+  router.get("/public/community/experience", asyncRoute(async (req, res) => {
+    const { data, error } = await db().from("community_experience_leaderboard").select("rank,steam_id,username,level,experience,matches_played,last_match_at").order("rank").limit(readLimit(req.query.limit));
+    legacyXError(error, "Unable to load public experience leaderboard");
+    res.json({ entries: data ?? [] });
+  }));
+  router.get("/public/servers", asyncRoute(async (_req, res) => {
+    res.json({ entries: await readServers() });
+  }));
+  router.get("/public/servers/:serverId", asyncRoute(async (req, res) => {
+    const serverId = String(req.params.serverId || "").trim();
+    const server = (await readServers()).find(entry => entry.id === serverId);
+    if (!server) apiError(404, "Server not found");
+    res.json({ server });
+  }));
+  router.get("/public/overview", asyncRoute(async (_req, res) => {
+    const today = new Date();
+    today.setUTCHours(0, 0, 0, 0);
+    const [servers, clans, matches] = await Promise.all([
+      readServers(),
+      db().from("community_clan_leaderboard").select("clan_id").eq("season_slug", readSeason(undefined)).limit(100),
+      db().from("core_match_history").select("match_id").gte("started_at", today.toISOString()).limit(1_000),
+    ]);
+    legacyXError(clans.error || matches.error, "Unable to load public overview");
+    const online = servers.filter(server => server.status !== "offline");
+    res.json({ playersOnline: online.reduce((total, server) => total + server.players, 0), liveServers: online.length, matchesToday: (matches.data ?? []).length, activeClans: (clans.data ?? []).length });
+  }));
 
   // Frontend contract: every route below is mounted by server/_core/index.ts under /api/v1.
   router.post("/auth/logout", userRoute(async (req, res, user) => {
@@ -345,7 +387,7 @@ export function createLegacyXRouter() {
   }));
 
   router.get("/profile/:userId", userRoute(async (req, res, user) => {
-    const profile = await loadProfile(await resolveUserId(req.params.userId, user));
+    const profile = await loadProfile(resolveUserId(req.params.userId, user));
     res.json(mapUserProfile(profile.user, profile.links));
   }));
   router.put("/profile/me", userRoute(async (req, res, user) => {
@@ -357,14 +399,14 @@ export function createLegacyXRouter() {
     res.json(mapUserProfile(profile.user, profile.links));
   }));
   router.get("/profile/:userId/stats", userRoute(async (req, res, user) => {
-    const userId = await resolveUserId(req.params.userId, user);
+    const userId = resolveUserId(req.params.userId, user);
     const { data, error } = await db().from("player_stats").select("matches,wins,kd_ratio,rating").eq("user_id", userId).maybeSingle();
     legacyXError(error, "Unable to load player stats");
     if (!data) apiError(404, "Player stats were not found");
     res.json(mapProfileStats(data as DbRow));
   }));
   router.get("/profile/:userId/matches", userRoute(async (req, res, user) => {
-    const userId = await resolveUserId(req.params.userId, user);
+    const userId = resolveUserId(req.params.userId, user);
     const { data, error } = await db().from("player_match_history").select("map,result,score,kd").eq("user_id", userId).order("created_at", { ascending: false });
     legacyXError(error, "Unable to load match history");
     res.json(((data ?? []) as DbRow[]).map(mapRecentMatch));
@@ -377,7 +419,7 @@ export function createLegacyXRouter() {
     res.json({ links: input.links });
   }));
   router.get("/profile/:userId/penalties", userRoute(async (req, res, user) => {
-    const userId = await resolveUserId(req.params.userId, user);
+    const userId = resolveUserId(req.params.userId, user);
     const { data, error } = await db().from("penalties").select("*,users!penalties_user_id_fkey(username,avatar)").eq("user_id", userId).order("created_at", { ascending: false });
     legacyXError(error, "Unable to load penalties");
     res.json(((data ?? []) as DbRow[]).map(mapPenalty));
@@ -473,7 +515,7 @@ export function createLegacyXRouter() {
   router.get("/leaderboard", frontendLeaderboard);
   router.get("/players/leaderboard", frontendLeaderboard);
   router.get("/players/:playerId", userRoute(async (req, res) => {
-    const playerId = await resolveUserId(req.params.playerId, req.legacyUser!);
+    const playerId = userIdSchema.parse(req.params.playerId);
     const { data, error } = await db().from("player_stats").select("*,users!inner(id,username,avatar,level)").order("rating", { ascending: false });
     legacyXError(error, "Unable to load player");
     const rows = (data ?? []) as DbRow[];
