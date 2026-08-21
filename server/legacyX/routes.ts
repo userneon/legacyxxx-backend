@@ -252,9 +252,21 @@ function mapWalletTransaction(transaction: DbRow) {
   return { id: textValue(transaction.id), type: type === "charge" ? "Charge" : "Purchase", amount: numberValue(transaction.amount), method: textValue(transaction.method), date: timestampValue(transaction.created_at) };
 }
 
-function mapPenalty(penalty: DbRow) {
+function mapPenalty(penalty: DbRow, adminSteamIds: Map<string, string> = new Map()) {
   const user = firstRow(penalty.users) ?? {};
-  return { id: textValue(penalty.id), type: textValue(penalty.type), player: textValue(user.username), avatar: textValue(user.avatar), reason: textValue(penalty.reason), term: textValue(penalty.term), isPermanent: Boolean(penalty.is_permanent), isUnbanned: Boolean(penalty.is_unbanned), admin: textValue(penalty.admin_name), date: timestampValue(penalty.created_at) };
+  const admin = textValue(penalty.admin_name);
+  return { id: textValue(penalty.id), type: textValue(penalty.type), player: textValue(user.username), playerSteamId: textValue(user.steam_id) || undefined, avatar: textValue(user.avatar), reason: textValue(penalty.reason), term: textValue(penalty.term), isPermanent: Boolean(penalty.is_permanent), isUnbanned: Boolean(penalty.is_unbanned), admin, adminSteamId: adminSteamIds.get(admin) || undefined, date: timestampValue(penalty.created_at) };
+}
+
+async function mapPenaltiesWithProfileIdentities(rows: DbRow[], database: ReturnType<typeof legacyXDb>) {
+  const adminNames = Array.from(new Set(rows.map(row => textValue(row.admin_name)).filter(Boolean)));
+  const adminSteamIds = new Map<string, string>();
+  if (adminNames.length) {
+    const { data, error } = await database.from("users").select("username,steam_id").in("username", adminNames);
+    legacyXError(error, "Unable to resolve penalty issuer profiles");
+    for (const user of (data ?? []) as DbRow[]) adminSteamIds.set(textValue(user.username), textValue(user.steam_id));
+  }
+  return rows.map(row => mapPenalty(row, adminSteamIds));
 }
 
 function mapFeedback(feedback: DbRow, reviewerProfiles: Map<string, { steamId: string; avatar: string }> = new Map()) {
@@ -478,9 +490,9 @@ export function createLegacyXRouter() {
   }));
   router.get("/profile/:userId/penalties", userRoute(async (req, res, user) => {
     const userId = await resolveUserId(req.params.userId, user);
-    const { data, error } = await db().from("penalties").select("*,users!penalties_user_id_fkey(username,avatar)").eq("user_id", userId).order("created_at", { ascending: false });
+    const { data, error } = await db().from("penalties").select("*,users!penalties_user_id_fkey(username,steam_id,avatar)").eq("user_id", userId).order("created_at", { ascending: false });
     legacyXError(error, "Unable to load penalties");
-    res.json(((data ?? []) as DbRow[]).map(mapPenalty));
+    res.json(await mapPenaltiesWithProfileIdentities((data ?? []) as DbRow[], db()));
   }));
 
   const frontendMatches = userRoute(async (req, res, user) => {
@@ -698,11 +710,11 @@ export function createLegacyXRouter() {
 
   router.get("/moderation/penalties", userRoute(async (req, res) => {
     const filters = z.object({ type: penaltyTypeSchema.optional(), query: z.string().trim().min(1).max(64).optional() }).parse(req.query);
-    let query = db().from("penalties").select("*,users!penalties_user_id_fkey(username,avatar)").order("created_at", { ascending: false });
+    let query = db().from("penalties").select("*,users!penalties_user_id_fkey(username,steam_id,avatar)").order("created_at", { ascending: false });
     if (filters.type) query = query.eq("type", filters.type);
     const { data, error } = await query;
     legacyXError(error, "Unable to load penalties");
-    const penalties = ((data ?? []) as DbRow[]).map(mapPenalty);
+    const penalties = await mapPenaltiesWithProfileIdentities((data ?? []) as DbRow[], db());
     res.json(filters.query ? penalties.filter(penalty => penalty.player.toLowerCase().includes(filters.query!.toLowerCase())) : penalties);
   }));
   router.get("/moderation/penalties/stats", userRoute(async (_req, res) => {
@@ -712,10 +724,11 @@ export function createLegacyXRouter() {
     res.json({ totalBans: penalties.filter(row => row.type === "ban").length, activeBans: penalties.filter(row => row.type === "ban" && !row.is_unbanned).length, permanentBans: penalties.filter(row => row.type === "ban" && row.is_permanent).length, totalComms: penalties.filter(row => row.type === "comm").length, totalGags: penalties.filter(row => row.type === "gag").length });
   }));
   router.get("/penalties/:penaltyId", userRoute(async (req, res) => {
-    const { data, error } = await db().from("penalties").select("*,users!penalties_user_id_fkey(username,avatar)").eq("id", userIdSchema.parse(req.params.penaltyId)).maybeSingle();
+    const { data, error } = await db().from("penalties").select("*,users!penalties_user_id_fkey(username,steam_id,avatar)").eq("id", userIdSchema.parse(req.params.penaltyId)).maybeSingle();
     legacyXError(error, "Unable to load penalty");
     if (!data) apiError(404, "Penalty was not found");
-    res.json(mapPenalty(data as DbRow));
+    const [penalty] = await mapPenaltiesWithProfileIdentities([data as DbRow], db());
+    res.json(penalty);
   }));
 
   router.get("/feedback", userRoute(async (_req, res) => {
