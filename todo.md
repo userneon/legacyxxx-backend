@@ -77,3 +77,10 @@
 - [ ] Real ten-player CS2 server дээр duplicate result/XP, restart/crash, reconnect, fill, wrong-team join, backend timeout болон race-condition end-to-end validation хийх.
 - [x] GitHub commit/push болон remote clean status-г баталгаажуулах.
 - [ ] Production CS2 server private cfg placement болон real ten-player end-to-end smoke test хийх.
+
+## LEGACY-X Frontend Integration
+
+- [x] Uploaded frontend source-ийн stack, routes, assets, current mock data болон environment usage-г audit хийх.
+- [x] Existing AdminPlus, Rank, Community, Reconnect болон Match Core API contracts-т data model mapping хийх.
+- [x] Existing color system, layout, route structure, visual component and UI/UX behavior-г өөрчлөхгүйгээр frontend API client, endpoint adapter, loading/error states болон browser-safe public data boundary-г production-safe байдлаар хэрэгжүүлэх.
+- [ ] Frontend production build, responsive behavior, API integration smoke test болон deployment handoff-г баталгаажуулах.

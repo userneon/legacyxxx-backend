@@ -10,6 +10,7 @@ const seasonRoutes = require('./routes/seasons')
 const reconnectRoutes = require('./routes/reconnect')
 const pluginEventRoutes = require('./routes/plugin-events')
 const matchCoreRoutes = require('./routes/match-core')
+const publicRoutes = require('./routes/public')
 const authMiddleware = require('./middleware/auth')
 const pluginAuthMiddleware = require('./middleware/plugin-auth')
 const { value, validate } = require('./config')
@@ -21,6 +22,7 @@ const { port } = validate()
 app.disable('x-powered-by')
 app.set('trust proxy', Number.parseInt(value('TRUST_PROXY', '1'), 10))
 app.use(express.json({ limit: '128kb' }))
+app.use('/api/public', publicRoutes)
 
 app.get('/health', (_req, res) => res.json({
   ok: true,

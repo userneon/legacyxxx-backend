@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "nodemon src/index.js",
-    "check": "node --check src/index.js && node --check src/rank.js && node --check src/community.js && node --check src/seasons.js && node --check src/reconnect.js && node --check src/match-core.js && node --check src/middleware/plugin-auth.js && node --check src/routes/plugin-events.js && node --check src/routes/rank.js && node --check src/routes/community.js && node --check src/routes/seasons.js && node --check src/routes/reconnect.js && node --check src/routes/match-core.js",
+    "check": "node --check src/index.js && node --check src/rank.js && node --check src/community.js && node --check src/seasons.js && node --check src/reconnect.js && node --check src/match-core.js && node --check src/middleware/plugin-auth.js && node --check src/routes/plugin-events.js && node --check src/routes/rank.js && node --check src/routes/community.js && node --check src/routes/seasons.js && node --check src/routes/reconnect.js && node --check src/routes/match-core.js && node --check src/routes/public.js",
     "test:rank": "node test/rank-contract.test.js",
     "test:reconnect": "node test/reconnect-contract.test.js",
     "test:match-core": "node test/match-core-contract.test.js"
