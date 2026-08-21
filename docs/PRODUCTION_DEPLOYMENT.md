@@ -55,6 +55,12 @@ curl --fail http://127.0.0.1:3000/health
 
 The AdminPlus service under `adminplus/backend/` is a separate API-only bridge with its own package manifest and environment file. Do not run it through the root `npm start`; deploy it independently when RCON/plugin ingestion is required.
 
+## Steam login callback policy
+
+Steam OpenID is a browser navigation flow. After successful verification, the API writes short-lived access and refresh cookies, adds `Cache-Control: no-store`, and responds with a `302` redirect to `POST_LOGIN_REDIRECT` (or `FRONTEND_ORIGIN` when the explicit redirect is absent). It never renders access or refresh tokens in the browser response body based on the `Accept` header.
+
+If a token or service key is ever displayed in a terminal, browser, screenshot, chat, or log, treat it as exposed: revoke the affected refresh session, rotate the service/API key or JWT secret as appropriate, replace the server-local value, rebuild, and restart before testing login again.
+
 ## PM2 deployment
 
 Build before starting or reloading PM2, because `ecosystem.config.cjs` correctly runs `dist/index.js`.

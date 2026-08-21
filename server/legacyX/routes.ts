@@ -658,18 +658,13 @@ export function createLegacyXRouter() {
     const [accessToken, refreshToken] = await Promise.all([issueAccessToken(principal), createRefreshSession(principal.id)]);
     res.cookie("legacyx_access_token", accessToken, sessionCookieOptions(15 * 60 * 1000));
     res.cookie("legacyx_refresh_token", refreshToken, sessionCookieOptions(30 * 24 * 60 * 60 * 1000));
-    const profile = await loadProfile(principal.id);
-    const session = { accessToken, refreshToken, expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString(), user: mapUserProfile(profile.user, profile.links) };
-    if (req.accepts(["json"]) === "json") {
-      res.json(session);
-      return;
-    }
     const redirect = postLoginRedirect();
     if (redirect) {
+      res.setHeader("Cache-Control", "no-store");
       res.redirect(302, redirect);
       return;
     }
-    res.json(session);
+    apiError(500, "POST_LOGIN_REDIRECT or FRONTEND_ORIGIN must be configured for Steam login");
   }));
   router.post("/auth/logout", asyncRoute(async (req, res) => {
     await revokeRefreshSession(refreshTokenFromRequest(req));

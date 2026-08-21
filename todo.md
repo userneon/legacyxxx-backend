@@ -98,3 +98,14 @@
 - [x] `npm run build` нь explicit `dist/index.js` production runtime output үүсгэж, `npm start` нь artifact guard-ийн дараа тэр output-оос найдвартай асдаг minimal fix хэрэгжүүлэх.
 - [x] Clean clone, dependency install, build, strict placeholder runtime config, startup health check болон production dependency audit-г production-equivalent flow-оор шалгах.
 - [ ] Production Supabase болон Steam credentials-тэй server-local `.env` дээр external API integration test suite-г ажиллуулж баталгаажуулах.
+
+## Steam Browser Redirect and Session Exposure Fix
+
+- [x] Steam OpenID callback-ийн current Accept-header-driven JSON response behavior болон frontend session handoff contract-г audit хийх.
+- [x] Browser navigation-г `POST_LOGIN_REDIRECT` рүү redirect хийж, JSON session response-г browser callback-аас бүрэн арилгах.
+- [ ] Screenshot-д ил болсон callback access/refresh session-г revoke/rotate хийж, fresh Steam login → frontend profile redirect-г баталгаажуулах.
+
+## Credential Exposure and Steam Environment Remediation
+
+- [ ] User-shared screenshot-д ил болсон Supabase service-role, Steam Web API болон JWT secrets-ийг rotate хийх.
+- [ ] Root `.env` дээр rotated secret values-ийг тохируулж, secret value хэвлэхгүйгээр startup болон Steam callback-г дахин баталгаажуулах.
