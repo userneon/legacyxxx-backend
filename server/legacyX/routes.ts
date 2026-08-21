@@ -17,6 +17,7 @@ import {
   type PluginPrincipal,
 } from "./auth";
 import { apiRateLimitMax } from "./config";
+import { getFaceitProfileSnapshot, resolveFaceitNickname } from "./faceit";
 import { legacyXDb, legacyXError } from "./supabase";
 import { syncSteamUserProfile } from "./steamProfile";
 
@@ -142,6 +143,7 @@ async function writePluginAudit(plugin: PluginPrincipal, action: string, targetT
 }
 
 const profileUpdateSchema = z.object({ username: z.string().trim().min(2).max(64).optional(), avatar: z.string().max(2048).optional() });
+const faceitLinkSchema = z.object({ nickname: z.string().trim().min(1).max(64).regex(/^[A-Za-z0-9_.-]+$/, "FACEIT nickname contains unsupported characters") });
 const linksSchema = z.object({ links: z.array(z.string().url().max(2048)).max(20) });
 const clanSchema = z.object({ name: z.string().trim().min(2).max(64), tag: z.string().trim().min(1).max(6), logo: z.string().max(2048).optional(), thumbnail: z.string().url().max(2048).optional(), description: z.string().max(2000).optional(), region: z.string().trim().min(2).max(64).optional(), maxPlayers: z.number().int().min(1).max(100).optional() });
 const feedbackSchema = z.object({ name: z.string().trim().min(1).max(64).optional(), rating: z.number().int().min(1).max(5), message: z.string().trim().min(1).max(4000) });
@@ -406,6 +408,25 @@ export function createLegacyXRouter() {
     legacyXError(error, "Unable to update profile");
     const profile = await loadProfile(user.id);
     res.json(mapUserProfile(profile.user, profile.links));
+  }));
+  router.put("/profile/me/faceit", userRoute(async (req, res, user) => {
+    const { nickname } = faceitLinkSchema.parse(req.body);
+    const faceit = await resolveFaceitNickname(nickname);
+    const { error } = await db()
+      .from("users")
+      .update({ faceit_username: faceit.nickname, faceit_elo: faceit.elo, faceit_level: faceit.level })
+      .eq("id", user.id);
+    legacyXError(error, "Unable to link FACEIT profile");
+    res.json({ faceit });
+  }));
+  router.get("/profile/:userId/faceit", userRoute(async (req, res, user) => {
+    const profile = await loadProfile(resolveUserId(req.params.userId, user));
+    const nickname = textValue(profile.user.faceit_username);
+    if (!nickname) {
+      res.json({ linked: false });
+      return;
+    }
+    res.json(await getFaceitProfileSnapshot(nickname));
   }));
   router.get("/profile/:userId/stats", userRoute(async (req, res, user) => {
     const userId = resolveUserId(req.params.userId, user);
