@@ -257,10 +257,10 @@ function mapPenalty(penalty: DbRow) {
   return { id: textValue(penalty.id), type: textValue(penalty.type), player: textValue(user.username), avatar: textValue(user.avatar), reason: textValue(penalty.reason), term: textValue(penalty.term), isPermanent: Boolean(penalty.is_permanent), isUnbanned: Boolean(penalty.is_unbanned), admin: textValue(penalty.admin_name), date: timestampValue(penalty.created_at) };
 }
 
-function mapFeedback(feedback: DbRow, steamIds: Map<string, string> = new Map()) {
+function mapFeedback(feedback: DbRow, reviewerProfiles: Map<string, { steamId: string; avatar: string }> = new Map()) {
   const userId = textValue(feedback.user_id);
-  const steamId = steamIds.get(userId) || "";
-  return { id: textValue(feedback.id), steamId: steamId || undefined, name: textValue(feedback.name), rating: numberValue(feedback.rating), message: textValue(feedback.message), date: timestampValue(feedback.created_at) };
+  const reviewer = reviewerProfiles.get(userId);
+  return { id: textValue(feedback.id), steamId: reviewer?.steamId || undefined, avatar: reviewer?.avatar || undefined, name: textValue(feedback.name), rating: numberValue(feedback.rating), message: textValue(feedback.message), date: timestampValue(feedback.created_at) };
 }
 
 function noBody(req: Request) {
@@ -273,10 +273,10 @@ export function createLegacyXRouter() {
   const mapFeedbackRows = async (rows: DbRow[]) => {
     const userIds = rows.map(row => textValue(row.user_id)).filter((userId, index, values) => Boolean(userId) && values.indexOf(userId) === index);
     if (userIds.length === 0) return rows.map(row => mapFeedback(row));
-    const { data, error } = await db().from("users").select("id,steam_id").in("id", userIds);
+    const { data, error } = await db().from("users").select("id,steam_id,avatar").in("id", userIds);
     legacyXError(error, "Unable to resolve feedback reviewer profiles");
-    const steamIds = new Map(((data ?? []) as DbRow[]).map(user => [textValue(user.id), textValue(user.steam_id)]));
-    return rows.map(row => mapFeedback(row, steamIds));
+    const reviewerProfiles = new Map(((data ?? []) as DbRow[]).map(user => [textValue(user.id), { steamId: textValue(user.steam_id), avatar: textValue(user.avatar) }]));
+    return rows.map(row => mapFeedback(row, reviewerProfiles));
   };
 
   router.use(rateLimit({
@@ -727,7 +727,7 @@ export function createLegacyXRouter() {
     const input = z.object({ rating: z.number().int().min(1).max(5), message: z.string().trim().min(1).max(4000) }).parse(req.body);
     const { data, error } = await db().from("feedback").insert({ user_id: user.id, name: user.username, rating: input.rating, message: input.message }).select("id,user_id,name,rating,message,created_at").single();
     legacyXError(error, "Unable to submit feedback");
-    res.status(201).json(mapFeedback(data as DbRow, new Map([[user.id, user.steamId]])));
+    res.status(201).json(mapFeedback(data as DbRow, new Map([[user.id, { steamId: user.steamId, avatar: "" }]])));
   }));
 
   router.get("/search/players", userRoute(async (req, res) => {
