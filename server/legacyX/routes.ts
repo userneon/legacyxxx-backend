@@ -185,6 +185,7 @@ function statsRow(user: DbRow) {
 function mapUserProfile(user: DbRow, links: DbRow[] = []) {
   const profile: Record<string, unknown> = {
     id: textValue(user.id),
+    steamId: textValue(user.steam_id),
     username: textValue(user.username),
     avatar: textValue(user.avatar),
     level: numberValue(user.level),
@@ -216,12 +217,12 @@ function mapMatch(match: DbRow, favorite = false) {
 
 function mapLeader(stats: DbRow, index: number) {
   const user = firstRow(stats.users) ?? {};
-  return { id: textValue(user.id), rank: index + 1, name: textValue(user.username), level: numberValue(user.level), experience: numberValue(stats.experience), kills: numberValue(stats.kills), deaths: numberValue(stats.deaths), kd: numberValue(stats.kd_ratio), headshots: numberValue(stats.headshots), playedHours: numberValue(stats.played_hours), lastPlayed: timestampValue(stats.last_played_at), avatar: textValue(user.avatar) };
+  return { id: textValue(user.id), steamId: textValue(user.steam_id), rank: index + 1, name: textValue(user.username), level: numberValue(user.level), experience: numberValue(stats.experience), kills: numberValue(stats.kills), deaths: numberValue(stats.deaths), kd: numberValue(stats.kd_ratio), headshots: numberValue(stats.headshots), playedHours: numberValue(stats.played_hours), lastPlayed: timestampValue(stats.last_played_at), avatar: textValue(user.avatar) };
 }
 
 function mapLeaderFromUser(user: DbRow, index: number) {
   const stats = statsRow(user);
-  return { id: textValue(user.id), rank: index + 1, name: textValue(user.username), level: numberValue(user.level), experience: numberValue(stats.experience), kills: numberValue(stats.kills), deaths: numberValue(stats.deaths), kd: numberValue(stats.kd_ratio), headshots: numberValue(stats.headshots), playedHours: numberValue(stats.played_hours), lastPlayed: timestampValue(stats.last_played_at), avatar: textValue(user.avatar) };
+  return { id: textValue(user.id), steamId: textValue(user.steam_id), rank: index + 1, name: textValue(user.username), level: numberValue(user.level), experience: numberValue(stats.experience), kills: numberValue(stats.kills), deaths: numberValue(stats.deaths), kd: numberValue(stats.kd_ratio), headshots: numberValue(stats.headshots), playedHours: numberValue(stats.played_hours), lastPlayed: timestampValue(stats.last_played_at), avatar: textValue(user.avatar) };
 }
 
 function memberCount(clan: DbRow) {
@@ -235,7 +236,7 @@ function mapClanCard(clan: DbRow, currentPlayers = memberCount(clan)) {
 
 function mapClanMember(member: DbRow) {
   const user = firstRow(member.users) ?? {};
-  return { id: textValue(user.id || member.user_id), name: textValue(user.username), role: textValue(member.role), avatar: textValue(user.avatar), description: "" };
+  return { id: textValue(user.id || member.user_id), steamId: textValue(user.steam_id), name: textValue(user.username), role: textValue(member.role), avatar: textValue(user.avatar), description: "" };
 }
 
 function mapTournamentMatch(match: DbRow) {
@@ -256,9 +257,10 @@ function mapPenalty(penalty: DbRow) {
   return { id: textValue(penalty.id), type: textValue(penalty.type), player: textValue(user.username), avatar: textValue(user.avatar), reason: textValue(penalty.reason), term: textValue(penalty.term), isPermanent: Boolean(penalty.is_permanent), isUnbanned: Boolean(penalty.is_unbanned), admin: textValue(penalty.admin_name), date: timestampValue(penalty.created_at) };
 }
 
-function mapFeedback(feedback: DbRow) {
+function mapFeedback(feedback: DbRow, steamIds: Map<string, string> = new Map()) {
   const userId = textValue(feedback.user_id);
-  return { id: textValue(feedback.id), userId: userId || undefined, name: textValue(feedback.name), rating: numberValue(feedback.rating), message: textValue(feedback.message), date: timestampValue(feedback.created_at) };
+  const steamId = steamIds.get(userId) || "";
+  return { id: textValue(feedback.id), steamId: steamId || undefined, name: textValue(feedback.name), rating: numberValue(feedback.rating), message: textValue(feedback.message), date: timestampValue(feedback.created_at) };
 }
 
 function noBody(req: Request) {
@@ -268,6 +270,14 @@ function noBody(req: Request) {
 export function createLegacyXRouter() {
   const router = Router();
   const db = () => legacyXDb();
+  const mapFeedbackRows = async (rows: DbRow[]) => {
+    const userIds = rows.map(row => textValue(row.user_id)).filter((userId, index, values) => Boolean(userId) && values.indexOf(userId) === index);
+    if (userIds.length === 0) return rows.map(row => mapFeedback(row));
+    const { data, error } = await db().from("users").select("id,steam_id").in("id", userIds);
+    legacyXError(error, "Unable to resolve feedback reviewer profiles");
+    const steamIds = new Map(((data ?? []) as DbRow[]).map(user => [textValue(user.id), textValue(user.steam_id)]));
+    return rows.map(row => mapFeedback(row, steamIds));
+  };
 
   router.use(rateLimit({
     windowMs: 60_000,
@@ -294,7 +304,16 @@ export function createLegacyXRouter() {
     next();
   });
 
-  const resolveUserId = (rawUserId: string, caller: LegacyUser) => rawUserId === "me" ? caller.id : userIdSchema.parse(rawUserId);
+  const resolveUserId = async (rawIdentity: string, caller: LegacyUser) => {
+    if (rawIdentity === "me") return caller.id;
+    if (/^\d{15,20}$/.test(rawIdentity)) {
+      const { data, error } = await db().from("users").select("id").eq("steam_id", rawIdentity).maybeSingle();
+      legacyXError(error, "Unable to resolve SteamID64 profile");
+      if (!data) apiError(404, "Player was not found");
+      return textValue(data.id);
+    }
+    return userIdSchema.parse(rawIdentity);
+  };
   const loadProfile = async (id: string) => {
     const [userResult, linksResult] = await Promise.all([
       db().from("users").select("id,steam_id,username,avatar,level,rank,balance,faceit_username,faceit_elo,faceit_level,is_staff,player_stats(*)").eq("id", id).maybeSingle(),
@@ -307,7 +326,7 @@ export function createLegacyXRouter() {
   const loadClanDetail = async (clanId: string) => {
     const [clanResult, membersResult] = await Promise.all([
       db().from("clans").select("*,clan_members(count)").eq("id", clanId).maybeSingle(),
-      db().from("clan_members").select("role,user_id,users(id,username,avatar)").eq("clan_id", clanId).order("created_at"),
+      db().from("clan_members").select("role,user_id,users(id,steam_id,username,avatar)").eq("clan_id", clanId).order("created_at"),
     ]);
     legacyXError(clanResult.error || membersResult.error, "Unable to load clan");
     if (!clanResult.data) apiError(404, "Clan was not found");
@@ -399,7 +418,7 @@ export function createLegacyXRouter() {
   }));
 
   router.get("/profile/:userId", userRoute(async (req, res, user) => {
-    const profile = await loadProfile(resolveUserId(req.params.userId, user));
+    const profile = await loadProfile(await resolveUserId(req.params.userId, user));
     res.json(mapUserProfile(profile.user, profile.links));
   }));
   router.put("/profile/me", userRoute(async (req, res, user) => {
@@ -421,7 +440,7 @@ export function createLegacyXRouter() {
     res.json({ faceit });
   }));
   router.get("/profile/:userId/faceit", userRoute(async (req, res, user) => {
-    const profile = await loadProfile(resolveUserId(req.params.userId, user));
+    const profile = await loadProfile(await resolveUserId(req.params.userId, user));
     const steamId = textValue(profile.user.steam_id);
     try {
       res.json(await getFaceitProfileSnapshotForSteamId(steamId));
@@ -438,14 +457,14 @@ export function createLegacyXRouter() {
     res.json(await getFaceitProfileSnapshot(nickname));
   }));
   router.get("/profile/:userId/stats", userRoute(async (req, res, user) => {
-    const userId = resolveUserId(req.params.userId, user);
+    const userId = await resolveUserId(req.params.userId, user);
     const { data, error } = await db().from("player_stats").select("matches,wins,kd_ratio,rating").eq("user_id", userId).maybeSingle();
     legacyXError(error, "Unable to load player stats");
     if (!data) apiError(404, "Player stats were not found");
     res.json(mapProfileStats(data as DbRow));
   }));
   router.get("/profile/:userId/matches", userRoute(async (req, res, user) => {
-    const userId = resolveUserId(req.params.userId, user);
+    const userId = await resolveUserId(req.params.userId, user);
     const { data, error } = await db().from("player_match_history").select("map,result,score,kd").eq("user_id", userId).order("created_at", { ascending: false });
     legacyXError(error, "Unable to load match history");
     res.json(((data ?? []) as DbRow[]).map(mapRecentMatch));
@@ -458,7 +477,7 @@ export function createLegacyXRouter() {
     res.json({ links: input.links });
   }));
   router.get("/profile/:userId/penalties", userRoute(async (req, res, user) => {
-    const userId = resolveUserId(req.params.userId, user);
+    const userId = await resolveUserId(req.params.userId, user);
     const { data, error } = await db().from("penalties").select("*,users!penalties_user_id_fkey(username,avatar)").eq("user_id", userId).order("created_at", { ascending: false });
     legacyXError(error, "Unable to load penalties");
     res.json(((data ?? []) as DbRow[]).map(mapPenalty));
@@ -702,13 +721,13 @@ export function createLegacyXRouter() {
   router.get("/feedback", userRoute(async (_req, res) => {
     const { data, error } = await db().from("feedback").select("id,user_id,name,rating,message,created_at").order("created_at", { ascending: false });
     legacyXError(error, "Unable to load feedback");
-    res.json(((data ?? []) as DbRow[]).map(mapFeedback));
+    res.json(await mapFeedbackRows((data ?? []) as DbRow[]));
   }));
   router.post("/feedback", userRoute(async (req, res, user) => {
     const input = z.object({ rating: z.number().int().min(1).max(5), message: z.string().trim().min(1).max(4000) }).parse(req.body);
     const { data, error } = await db().from("feedback").insert({ user_id: user.id, name: user.username, rating: input.rating, message: input.message }).select("id,user_id,name,rating,message,created_at").single();
     legacyXError(error, "Unable to submit feedback");
-    res.status(201).json(mapFeedback(data as DbRow));
+    res.status(201).json(mapFeedback(data as DbRow, new Map([[user.id, user.steamId]])));
   }));
 
   router.get("/search/players", userRoute(async (req, res) => {
