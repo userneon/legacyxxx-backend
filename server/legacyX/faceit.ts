@@ -103,6 +103,10 @@ export async function getFaceitProfileSnapshot(nickname: string): Promise<Faceit
   if (cached && cached.expiresAt > Date.now()) return cached.value;
 
   const player = await faceitRequest(`/players?nickname=${encodeURIComponent(nickname)}`);
+  return buildFaceitProfileSnapshot(player, cacheKey, nickname);
+}
+
+async function buildFaceitProfileSnapshot(player: FaceitRecord, cacheKey: string, fallbackNickname: string): Promise<FaceitProfileSnapshot> {
   const playerId = stringValue(player.player_id);
   if (!playerId) apiError(404, "FACEIT player was not found");
   const game = cs2Game(player);
@@ -112,7 +116,7 @@ export async function getFaceitProfileSnapshot(nickname: string): Promise<Faceit
   ]);
   const lifetime = objectValue(statistics.lifetime);
   const historyItems = Array.isArray(history.items) ? history.items : [];
-  const resolvedNickname = stringValue(player.nickname) || nickname;
+  const resolvedNickname = stringValue(player.nickname) || fallbackNickname;
   const snapshot: FaceitProfileSnapshot = {
     linked: true,
     playerId,
@@ -146,4 +150,26 @@ export async function getFaceitProfileSnapshot(nickname: string): Promise<Faceit
   };
   profileCache.set(cacheKey, { value: snapshot, expiresAt: Date.now() + CACHE_TTL_MS });
   return snapshot;
+}
+
+/** Resolve a FACEIT player from the Steam game account linked to their FACEIT profile. */
+export async function getFaceitProfileSnapshotForSteamId(steamId: string): Promise<FaceitProfileSnapshot> {
+  const normalizedSteamId = steamId.trim();
+  if (!/^\d{17}$/.test(normalizedSteamId)) apiError(404, "Steam account was not found");
+  const cacheKey = `steam:${normalizedSteamId}`;
+  const cached = profileCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) return cached.value;
+
+  // FACEIT has historically exposed Counter-Strike game accounts as both
+  // `cs2` and `csgo`; try the modern identifier first, then the legacy one.
+  for (const game of ["cs2", "csgo"]) {
+    try {
+      const player = await faceitRequest(`/players?game=${game}&game_player_id=${encodeURIComponent(normalizedSteamId)}`);
+      return buildFaceitProfileSnapshot(player, cacheKey, normalizedSteamId);
+    } catch (error) {
+      const statusCode = error && typeof error === "object" && "statusCode" in error ? Number((error as { statusCode?: unknown }).statusCode) : 0;
+      if (statusCode !== 404) throw error;
+    }
+  }
+  apiError(404, "No FACEIT profile is linked to this Steam account");
 }

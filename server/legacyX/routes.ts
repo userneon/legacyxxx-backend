@@ -17,7 +17,7 @@ import {
   type PluginPrincipal,
 } from "./auth";
 import { apiRateLimitMax } from "./config";
-import { getFaceitProfileSnapshot, resolveFaceitNickname } from "./faceit";
+import { getFaceitProfileSnapshot, getFaceitProfileSnapshotForSteamId, resolveFaceitNickname } from "./faceit";
 import { legacyXDb, legacyXError } from "./supabase";
 import { syncSteamUserProfile } from "./steamProfile";
 
@@ -421,6 +421,14 @@ export function createLegacyXRouter() {
   }));
   router.get("/profile/:userId/faceit", userRoute(async (req, res, user) => {
     const profile = await loadProfile(resolveUserId(req.params.userId, user));
+    const steamId = textValue(profile.user.steam_id);
+    try {
+      res.json(await getFaceitProfileSnapshotForSteamId(steamId));
+      return;
+    } catch (error) {
+      const statusCode = error && typeof error === "object" && "statusCode" in error ? Number((error as { statusCode?: unknown }).statusCode) : 0;
+      if (statusCode !== 404) throw error;
+    }
     const nickname = textValue(profile.user.faceit_username);
     if (!nickname) {
       res.json({ linked: false });
