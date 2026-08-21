@@ -94,6 +94,7 @@
 
 ## LEGACY-X Backend Production Build Fix
 
-- [ ] Existing package scripts, Node source entrypoint, TypeScript/build configuration болон deployment assumption-г audit хийх.
-- [ ] `npm run build` нь production runtime output үүсгэж, `npm start` нь тэр output-оос эсвэл architecture-д таарсан source entrypoint-оос найдвартай асдаг minimal fix хэрэгжүүлэх.
-- [ ] Clean clone, dependency install, `.env` placement, build, startup health check болон API regression-ийг production-equivalent flow-оор шалгах.
+- [x] Existing package scripts, Node source entrypoint, TypeScript/build configuration болон deployment assumption-г audit хийх.
+- [x] `npm run build` нь explicit `dist/index.js` production runtime output үүсгэж, `npm start` нь artifact guard-ийн дараа тэр output-оос найдвартай асдаг minimal fix хэрэгжүүлэх.
+- [x] Clean clone, dependency install, build, strict placeholder runtime config, startup health check болон production dependency audit-г production-equivalent flow-оор шалгах.
+- [ ] Production Supabase болон Steam credentials-тэй server-local `.env` дээр external API integration test suite-г ажиллуулж баталгаажуулах.
