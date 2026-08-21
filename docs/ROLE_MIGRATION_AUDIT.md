@@ -5,12 +5,11 @@
 
 ## Confirmed Role Migration State
 
-The production `legacy_x.users` table now has a non-null `role` field constrained to `Owner`, `Founder`, `Manager`, `Admin`, `Player`, `Designer`, and `Developer`. Existing users were backfilled safely: the prior `is_staff=true` account became `Admin`, while the remaining accounts became `Player`. A database trigger now derives legacy `is_staff` from `role <> 'Player'` during the compatibility period.
+The production `legacy_x.users` table now has a non-null `role` field constrained to `Owner`, `Founder`, `Manager`, `Admin`, `Player`, `Designer`, and `Developer`. Every Steam-authenticated user defaults to `Player`; elevated roles are assigned only through an explicit manual update. A database trigger derives legacy `is_staff` from `role <> 'Player'` during the compatibility period.
 
 | Role | Legacy `is_staff` | Current users |
 |---|---:|---:|
-| Admin | true | 1 |
-| Player | false | 3 |
+| Player | false | All current Steam-authenticated users after the Player-default migration |
 
 The application source now treats `role` as canonical and preserves `is_staff` only for compatibility with existing consumers and access tokens.
 

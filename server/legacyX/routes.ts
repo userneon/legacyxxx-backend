@@ -187,7 +187,7 @@ function statsRow(user: DbRow) {
 }
 
 function mapUserProfile(user: DbRow, links: DbRow[] = []) {
-  const role: UserRole = isUserRole(user.role) ? user.role : user.is_staff ? "Admin" : "Player";
+  const role: UserRole = isUserRole(user.role) ? user.role : "Player";
   const profile: Record<string, unknown> = {
     id: textValue(user.id),
     steamId: textValue(user.steam_id),
@@ -782,7 +782,7 @@ export function createLegacyXRouter() {
     if (!userId) apiError(500, "Steam user was not created");
     await syncSteamUserProfile(steamId);
     const user = await getUserWithStats(userId);
-    const role: UserRole = isUserRole(user.role) ? user.role : user.is_staff ? "Admin" : "Player";
+    const role: UserRole = isUserRole(user.role) ? user.role : "Player";
     const principal: LegacyUser = { id: user.id, steamId: user.steam_id, username: user.username, role, isStaff: isStaffRole(role) };
     const [accessToken, refreshToken] = await Promise.all([issueAccessToken(principal), createRefreshSession(principal.id)]);
     res.cookie("legacyx_access_token", accessToken, sessionCookieOptions(15 * 60 * 1000));

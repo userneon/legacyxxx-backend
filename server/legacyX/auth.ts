@@ -62,7 +62,7 @@ export async function verifyAccessToken(token: string): Promise<LegacyUser> {
   if (!payload.sub || typeof payload.steamId !== "string" || typeof payload.username !== "string") {
     throw Object.assign(new Error("Invalid access token payload"), { statusCode: 401 });
   }
-  const role = isUserRole(payload.role) ? payload.role : payload.isStaff === true ? "Admin" : "Player";
+  const role = isUserRole(payload.role) ? payload.role : "Player";
   return {
     id: payload.sub,
     steamId: payload.steamId,
@@ -105,7 +105,7 @@ export async function rotateRefreshSession(refreshToken: string): Promise<Legacy
     .maybeSingle();
   legacyXError(userError, "Unable to read session user");
   if (!user) throw Object.assign(new Error("Session user no longer exists"), { statusCode: 401 });
-  const role = isUserRole(user.role) ? user.role : user.is_staff ? "Admin" : "Player";
+  const role = isUserRole(user.role) ? user.role : "Player";
   return { id: user.id, steamId: user.steam_id, username: user.username, role, isStaff: isStaffRole(role) };
 }
 
