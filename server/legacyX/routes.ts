@@ -257,7 +257,8 @@ function mapPenalty(penalty: DbRow) {
 }
 
 function mapFeedback(feedback: DbRow) {
-  return { id: textValue(feedback.id), name: textValue(feedback.name), rating: numberValue(feedback.rating), message: textValue(feedback.message), date: timestampValue(feedback.created_at) };
+  const userId = textValue(feedback.user_id);
+  return { id: textValue(feedback.id), userId: userId || undefined, name: textValue(feedback.name), rating: numberValue(feedback.rating), message: textValue(feedback.message), date: timestampValue(feedback.created_at) };
 }
 
 function noBody(req: Request) {
@@ -699,13 +700,13 @@ export function createLegacyXRouter() {
   }));
 
   router.get("/feedback", userRoute(async (_req, res) => {
-    const { data, error } = await db().from("feedback").select("id,name,rating,message,created_at").order("created_at", { ascending: false });
+    const { data, error } = await db().from("feedback").select("id,user_id,name,rating,message,created_at").order("created_at", { ascending: false });
     legacyXError(error, "Unable to load feedback");
     res.json(((data ?? []) as DbRow[]).map(mapFeedback));
   }));
   router.post("/feedback", userRoute(async (req, res, user) => {
     const input = z.object({ rating: z.number().int().min(1).max(5), message: z.string().trim().min(1).max(4000) }).parse(req.body);
-    const { data, error } = await db().from("feedback").insert({ user_id: user.id, name: user.username, rating: input.rating, message: input.message }).select("id,name,rating,message,created_at").single();
+    const { data, error } = await db().from("feedback").insert({ user_id: user.id, name: user.username, rating: input.rating, message: input.message }).select("id,user_id,name,rating,message,created_at").single();
     legacyXError(error, "Unable to submit feedback");
     res.status(201).json(mapFeedback(data as DbRow));
   }));
