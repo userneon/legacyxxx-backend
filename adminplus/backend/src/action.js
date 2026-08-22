@@ -1,12 +1,10 @@
 const { executeCommand } = require('./rcon')
 const { recordAction } = require('./audit')
-const { notifyDiscord } = require('./discord')
 
 async function runAction(req, res, { command, action, targetType = 'server', targetId = null, metadata = {}, response = {} }) {
   try {
     await executeCommand(command)
     await recordAction({ req, action, targetType, targetId, command, metadata })
-    void notifyDiscord({ action, targetType, targetId, requestId: req.adminplusRequestId, metadata })
     res.json({ ok: true, ...response })
   } catch (error) {
     res.status(502).json({ error: error.message })

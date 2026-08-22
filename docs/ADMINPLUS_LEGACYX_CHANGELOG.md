@@ -8,7 +8,7 @@ LEGACY-X source-ийг гурван private GitHub repository болгон са�
 
 | Repository | Одоогийн агуулга | Production responsibility |
 |---|---|---|
-| `legacyxxx-backend` | `server`, `shared`, `drizzle`, `supabase`, `adminplus/backend`, docs | API, database, auth, RCON bridge, audit, Discord notifier |
+| `legacyxxx-backend` | `server`, `shared`, `drizzle`, `supabase`, `adminplus/backend`, docs | API, database, auth, RCON bridge, audit |
 | `legacyxxx-plugins` | `adminplus/plugin/AdminPlus` | CS2 CounterStrikeSharp plugin build/deploy |
 | `legacyxxx-frontend` | README болон `.gitignore` בלבד | Одоогоор intentionally empty; дараагийн UI implementation энд эхэлнэ |
 
@@ -16,7 +16,7 @@ LEGACY-X source-ийг гурван private GitHub repository болгон са�
 
 Backend repository-г frontend-гүй API-only болгосон. `server/_core/index.ts` нь Vite/static serving хийхгүй бөгөөд `/api/v1` болон `/health` endpoint ажиллуулна. `package.json`-ийн `build` script нь зөвхөн esbuild API artifact үүсгэнэ. `tsconfig.json` нь client source болон Vite type dependency-г хассан.
 
-AdminPlus backend нь `adminplus/backend` дотор байрлаж, RCON host/password, API secret, Supabase service-role key, CORS origin, audit болон Discord webhook тохиргоог `.env.example`-ээр тодорхойлсон. Real `.env` файл repository-д commit хийгдээгүй.
+AdminPlus backend нь `adminplus/backend` дотор байрлаж, RCON host/password, API secret, Supabase service-role key, CORS origin болон audit тохиргоог `.env.example`-ээр тодорхойлсон. Real `.env` файл repository-д commit хийгдээгүй.
 
 ## Plugins өөрчлөлт
 
@@ -41,7 +41,6 @@ Output DLL-г CS2 server-ийн `csgo/addons/counterstrikesharp/plugins/AdminPlu
 | RCON | Raw `/api/rcon` default disabled | Arbitrary command surface багасна |
 | Input validation | userid, amount, HP, team, weapon, map, workshop ID allowlist/range validation | Command injection болон malformed action багасна |
 | Database | `legacy_x.adminplus_audit_logs` migration | Admin action history хадгална |
-| Discord | Optional outbound webhook embed | Staff audit channel notification |
 | Runtime | Private host binding, explicit CORS, body limit, graceful shutdown | Nginx + PM2 production topology-д нийцнэ |
 | Secret hygiene | `.env` ignore rules, no real values in Git | Credential leakage-ээс хамгаална |
 
@@ -62,4 +61,3 @@ Output DLL-г CS2 server-ийн `csgo/addons/counterstrikesharp/plugins/AdminPlu
 
 [1]: https://github.com/dede177/cs2-admin-plus "dede177/cs2-admin-plus upstream Admin Plus panel"
 [2]: https://github.com/roflmuffin/CounterStrikeSharp "CounterStrikeSharp framework"
-[3]: https://support.discord.com/hc/en-us/articles/228383668-Intro-to-Webhooks "Discord webhook documentation"

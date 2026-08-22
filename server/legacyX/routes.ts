@@ -89,14 +89,6 @@ function pluginRoute(scope: string, handler: (req: ApiRequest, res: Response, pl
   });
 }
 
-function botRoute(scope: string, handler: (req: ApiRequest, res: Response, bot: PluginPrincipal) => Promise<void>) {
-  return asyncRoute(async (req, res) => {
-    const bot = await authenticatePlugin(pluginCredential(req), scope);
-    req.plugin = bot;
-    await handler(req, res, bot);
-  });
-}
-
 function requestOrigin(req: Request) {
   const configuredOrigin = process.env.PUBLIC_API_ORIGIN?.trim().replace(/\/$/, "");
   if (configuredOrigin) return configuredOrigin;
@@ -415,34 +407,6 @@ export function createLegacyXRouter() {
     legacyXError(clans.error || matches.error, "Unable to load public overview");
     const online = servers.filter(server => server.status !== "offline");
     res.json({ playersOnline: online.reduce((total, server) => total + server.players, 0), liveServers: online.length, matchesToday: (matches.data ?? []).length, activeClans: (clans.data ?? []).length });
-  }));
-
-  // Server-side community bots must authenticate with a scoped service token.
-  // Never return wallet, profile links, refresh/session data, or private account fields here.
-  router.get("/bot/players/:steamId", botRoute("bot:read", async (req, res) => {
-    const steamId = z.string().regex(/^7656\d{13}$/, "Invalid SteamID64").parse(req.params.steamId);
-    const { data, error } = await db()
-      .from("users")
-      .select("steam_id,username,avatar,level,rank,role,faceit_username,faceit_elo,faceit_level,player_stats(matches,wins,kills,deaths,headshots,kd_ratio,rating,experience,played_hours)")
-      .eq("steam_id", steamId)
-      .maybeSingle();
-    legacyXError(error, "Unable to load bot player summary");
-    if (!data) apiError(404, "Player was not found");
-    const row = data as DbRow;
-    const role: UserRole = isUserRole(row.role) ? row.role : "Player";
-    const payload: Record<string, unknown> = {
-      steamId: textValue(row.steam_id),
-      username: textValue(row.username),
-      avatar: textValue(row.avatar),
-      role,
-      level: numberValue(row.level),
-      rank: textValue(row.rank),
-      stats: mapProfileStats(statsRow(row)),
-    };
-    if (row.faceit_username && row.faceit_elo != null && row.faceit_level != null) {
-      payload.faceit = { username: textValue(row.faceit_username), elo: numberValue(row.faceit_elo), level: numberValue(row.faceit_level) };
-    }
-    res.json(payload);
   }));
 
   // Frontend contract: every route below is mounted by server/_core/index.ts under /api/v1.
@@ -803,7 +767,10 @@ export function createLegacyXRouter() {
       db().from("community_partners").select("id,name,description,type,url").order("created_at"),
     ]);
     legacyXError(creators.error || partners.error, "Unable to load community content");
-    res.json({ creators: creators.data ?? [], partners: (partners.data ?? []).map((partner: DbRow) => ({ id: textValue(partner.id), name: textValue(partner.name), description: textValue(partner.description), type: textValue(partner.type) as "website" | "discord", url: textValue(partner.url) })) });
+    const websitePartners = ((partners.data ?? []) as DbRow[])
+      .filter((partner) => textValue(partner.type) === "website")
+      .map((partner) => ({ id: textValue(partner.id), name: textValue(partner.name), description: textValue(partner.description), type: "website" as const, url: textValue(partner.url) }));
+    res.json({ creators: creators.data ?? [], partners: websitePartners });
   }));
 
   router.get("/health", (_req, res) => res.json({ ok: true, service: "legacy-x-api" }));
@@ -1147,7 +1114,7 @@ export function createLegacyXRouter() {
     res.json({ creators: creators.data ?? [], partners: partners.data ?? [] });
   }));
   router.post("/community/content", pluginRoute("community:write", async (req, res, plugin) => {
-    const input = z.object({ kind: z.enum(["creator", "partner"]), name: z.string().trim().min(1).max(100), handle: z.string().trim().max(100).optional(), description: z.string().trim().max(2000).optional(), type: z.enum(["website", "discord"]).optional(), url: z.string().url().max(2048) }).parse(req.body);
+    const input = z.object({ kind: z.enum(["creator", "partner"]), name: z.string().trim().min(1).max(100), handle: z.string().trim().max(100).optional(), description: z.string().trim().max(2000).optional(), type: z.literal("website").optional(), url: z.string().url().max(2048) }).parse(req.body);
     const { data, error } = await db().rpc("plugin_write_community_content", { p_plugin_id: plugin.id, p_kind: input.kind, p_name: input.name, p_handle: input.handle ?? null, p_description: input.description ?? null, p_partner_type: input.type ?? "website", p_url: input.url });
     legacyXError(error, "Unable to write community content");
     res.status(201).json({ contentId: data });
