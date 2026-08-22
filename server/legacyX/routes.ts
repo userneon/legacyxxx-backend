@@ -22,6 +22,7 @@ import {
 import { apiRateLimitMax } from "./config";
 import { getFaceitProfileSnapshot, getFaceitProfileSnapshotForSteamId, resolveFaceitNickname } from "./faceit";
 import { legacyXDb, legacyXError } from "./supabase";
+import { resolvePublicSteamBackground } from "./steamBackground";
 import { syncSteamUserProfile } from "./steamProfile";
 
 type ApiRequest = Request & { legacyUser?: LegacyUser; plugin?: PluginPrincipal };
@@ -437,7 +438,9 @@ export function createLegacyXRouter() {
 
   router.get("/profile/:userId", userRoute(async (req, res, user) => {
     const profile = await loadProfile(await resolveUserId(req.params.userId, user));
-    res.json(mapUserProfile(profile.user, profile.links));
+    const payload = mapUserProfile(profile.user, profile.links);
+    payload.steamBackground = await resolvePublicSteamBackground(textValue(profile.user.steam_id));
+    res.json(payload);
   }));
   router.put("/profile/me", userRoute(async (req, res, user) => {
     const updates = profileUpdateSchema.parse(req.body);
