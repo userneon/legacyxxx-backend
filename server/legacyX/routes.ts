@@ -747,9 +747,20 @@ export function createLegacyXRouter() {
   }));
   router.post("/feedback", userRoute(async (req, res, user) => {
     const input = z.object({ rating: z.number().int().min(1).max(5), message: z.string().trim().min(1).max(4000) }).parse(req.body);
-    const { data, error } = await db().from("feedback").insert({ user_id: user.id, name: user.username, rating: input.rating, message: input.message }).select("id,user_id,name,rating,message,created_at").single();
+    const { data, error } = await db().rpc("submit_feedback_weekly", {
+      p_user_id: user.id,
+      p_name: user.username,
+      p_rating: input.rating,
+      p_message: input.message,
+    });
     legacyXError(error, "Unable to submit feedback");
-    res.status(201).json(mapFeedback(data as DbRow, new Map([[user.id, { steamId: user.steamId, avatar: "" }]])));
+    const outcome = (data ?? {}) as { accepted?: boolean; next_eligible_at?: string; feedback?: DbRow };
+    if (!outcome.accepted) {
+      const nextEligibleAt = textValue(outcome.next_eligible_at);
+      apiError(429, nextEligibleAt ? `You can submit your next review after ${nextEligibleAt}.` : "You can submit one review every 7 days.");
+    }
+    if (!outcome.feedback) apiError(500, "Feedback submission did not return a review.");
+    res.status(201).json(mapFeedback(outcome.feedback, new Map([[user.id, { steamId: user.steamId, avatar: "" }]])));
   }));
 
   router.get("/search/players", userRoute(async (req, res) => {
