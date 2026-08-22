@@ -222,9 +222,12 @@ function mapMatch(match: DbRow, favorite = false) {
   return { id: textValue(match.id), number: numberValue(match.number), map: textValue(match.map), players: numberValue(match.players), maxPlayers: numberValue(match.max_players), status: textValue(match.status), favorite, signal: numberValue(match.signal), scoreT: numberValue(match.score_t), scoreCT: numberValue(match.score_ct) };
 }
 
-function mapLeader(stats: DbRow, index: number) {
+type ModerationStatus = "Banned" | "Muted" | "Clear";
+
+function mapLeader(stats: DbRow, index: number, moderationStatuses: Map<string, ModerationStatus> = new Map()) {
   const user = firstRow(stats.users) ?? {};
-  return { id: textValue(user.id), steamId: textValue(user.steam_id), rank: index + 1, name: textValue(user.username), level: numberValue(user.level), experience: numberValue(stats.experience), kills: numberValue(stats.kills), deaths: numberValue(stats.deaths), kd: numberValue(stats.kd_ratio), headshots: numberValue(stats.headshots), playedHours: numberValue(stats.played_hours), lastPlayed: timestampValue(stats.last_played_at), avatar: textValue(user.avatar) };
+  const userId = textValue(user.id || stats.user_id);
+  return { id: userId, steamId: textValue(user.steam_id), rank: index + 1, name: textValue(user.username), level: numberValue(user.level), experience: numberValue(stats.experience), kills: numberValue(stats.kills), deaths: numberValue(stats.deaths), kd: numberValue(stats.kd_ratio), headshots: numberValue(stats.headshots), playedHours: numberValue(stats.played_hours), lastPlayed: timestampValue(stats.last_played_at), avatar: textValue(user.avatar), moderationStatus: moderationStatuses.get(userId) ?? "Clear" };
 }
 
 function mapLeaderFromUser(user: DbRow, index: number) {
@@ -259,10 +262,36 @@ function mapWalletTransaction(transaction: DbRow) {
   return { id: textValue(transaction.id), type: type === "charge" ? "Charge" : "Purchase", amount: numberValue(transaction.amount), method: textValue(transaction.method), date: timestampValue(transaction.created_at) };
 }
 
-function mapPenalty(penalty: DbRow, adminSteamIds: Map<string, string> = new Map()) {
+function mapPenalty(penalty: DbRow, adminSteamIds: Map<string, string> = new Map(), moderationStatuses: Map<string, ModerationStatus> = new Map()) {
   const user = firstRow(penalty.users) ?? {};
   const admin = textValue(penalty.admin_name);
-  return { id: textValue(penalty.id), type: textValue(penalty.type), player: textValue(user.username), playerSteamId: textValue(user.steam_id) || undefined, avatar: textValue(user.avatar), reason: textValue(penalty.reason), term: textValue(penalty.term), isPermanent: Boolean(penalty.is_permanent), isUnbanned: Boolean(penalty.is_unbanned), admin, adminSteamId: adminSteamIds.get(admin) || undefined, date: timestampValue(penalty.created_at) };
+  const userId = textValue(user.id || penalty.user_id);
+  return { id: textValue(penalty.id), type: textValue(penalty.type), player: textValue(user.username), playerSteamId: textValue(user.steam_id) || undefined, avatar: textValue(user.avatar), moderationStatus: moderationStatuses.get(userId) ?? "Clear", reason: textValue(penalty.reason), term: textValue(penalty.term), isPermanent: Boolean(penalty.is_permanent), isUnbanned: Boolean(penalty.is_unbanned), admin, adminSteamId: adminSteamIds.get(admin) || undefined, date: timestampValue(penalty.created_at) };
+}
+
+function activePenaltyStatus(penalty: DbRow): ModerationStatus | undefined {
+  if (Boolean(penalty.is_unbanned)) return undefined;
+  const expiresAt = timestampValue(penalty.expires_at);
+  if (expiresAt && Date.parse(expiresAt) <= Date.now()) return undefined;
+  const type = textValue(penalty.type).toLowerCase();
+  if (type === "ban") return "Banned";
+  if (type === "comm" || type === "gag") return "Muted";
+  return undefined;
+}
+
+async function resolveModerationStatuses(userIds: string[], database: ReturnType<typeof legacyXDb>) {
+  const uniqueUserIds = userIds.filter((userId, index, values) => Boolean(userId) && values.indexOf(userId) === index);
+  const statuses = new Map<string, ModerationStatus>();
+  if (uniqueUserIds.length === 0) return statuses;
+  const { data, error } = await database.from("penalties").select("user_id,type,is_unbanned,expires_at").in("user_id", uniqueUserIds).eq("is_unbanned", false);
+  legacyXError(error, "Unable to resolve player moderation statuses");
+  for (const penalty of (data ?? []) as DbRow[]) {
+    const status = activePenaltyStatus(penalty);
+    const userId = textValue(penalty.user_id);
+    if (!status || !userId) continue;
+    if (status === "Banned" || !statuses.has(userId)) statuses.set(userId, status);
+  }
+  return statuses;
 }
 
 async function mapPenaltiesWithProfileIdentities(rows: DbRow[], database: ReturnType<typeof legacyXDb>) {
@@ -273,7 +302,8 @@ async function mapPenaltiesWithProfileIdentities(rows: DbRow[], database: Return
     legacyXError(error, "Unable to resolve penalty issuer profiles");
     for (const user of (data ?? []) as DbRow[]) adminSteamIds.set(textValue(user.username), textValue(user.steam_id));
   }
-  return rows.map(row => mapPenalty(row, adminSteamIds));
+  const moderationStatuses = await resolveModerationStatuses(rows.map(row => textValue(row.user_id)), database);
+  return rows.map(row => mapPenalty(row, adminSteamIds, moderationStatuses));
 }
 
 function mapFeedback(feedback: DbRow, reviewerProfiles: Map<string, { steamId: string; avatar: string }> = new Map()) {
@@ -587,20 +617,23 @@ export function createLegacyXRouter() {
 
   const frontendLeaderboard = userRoute(async (req, res) => {
     z.object({ mode: playModeSchema.optional(), region: z.string().trim().min(1).max(64).optional() }).parse(req.query);
-    const { data, error } = await db().from("player_stats").select("*,users!inner(id,username,avatar,level)").order("rating", { ascending: false });
+    const { data, error } = await db().from("player_stats").select("*,users!inner(id,steam_id,username,avatar,level)").order("rating", { ascending: false });
     legacyXError(error, "Unable to load leaderboard");
-    res.json(((data ?? []) as DbRow[]).map(mapLeader));
+    const rows = (data ?? []) as DbRow[];
+    const moderationStatuses = await resolveModerationStatuses(rows.map(row => textValue(row.user_id)), db());
+    res.json(rows.map((row, index) => mapLeader(row, index, moderationStatuses)));
   });
   router.get("/leaderboard", frontendLeaderboard);
   router.get("/players/leaderboard", frontendLeaderboard);
   router.get("/players/:playerId", userRoute(async (req, res) => {
     const playerId = userIdSchema.parse(req.params.playerId);
-    const { data, error } = await db().from("player_stats").select("*,users!inner(id,username,avatar,level)").order("rating", { ascending: false });
+    const { data, error } = await db().from("player_stats").select("*,users!inner(id,steam_id,username,avatar,level)").order("rating", { ascending: false });
     legacyXError(error, "Unable to load player");
     const rows = (data ?? []) as DbRow[];
     const index = rows.findIndex(row => textValue(row.user_id) === playerId);
     if (index < 0) apiError(404, "Player was not found");
-    res.json(mapLeader(rows[index]!, index));
+    const moderationStatuses = await resolveModerationStatuses([textValue(rows[index]!.user_id)], db());
+    res.json(mapLeader(rows[index]!, index, moderationStatuses));
   }));
 
   router.get("/clans", userRoute(async (_req, res) => {
