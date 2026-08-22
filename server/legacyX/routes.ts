@@ -751,7 +751,7 @@ export function createLegacyXRouter() {
 
   router.get("/search/players", userRoute(async (req, res) => {
     const input = z.object({ query: z.string().trim().min(1).max(64) }).parse(req.query);
-    const { data, error } = await db().from("users").select("id,username,avatar,level,player_stats(*)").ilike("username", `%${input.query}%`).order("username");
+    const { data, error } = await db().from("users").select("id,steam_id,username,avatar,level,player_stats(*)").ilike("username", `%${input.query}%`).order("username");
     legacyXError(error, "Unable to search players");
     res.json({ players: ((data ?? []) as DbRow[]).map(mapLeaderFromUser) });
   }));
