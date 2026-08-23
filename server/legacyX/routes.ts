@@ -171,9 +171,28 @@ const tournamentMatchStatusSchema = z.enum(["live", "upcoming", "completed"]);
 const penaltyTypeSchema = z.enum(["ban", "comm", "gag"]);
 const userRoleSchema = z.enum(["Owner", "Founder", "Manager", "Admin", "Player", "Designer", "Developer"]);
 const shopRaritySchema = z.enum(["Common", "Rare", "Epic", "Legendary"]);
-const skinchangerCategorySchema = z.enum(["weapon", "weapon_skin", "knife", "glove", "agent", "music_kit", "pin"]);
+const skinchangerCategorySchema = z.enum(["weapon", "weapon_skin", "knife", "glove", "agent", "music_kit", "pin", "sticker", "charm"]);
 const skinchangerSlotSchema = z.enum(["weapon", "knife", "glove", "agent", "music_kit", "pin"]);
 const skinchangerTeamScopeSchema = z.enum(["all", "t", "ct"]);
+const skinchangerStickerSchema = z.object({
+  catalogItemId: z.string().uuid(),
+  id: z.number().int().positive().optional(),
+  slot: z.number().int().min(0).max(4),
+  schema: z.number().int().min(0).max(1).optional(),
+  offsetX: z.number().min(-1).max(1).optional(),
+  offsetY: z.number().min(-1).max(1).optional(),
+  wear: z.number().min(0).max(1).optional(),
+  scale: z.number().min(0.1).max(3).optional(),
+  rotation: z.number().min(-360).max(360).optional(),
+}).strict();
+const skinchangerCharmSchema = z.object({
+  catalogItemId: z.string().uuid(),
+  id: z.number().int().positive().optional(),
+  offsetX: z.number().min(-1).max(1).optional(),
+  offsetY: z.number().min(-1).max(1).optional(),
+  offsetZ: z.number().min(-1).max(1).optional(),
+  seed: z.number().int().min(0).max(1_000).optional(),
+}).strict();
 const skinchangerLoadoutEntrySchema = z.object({
   slot: skinchangerSlotSchema,
   slotKey: z.string().regex(/^[a-z0-9:_-]{1,96}$/),
@@ -184,7 +203,18 @@ const skinchangerLoadoutEntrySchema = z.object({
     seed: z.number().int().min(0).max(1_000).optional(),
     statTrak: z.boolean().optional(),
     nameTag: z.string().trim().min(1).max(32).optional(),
+    stickers: z.array(skinchangerStickerSchema).max(5).optional(),
+    charm: skinchangerCharmSchema.optional(),
   }).strict().default({}),
+}).superRefine((entry, context) => {
+  const occupied = new Set<number>();
+  for (const sticker of entry.options.stickers ?? []) {
+    if (occupied.has(sticker.slot)) context.addIssue({ code: z.ZodIssueCode.custom, path: ["options", "stickers"], message: "Sticker slots must be unique" });
+    occupied.add(sticker.slot);
+  }
+  if (entry.slot !== "weapon" && ((entry.options.stickers?.length ?? 0) > 0 || entry.options.charm)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["options"], message: "Only weapons can be customised with stickers or charms" });
+  }
 });
 const skinchangerLoadoutSchema = z.object({ entries: z.array(skinchangerLoadoutEntrySchema).min(1).max(128) });
 const skinchangerApplySchema = z.object({ serverId: z.string().trim().min(1).max(120) });
@@ -625,12 +655,40 @@ export function createLegacyXRouter() {
 
   router.put("/skinchanger/loadout", userRoute(async (req, res, user) => {
     const input = skinchangerLoadoutSchema.parse(req.body);
+    const accessoryIds = Array.from(new Set(input.entries.flatMap((entry) => [
+      ...(entry.options.stickers?.map((sticker) => sticker.catalogItemId) ?? []),
+      ...(entry.options.charm ? [entry.options.charm.catalogItemId] : []),
+    ])));
+    const accessoryDefindexes = new Map<string, { category: string; defindex: number | null }>();
+    if (accessoryIds.length > 0) {
+      const { data, error } = await db().from("skinchanger_catalog_items")
+        .select("id,category,weapon_defindex")
+        .eq("is_active", true)
+        .in("id", accessoryIds);
+      legacyXError(error, "Unable to validate custom items");
+      for (const item of data ?? []) accessoryDefindexes.set(item.id, { category: item.category, defindex: item.weapon_defindex });
+    }
+    const resolveAccessoryDefindex = (catalogItemId: string, category: "sticker" | "charm") => {
+      const item = accessoryDefindexes.get(catalogItemId);
+      if (!item || item.category !== category || item.defindex === null) apiError(400, "One or more custom items are unavailable");
+      return item.defindex;
+    };
     const entries = input.entries.map(entry => ({
       slot: entry.slot,
       slot_key: entry.slotKey,
       team_scope: entry.teamScope,
       catalog_item_id: entry.catalogItemId,
-      options: entry.options,
+      options: {
+        ...entry.options,
+        stickers: entry.options.stickers?.map((sticker) => ({
+          ...sticker,
+          id: resolveAccessoryDefindex(sticker.catalogItemId, "sticker"),
+        })),
+        charm: entry.options.charm ? {
+          ...entry.options.charm,
+          id: resolveAccessoryDefindex(entry.options.charm.catalogItemId, "charm"),
+        } : undefined,
+      },
     }));
     const { data: version, error } = await db().rpc("save_skinchanger_loadout", { p_user_id: user.id, p_entries: entries });
     legacyXError(error, "Unable to save skinchanger loadout");

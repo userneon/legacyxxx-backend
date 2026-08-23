@@ -5,7 +5,7 @@ CREATE SCHEMA IF NOT EXISTS legacy_x;
 CREATE TABLE IF NOT EXISTS legacy_x.skinchanger_catalog_items (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   external_key TEXT NOT NULL UNIQUE,
-  category TEXT NOT NULL CHECK (category IN ('weapon', 'weapon_skin', 'knife', 'glove', 'agent', 'music_kit', 'pin')),
+  category TEXT NOT NULL CHECK (category IN ('weapon', 'weapon_skin', 'knife', 'glove', 'agent', 'music_kit', 'pin', 'sticker', 'charm')),
   weapon_class TEXT,
   display_name TEXT NOT NULL,
   weapon_defindex INTEGER,

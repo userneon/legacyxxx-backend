@@ -28,6 +28,8 @@ Run the migration first, then use the operator-only script from the backend dire
 ```bash
 node scripts/ingest-skinchanger-catalog.mjs --category=weapon_skin --limit=100
 node scripts/ingest-skinchanger-catalog.mjs --category=knife --limit=100
+node scripts/ingest-skinchanger-catalog.mjs --category=sticker --limit=100
+node scripts/ingest-skinchanger-catalog.mjs --category=charm --limit=100
 ```
 
 The script downloads catalog metadata, converts downloaded item artwork to WebP with `sharp`, uploads it to API-owned storage, and upserts only metadata plus the resulting storage key. Start with a bounded category/limit in staging. Review the item count and failed-image warnings before a full ingest.
@@ -39,7 +41,8 @@ The script downloads catalog metadata, converts downloaded item artwork to WebP 
 3. Configure the plugin with its server-scoped token; do not enable in-game menus or chat mutation commands.
 4. Confirm connect, heartbeat, and disconnect session events reach the Root API.
 5. Save a loadout through `/skinchanger`, queue an apply job, and observe `queued → leased → applied` in the API audit trail.
-6. Test disconnect, stale session, lease expiry, duplicate acknowledgement, invalid token, and plugin restart before production rollout.
+6. For one weapon, verify the permitted skin wear range, one sticker in each selected slot, and one charm. Confirm the queued payload contains only catalog-resolved item IDs and that the player receives the look on the next safe weapon give/spawn.
+7. Test duplicate sticker slots, inactive or mismatched accessory catalog IDs, non-weapon accessory requests, disconnect, stale session, lease expiry, duplicate acknowledgement, invalid token, and plugin restart before production rollout.
 
 ## Rollback
 

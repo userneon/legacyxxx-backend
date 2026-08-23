@@ -23,7 +23,7 @@ import { createClient } from "@supabase/supabase-js";
 const SOURCE_BASE = process.env.SKINCHANGER_CATALOG_SOURCE_BASE ?? "https://raw.githubusercontent.com/ByMykel/CSGO-API/main/public/api/en";
 const MAX_IMAGE_BYTES = 12 * 1024 * 1024;
 const DEFAULT_CONCURRENCY = 3;
-const categories = ["weapon", "weapon_skin", "knife", "glove", "agent", "music_kit", "pin"];
+const categories = ["weapon", "weapon_skin", "knife", "glove", "agent", "music_kit", "pin", "sticker", "charm"];
 const args = new Map(process.argv.slice(2).map((value) => {
   const [key, raw = "true"] = value.replace(/^--/, "").split("=", 2);
   return [key, raw];
@@ -58,6 +58,8 @@ const sourceEndpoints = [
   { category: "agent", path: "agents.json" },
   { category: "music_kit", path: "music_kits.json" },
   { category: "pin", path: "collectibles.json" },
+  { category: "sticker", path: "stickers.json" },
+  { category: "charm", path: "keychains.json" },
 ];
 
 function text(value, fallback = "") {
@@ -65,7 +67,9 @@ function text(value, fallback = "") {
 }
 
 function numeric(value) {
-  return typeof value === "number" && Number.isFinite(value) ? Math.trunc(value) : null;
+  if (typeof value === "number" && Number.isFinite(value)) return Math.trunc(value);
+  if (typeof value === "string" && /^\d+$/.test(value)) return Number.parseInt(value, 10);
+  return null;
 }
 
 function classify(raw, sourceCategory) {
