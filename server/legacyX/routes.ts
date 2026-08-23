@@ -593,6 +593,13 @@ export function createLegacyXRouter() {
     sendPage(res, (data ?? []).map(item => ({ ...item, image_url: apiStorageUrl(req, item.image_key) })), count, input.limit, input.offset);
   }));
 
+  router.get("/skinchanger/catalog/facets", userRoute(async (req, res) => {
+    const input = z.object({ category: skinchangerCategorySchema.optional() }).parse(req.query);
+    const { data, error } = await db().rpc("get_skinchanger_catalog_facets", { p_category: input.category ?? null });
+    legacyXError(error, "Unable to load skinchanger catalog facets");
+    res.json(data ?? { categories: [], weaponClasses: [] });
+  }));
+
   router.get("/skinchanger/loadout", userRoute(async (_req, res, user) => {
     const { data, error } = await db().from("skinchanger_loadouts")
       .select("version,updated_at,skinchanger_loadout_entries(catalog_item_id,slot,team_scope,options,skinchanger_catalog_items(id,external_key,category,weapon_class,display_name,weapon_defindex,paint_id,model,image_key,metadata))")

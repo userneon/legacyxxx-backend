@@ -24,6 +24,7 @@ const frontendEndpoints: Endpoint[] = [
 
 const skinchangerEndpoints: Endpoint[] = [
   { method: "GET", path: "/skinchanger/catalog" },
+  { method: "GET", path: "/skinchanger/catalog/facets" },
   { method: "GET", path: "/skinchanger/loadout" },
   { method: "GET", path: "/skinchanger/active-server" },
   { method: "PUT", path: "/skinchanger/loadout" },

@@ -141,6 +141,40 @@ BEGIN
 END;
 $$;
 
+CREATE OR REPLACE FUNCTION legacy_x.get_skinchanger_catalog_facets(
+  p_category TEXT DEFAULT NULL
+)
+RETURNS JSONB
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = legacy_x, public
+AS $$
+  SELECT jsonb_build_object(
+    'categories', COALESCE((
+      SELECT jsonb_agg(jsonb_build_object('category', category, 'count', item_count) ORDER BY category)
+      FROM (
+        SELECT category, count(*)::INTEGER AS item_count
+        FROM legacy_x.skinchanger_catalog_items
+        WHERE is_active = true
+        GROUP BY category
+      ) category_counts
+    ), '[]'::jsonb),
+    'weaponClasses', COALESCE((
+      SELECT jsonb_agg(jsonb_build_object('weaponClass', weapon_class, 'count', item_count) ORDER BY weapon_class)
+      FROM (
+        SELECT weapon_class, count(*)::INTEGER AS item_count
+        FROM legacy_x.skinchanger_catalog_items
+        WHERE is_active = true
+          AND weapon_class IS NOT NULL
+          AND weapon_class <> ''
+          AND (p_category IS NULL OR category = p_category)
+        GROUP BY weapon_class
+      ) class_counts
+    ), '[]'::jsonb)
+  );
+$$;
+
 CREATE OR REPLACE FUNCTION legacy_x.queue_skinchanger_apply(
   p_user_id UUID,
   p_server_id TEXT
@@ -341,6 +375,7 @@ ALTER TABLE legacy_x.skinchanger_plugin_receipts ENABLE ROW LEVEL SECURITY;
 REVOKE ALL ON legacy_x.skinchanger_catalog_items, legacy_x.skinchanger_loadouts, legacy_x.skinchanger_loadout_entries, legacy_x.skinchanger_server_sessions, legacy_x.skinchanger_apply_jobs, legacy_x.skinchanger_plugin_receipts FROM anon, authenticated;
 GRANT SELECT, INSERT, UPDATE, DELETE ON legacy_x.skinchanger_catalog_items, legacy_x.skinchanger_loadouts, legacy_x.skinchanger_loadout_entries, legacy_x.skinchanger_server_sessions, legacy_x.skinchanger_apply_jobs, legacy_x.skinchanger_plugin_receipts TO service_role;
 GRANT EXECUTE ON FUNCTION legacy_x.save_skinchanger_loadout(UUID, JSONB) TO service_role;
+GRANT EXECUTE ON FUNCTION legacy_x.get_skinchanger_catalog_facets() TO service_role;
 GRANT EXECUTE ON FUNCTION legacy_x.queue_skinchanger_apply(UUID, TEXT) TO service_role;
 GRANT EXECUTE ON FUNCTION legacy_x.claim_skinchanger_apply_jobs(TEXT, INTEGER) TO service_role;
 GRANT EXECUTE ON FUNCTION legacy_x.ack_skinchanger_apply(UUID, UUID, TEXT, TEXT, TEXT) TO service_role;

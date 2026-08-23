@@ -11,7 +11,8 @@
  *   SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY,
  *   BUILT_IN_FORGE_API_URL, BUILT_IN_FORGE_API_KEY
  *
- * Example:
+ * Examples:
+ *   node scripts/ingest-skinchanger-catalog.mjs --dry-run
  *   node scripts/ingest-skinchanger-catalog.mjs --category weapon_skin --limit 50
  */
 import crypto from "node:crypto";
@@ -19,7 +20,7 @@ import process from "node:process";
 import sharp from "sharp";
 import { createClient } from "@supabase/supabase-js";
 
-const SOURCE_BASE = process.env.SKINCHANGER_CATALOG_SOURCE_BASE ?? "https://bymykel.github.io/CSGO-API/api/en";
+const SOURCE_BASE = process.env.SKINCHANGER_CATALOG_SOURCE_BASE ?? "https://raw.githubusercontent.com/ByMykel/CSGO-API/main/public/api/en";
 const MAX_IMAGE_BYTES = 12 * 1024 * 1024;
 const DEFAULT_CONCURRENCY = 3;
 const categories = ["weapon", "weapon_skin", "knife", "glove", "agent", "music_kit", "pin"];
@@ -30,23 +31,29 @@ const args = new Map(process.argv.slice(2).map((value) => {
 const requestedCategory = args.get("category") ?? null;
 const limit = Math.max(0, Number.parseInt(args.get("limit") ?? "0", 10) || 0);
 const skipImages = args.has("skip-images");
+const dryRun = args.has("dry-run");
 const concurrency = Math.max(1, Math.min(8, Number.parseInt(args.get("concurrency") ?? String(DEFAULT_CONCURRENCY), 10) || DEFAULT_CONCURRENCY));
 
 if (requestedCategory && !categories.includes(requestedCategory)) {
   throw new Error(`Unsupported category '${requestedCategory}'. Expected one of: ${categories.join(", ")}`);
 }
 
-for (const key of ["SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "BUILT_IN_FORGE_API_URL", "BUILT_IN_FORGE_API_KEY"]) {
-  if (!process.env[key]?.trim()) throw new Error(`Missing required environment variable: ${key}`);
+if (!dryRun) {
+  for (const key of ["SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "BUILT_IN_FORGE_API_URL", "BUILT_IN_FORGE_API_KEY"]) {
+    if (!process.env[key]?.trim()) throw new Error(`Missing required environment variable: ${key}`);
+  }
 }
 
-const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY, {
-  db: { schema: "legacy_x" },
-  auth: { persistSession: false, autoRefreshToken: false },
-});
+const supabase = dryRun
+  ? null
+  : createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY, {
+      db: { schema: "legacy_x" },
+      auth: { persistSession: false, autoRefreshToken: false },
+    });
 
 const sourceEndpoints = [
-  { category: "weapon_skin", path: "skins.json" },
+  // `skins_not_grouped` preserves the exact item rows needed for weapon/knife/glove normalization.
+  { category: "weapon_skin", path: "skins_not_grouped.json" },
   { category: "weapon", path: "base_weapons.json" },
   { category: "agent", path: "agents.json" },
   { category: "music_kit", path: "music_kits.json" },
@@ -105,10 +112,20 @@ function assetKey(item) {
 }
 
 async function fetchJson(path) {
-  const response = await fetch(`${SOURCE_BASE.replace(/\/$/, "")}/${path}`);
-  if (!response.ok) throw new Error(`Catalog source ${path} returned ${response.status}`);
-  const payload = await response.json();
-  return Array.isArray(payload) ? payload : [];
+  const url = `${SOURCE_BASE.replace(/\/$/, "")}/${path}`;
+  let lastError = null;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      const response = await fetch(url, { signal: AbortSignal.timeout(30_000) });
+      if (!response.ok) throw new Error(`Catalog source ${path} returned ${response.status}`);
+      const payload = await response.json();
+      return Array.isArray(payload) ? payload : [];
+    } catch (error) {
+      lastError = error;
+      if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, attempt * 750));
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(`Catalog source ${path} failed`);
 }
 
 async function putWebp(key, bytes) {
@@ -161,6 +178,22 @@ let items = rawSets.flatMap(({ endpoint, rows }) => rows.map((raw) => normalize(
 if (requestedCategory) items = items.filter((item) => item.category === requestedCategory);
 if (limit > 0) items = items.slice(0, limit);
 
+const categoryCounts = Object.fromEntries(categories.map((category) => [
+  category,
+  items.filter((item) => item.category === category).length,
+]));
+
+if (dryRun) {
+  console.log(JSON.stringify({
+    mode: "dry-run",
+    sourceBase: SOURCE_BASE,
+    total: items.length,
+    categoryCounts,
+    sourceRows: Object.fromEntries(rawSets.map(({ endpoint, rows }) => [endpoint.path, rows.length])),
+  }, null, 2));
+  process.exit(0);
+}
+
 const results = await inPool(items, async (item) => {
   try {
     const image_key = await convertAndStore(item);
@@ -178,4 +211,9 @@ for (let offset = 0; offset < records.length; offset += 200) {
   if (error) throw new Error(`Catalog upsert failed: ${error.message}`);
 }
 
-console.log(JSON.stringify({ ingested: records.length, category: requestedCategory ?? "all", imagesSkipped: records.filter((item) => !item.image_key).length }, null, 2));
+console.log(JSON.stringify({
+  ingested: records.length,
+  category: requestedCategory ?? "all",
+  categoryCounts,
+  imagesSkipped: records.filter((item) => !item.image_key).length,
+}, null, 2));
