@@ -22,6 +22,15 @@ const frontendEndpoints: Endpoint[] = [
   { method: "GET", path: "/feedback" }, { method: "POST", path: "/feedback" }, { method: "GET", path: "/search/players?query=test" }, { method: "GET", path: "/search/clans?query=test" }, { method: "GET", path: "/community/content" },
 ];
 
+const skinchangerEndpoints: Endpoint[] = [
+  { method: "GET", path: "/skinchanger/catalog" },
+  { method: "GET", path: "/skinchanger/loadout" },
+  { method: "GET", path: "/skinchanger/active-server" },
+  { method: "PUT", path: "/skinchanger/loadout" },
+  { method: "POST", path: "/skinchanger/apply" },
+  { method: "GET", path: "/skinchanger/status" },
+];
+
 let server: Server;
 let baseUrl: string;
 
@@ -46,6 +55,17 @@ describe("frontend API endpoint inventory", () => {
         method: endpoint.method,
         headers: endpoint.method === "GET" || endpoint.method === "DELETE" ? undefined : { "content-type": "application/json" },
         body: endpoint.method === "GET" || endpoint.method === "DELETE" ? undefined : "{}",
+      });
+      expect(response.status, `${endpoint.method} /api/v1${endpoint.path}`).toBe(401);
+    }
+  });
+
+  it("registers each production Skinchanger user endpoint and rejects missing authentication", async () => {
+    for (const endpoint of skinchangerEndpoints) {
+      const response = await fetch(`${baseUrl}${endpoint.path}`, {
+        method: endpoint.method,
+        headers: endpoint.method === "GET" ? undefined : { "content-type": "application/json" },
+        body: endpoint.method === "GET" ? undefined : "{}",
       });
       expect(response.status, `${endpoint.method} /api/v1${endpoint.path}`).toBe(401);
     }
