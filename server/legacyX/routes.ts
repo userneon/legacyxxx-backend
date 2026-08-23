@@ -176,6 +176,7 @@ const skinchangerSlotSchema = z.enum(["weapon", "knife", "glove", "agent", "musi
 const skinchangerTeamScopeSchema = z.enum(["all", "t", "ct"]);
 const skinchangerLoadoutEntrySchema = z.object({
   slot: skinchangerSlotSchema,
+  slotKey: z.string().regex(/^[a-z0-9:_-]{1,96}$/),
   teamScope: skinchangerTeamScopeSchema.default("all"),
   catalogItemId: z.string().uuid(),
   options: z.object({
@@ -602,7 +603,7 @@ export function createLegacyXRouter() {
 
   router.get("/skinchanger/loadout", userRoute(async (_req, res, user) => {
     const { data, error } = await db().from("skinchanger_loadouts")
-      .select("version,updated_at,skinchanger_loadout_entries(catalog_item_id,slot,team_scope,options,skinchanger_catalog_items(id,external_key,category,weapon_class,display_name,weapon_defindex,paint_id,model,image_key,metadata))")
+      .select("version,updated_at,skinchanger_loadout_entries(catalog_item_id,slot,slot_key,team_scope,options,skinchanger_catalog_items(id,external_key,category,weapon_class,display_name,weapon_defindex,paint_id,model,image_key,metadata))")
       .eq("user_id", user.id)
       .maybeSingle();
     legacyXError(error, "Unable to load skinchanger loadout");
@@ -626,6 +627,7 @@ export function createLegacyXRouter() {
     const input = skinchangerLoadoutSchema.parse(req.body);
     const entries = input.entries.map(entry => ({
       slot: entry.slot,
+      slot_key: entry.slotKey,
       team_scope: entry.teamScope,
       catalog_item_id: entry.catalogItemId,
       options: entry.options,

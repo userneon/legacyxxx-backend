@@ -85,19 +85,25 @@ function normalize(raw, sourceCategory) {
   if (!category) return null;
   const externalKey = text(raw.id, text(raw.name)).toLowerCase();
   const imageUrl = text(raw.image, text(raw.image_url));
+  const weaponClass = sourceCategory === "weapon"
+    ? text(raw.name)
+    : text(raw.weapon?.name, text(raw.category?.name, null));
   if (!externalKey || !text(raw.name)) return null;
   return {
     external_key: `cs2:${category}:${externalKey}`,
     category,
-    weapon_class: text(raw.weapon?.name, text(raw.category, null)) || null,
+    // Base rows use the canonical weapon name so AK-47 → AK-47 finishes
+    // shares the exact same server-side filter as weapon skin rows.
+    weapon_class: weaponClass || null,
     display_name: text(raw.name),
-    weapon_defindex: numeric(raw.weapon?.id) ?? numeric(raw.defindex) ?? numeric(raw.id),
+    weapon_defindex: numeric(raw.weapon?.id) ?? numeric(raw.def_index) ?? numeric(raw.defindex) ?? numeric(raw.id),
     paint_id: numeric(raw.paint_index) ?? numeric(raw.paint_id),
     model: text(raw.model_player, text(raw.model, null)) || null,
     source_image_url: imageUrl || null,
     metadata: {
       source: "bymykel-csgo-api",
       sourceId: raw.id ?? null,
+      weaponGroup: text(raw.category?.name, null),
       rarity: raw.rarity?.name ?? raw.rarity ?? null,
       minWear: raw.min_float ?? null,
       maxWear: raw.max_float ?? null,

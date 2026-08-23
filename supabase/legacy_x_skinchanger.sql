@@ -31,11 +31,12 @@ CREATE TABLE IF NOT EXISTS legacy_x.skinchanger_loadouts (
 CREATE TABLE IF NOT EXISTS legacy_x.skinchanger_loadout_entries (
   user_id UUID NOT NULL REFERENCES legacy_x.users(id) ON DELETE CASCADE,
   slot TEXT NOT NULL CHECK (slot IN ('weapon', 'knife', 'glove', 'agent', 'music_kit', 'pin')),
+  slot_key TEXT NOT NULL CHECK (slot_key ~ '^[a-z0-9:_-]{1,96}$'),
   team_scope TEXT NOT NULL DEFAULT 'all' CHECK (team_scope IN ('all', 't', 'ct')),
   catalog_item_id UUID NOT NULL REFERENCES legacy_x.skinchanger_catalog_items(id) ON DELETE RESTRICT,
   options JSONB NOT NULL DEFAULT '{}'::jsonb,
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  PRIMARY KEY (user_id, slot, team_scope)
+  PRIMARY KEY (user_id, slot_key, team_scope)
 );
 
 CREATE TABLE IF NOT EXISTS legacy_x.skinchanger_server_sessions (
@@ -107,9 +108,12 @@ BEGIN
 
   IF EXISTS (
     SELECT 1
-    FROM jsonb_to_recordset(p_entries) AS entry(slot TEXT, team_scope TEXT, catalog_item_id UUID, options JSONB)
+    FROM jsonb_to_recordset(p_entries) AS entry(slot TEXT, slot_key TEXT, team_scope TEXT, catalog_item_id UUID, options JSONB)
     LEFT JOIN legacy_x.skinchanger_catalog_items item ON item.id = entry.catalog_item_id AND item.is_active = true
     WHERE entry.slot NOT IN ('weapon', 'knife', 'glove', 'agent', 'music_kit', 'pin')
+      OR entry.slot_key !~ '^[a-z0-9:_-]{1,96}$'
+      OR (entry.slot = 'weapon' AND entry.slot_key !~ '^weapon:[a-z0-9_-]+$')
+      OR (entry.slot <> 'weapon' AND entry.slot_key <> entry.slot)
       OR entry.team_scope NOT IN ('all', 't', 'ct')
       OR item.id IS NULL
       OR (entry.slot = 'weapon' AND item.category NOT IN ('weapon', 'weapon_skin'))
@@ -127,15 +131,16 @@ BEGIN
 
   DELETE FROM legacy_x.skinchanger_loadout_entries WHERE user_id = p_user_id;
 
-  INSERT INTO legacy_x.skinchanger_loadout_entries (user_id, slot, team_scope, catalog_item_id, options, updated_at)
+  INSERT INTO legacy_x.skinchanger_loadout_entries (user_id, slot, slot_key, team_scope, catalog_item_id, options, updated_at)
   SELECT
     p_user_id,
     entry.slot,
+    entry.slot_key,
     entry.team_scope,
     entry.catalog_item_id,
     COALESCE(entry.options, '{}'::jsonb),
     now()
-  FROM jsonb_to_recordset(p_entries) AS entry(slot TEXT, team_scope TEXT, catalog_item_id UUID, options JSONB);
+  FROM jsonb_to_recordset(p_entries) AS entry(slot TEXT, slot_key TEXT, team_scope TEXT, catalog_item_id UUID, options JSONB);
 
   RETURN v_version;
 END;
@@ -208,6 +213,7 @@ BEGIN
     'version', v_version,
     'entries', COALESCE(jsonb_agg(jsonb_build_object(
       'slot', entry.slot,
+      'slotKey', entry.slot_key,
       'teamScope', entry.team_scope,
       'catalogItemId', item.id,
       'category', item.category,
@@ -215,7 +221,7 @@ BEGIN
       'paintId', item.paint_id,
       'model', item.model,
       'options', entry.options
-    ) ORDER BY entry.slot, entry.team_scope), '[]'::jsonb)
+    ) ORDER BY entry.slot, entry.slot_key, entry.team_scope), '[]'::jsonb)
   )
   INTO v_payload
   FROM legacy_x.skinchanger_loadout_entries entry
