@@ -35,7 +35,7 @@ AS $$
   SELECT CASE
     WHEN p_category IN ('weapon_skin', 'knife', 'glove') THEN
       COALESCE(p_weapon_class, '') || ':' || regexp_replace(
-        regexp_replace(p_display_name, '^(StatTrak™\s+|Souvenir\s+)', '', 'i'),
+        regexp_replace(regexp_replace(p_display_name, '^★[[:space:]]*', '', 'i'), '^(StatTrak™\s+|Souvenir\s+)', '', 'i'),
         ' \((Factory New|Minimal Wear|Field-Tested|Well-Worn|Battle-Scarred)\)$', '', 'i'
       )
     ELSE p_external_key
@@ -69,12 +69,16 @@ SET search_path = legacy_x, public
 AS $$
   WITH filtered AS (
     SELECT item.*,
-      legacy_x.skinchanger_catalog_browse_key(item.category, item.weapon_class, item.display_name, item.external_key) AS browse_key
+      CASE
+        WHEN p_category IN ('glove', 'knife') AND p_weapon_class IS NULL THEN p_category || '-type:' || COALESCE(item.weapon_class, item.external_key)
+        ELSE legacy_x.skinchanger_catalog_browse_key(item.category, item.weapon_class, item.display_name, item.external_key)
+      END AS browse_key,
+      (p_category IN ('glove', 'knife') AND p_weapon_class IS NULL) AS model_type_browse
     FROM legacy_x.skinchanger_catalog_items item
     WHERE item.is_active = true
       AND (p_category IS NULL OR item.category = p_category)
       AND (p_weapon_class IS NULL OR item.weapon_class = p_weapon_class)
-      AND (p_query IS NULL OR item.display_name ILIKE '%' || p_query || '%')
+      AND (p_query IS NULL OR item.display_name ILIKE '%' || p_query || '%' OR item.weapon_class ILIKE '%' || p_query || '%')
   ),
   ranges AS (
     SELECT browse_key,
@@ -97,7 +101,11 @@ AS $$
         WHEN 'Battle-Scarred' THEN 4
         ELSE 5
       END,
-      CASE WHEN display_name ~* '^StatTrak™\s+' THEN 1 WHEN display_name ~* '^Souvenir\s+' THEN 2 ELSE 0 END,
+      CASE
+        WHEN display_name ~* '^★?[[:space:]]*StatTrak™[[:space:]]+' THEN 1
+        WHEN display_name ~* '^★?[[:space:]]*Souvenir[[:space:]]+' THEN 2
+        ELSE 0
+      END,
       display_name
   ),
   paged AS (
@@ -106,10 +114,13 @@ AS $$
       external_key,
       category,
       weapon_class,
-      regexp_replace(
-        regexp_replace(display_name, '^(StatTrak™\s+|Souvenir\s+)', '', 'i'),
-        ' \((Factory New|Minimal Wear|Field-Tested|Well-Worn|Battle-Scarred)\)$', '', 'i'
-      ) AS display_name,
+      CASE
+        WHEN model_type_browse THEN weapon_class
+        ELSE regexp_replace(
+          regexp_replace(regexp_replace(display_name, '^★[[:space:]]*', '', 'i'), '^(StatTrak™\s+|Souvenir\s+)', '', 'i'),
+          ' \((Factory New|Minimal Wear|Field-Tested|Well-Worn|Battle-Scarred)\)$', '', 'i'
+        )
+      END AS display_name,
       weapon_defindex,
       paint_id,
       model,
@@ -268,7 +279,9 @@ AS $$
     'categories', COALESCE((
       SELECT jsonb_agg(jsonb_build_object('category', category, 'count', item_count) ORDER BY category)
       FROM (
-        SELECT category, count(DISTINCT legacy_x.skinchanger_catalog_browse_key(category, weapon_class, display_name, external_key))::INTEGER AS item_count
+        SELECT category,
+          CASE WHEN category IN ('glove', 'knife') THEN count(DISTINCT COALESCE(weapon_class, external_key))::INTEGER
+          ELSE count(DISTINCT legacy_x.skinchanger_catalog_browse_key(category, weapon_class, display_name, external_key))::INTEGER END AS item_count
         FROM legacy_x.skinchanger_catalog_items
         WHERE is_active = true
         GROUP BY category

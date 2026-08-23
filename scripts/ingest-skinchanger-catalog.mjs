@@ -77,8 +77,8 @@ function classify(raw, sourceCategory) {
   const weaponName = text(raw.weapon?.name).toLowerCase();
   const type = text(raw.type).toLowerCase();
   if (sourceCategory === "weapon_skin") {
-    if (/knife|bayonet|karambit|m9|butterfly|talon|stiletto|ursus|navaja|falchion|bowie|daggers|kukri/.test(`${name} ${weaponName}`)) return "knife";
-    if (/glove|hand wrap|bloodhound|driver|moto|sport|specialist|hydra|broken fang/.test(`${name} ${weaponName}`)) return "glove";
+    if (/knife|bayonet|karambit|m9|butterfly|talon|stiletto|ursus|navaja|falchion|bowie|daggers|kukri/.test(weaponName)) return "knife";
+    if (/glove|hand wrap|bloodhound|driver|moto|sport|specialist|hydra|broken fang/.test(weaponName)) return "glove";
   }
   if (sourceCategory === "pin" && !/pin|collectible|medal/.test(`${name} ${type}`)) return null;
   return sourceCategory;
