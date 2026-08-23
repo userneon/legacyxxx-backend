@@ -22,6 +22,115 @@ CREATE INDEX IF NOT EXISTS skinchanger_catalog_browse_idx
   ON legacy_x.skinchanger_catalog_items (category, weapon_class, display_name)
   WHERE is_active = true;
 
+CREATE OR REPLACE FUNCTION legacy_x.skinchanger_catalog_browse_key(
+  p_category TEXT,
+  p_weapon_class TEXT,
+  p_display_name TEXT,
+  p_external_key TEXT
+)
+RETURNS TEXT
+LANGUAGE sql
+IMMUTABLE
+AS $$
+  SELECT CASE
+    WHEN p_category IN ('weapon_skin', 'knife', 'glove') THEN
+      COALESCE(p_weapon_class, '') || ':' || regexp_replace(
+        regexp_replace(p_display_name, '^(StatTrak™\s+|Souvenir\s+)', '', 'i'),
+        ' \((Factory New|Minimal Wear|Field-Tested|Well-Worn|Battle-Scarred)\)$', '', 'i'
+      )
+    ELSE p_external_key
+  END
+$$;
+
+CREATE OR REPLACE FUNCTION legacy_x.get_skinchanger_catalog_page(
+  p_category TEXT DEFAULT NULL,
+  p_weapon_class TEXT DEFAULT NULL,
+  p_query TEXT DEFAULT NULL,
+  p_limit INTEGER DEFAULT 36,
+  p_offset INTEGER DEFAULT 0
+)
+RETURNS TABLE (
+  id UUID,
+  external_key TEXT,
+  category TEXT,
+  weapon_class TEXT,
+  display_name TEXT,
+  weapon_defindex INTEGER,
+  paint_id INTEGER,
+  model TEXT,
+  image_key TEXT,
+  metadata JSONB,
+  total_count BIGINT
+)
+LANGUAGE sql
+STABLE
+SECURITY DEFINER
+SET search_path = legacy_x, public
+AS $$
+  WITH filtered AS (
+    SELECT item.*,
+      legacy_x.skinchanger_catalog_browse_key(item.category, item.weapon_class, item.display_name, item.external_key) AS browse_key
+    FROM legacy_x.skinchanger_catalog_items item
+    WHERE item.is_active = true
+      AND (p_category IS NULL OR item.category = p_category)
+      AND (p_weapon_class IS NULL OR item.weapon_class = p_weapon_class)
+      AND (p_query IS NULL OR item.display_name ILIKE '%' || p_query || '%')
+  ),
+  ranges AS (
+    SELECT browse_key,
+      min(NULLIF(metadata ->> 'minWear', '')::NUMERIC) AS min_wear,
+      max(NULLIF(metadata ->> 'maxWear', '')::NUMERIC) AS max_wear
+    FROM filtered
+    GROUP BY browse_key
+  ),
+  grouped AS (
+    SELECT DISTINCT ON (browse_key)
+      filtered.*, ranges.min_wear, ranges.max_wear
+    FROM filtered
+    JOIN ranges USING (browse_key)
+    ORDER BY browse_key,
+      CASE regexp_replace(display_name, '^.* \(([^)]*)\)$', '\1')
+        WHEN 'Factory New' THEN 0
+        WHEN 'Minimal Wear' THEN 1
+        WHEN 'Field-Tested' THEN 2
+        WHEN 'Well-Worn' THEN 3
+        WHEN 'Battle-Scarred' THEN 4
+        ELSE 5
+      END,
+      CASE WHEN display_name ~* '^StatTrak™\s+' THEN 1 WHEN display_name ~* '^Souvenir\s+' THEN 2 ELSE 0 END,
+      display_name
+  ),
+  paged AS (
+    SELECT
+      id,
+      external_key,
+      category,
+      weapon_class,
+      regexp_replace(
+        regexp_replace(display_name, '^(StatTrak™\s+|Souvenir\s+)', '', 'i'),
+        ' \((Factory New|Minimal Wear|Field-Tested|Well-Worn|Battle-Scarred)\)$', '', 'i'
+      ) AS display_name,
+      weapon_defindex,
+      paint_id,
+      model,
+      image_key,
+      jsonb_set(
+        jsonb_set(
+          jsonb_set(metadata, '{minWear}', to_jsonb(COALESCE(min_wear, 0.0001)::DOUBLE PRECISION), true),
+          '{maxWear}', to_jsonb(COALESCE(max_wear, 1)::DOUBLE PRECISION), true
+        ),
+        '{baseSkinKey}', to_jsonb(browse_key), true
+      ) AS metadata,
+      count(*) OVER () AS total_count
+    FROM grouped
+  )
+  SELECT *
+  FROM paged
+  ORDER BY display_name
+  LIMIT LEAST(GREATEST(p_limit, 1), 100)
+  OFFSET GREATEST(p_offset, 0)
+$$;
+
 CREATE TABLE IF NOT EXISTS legacy_x.skinchanger_loadouts (
   user_id UUID PRIMARY KEY REFERENCES legacy_x.users(id) ON DELETE CASCADE,
   version BIGINT NOT NULL DEFAULT 0 CHECK (version >= 0),
@@ -159,7 +268,7 @@ AS $$
     'categories', COALESCE((
       SELECT jsonb_agg(jsonb_build_object('category', category, 'count', item_count) ORDER BY category)
       FROM (
-        SELECT category, count(*)::INTEGER AS item_count
+        SELECT category, count(DISTINCT legacy_x.skinchanger_catalog_browse_key(category, weapon_class, display_name, external_key))::INTEGER AS item_count
         FROM legacy_x.skinchanger_catalog_items
         WHERE is_active = true
         GROUP BY category
@@ -168,7 +277,7 @@ AS $$
     'weaponClasses', COALESCE((
       SELECT jsonb_agg(jsonb_build_object('weaponClass', weapon_class, 'count', item_count) ORDER BY weapon_class)
       FROM (
-        SELECT weapon_class, count(*)::INTEGER AS item_count
+        SELECT weapon_class, count(DISTINCT legacy_x.skinchanger_catalog_browse_key(category, weapon_class, display_name, external_key))::INTEGER AS item_count
         FROM legacy_x.skinchanger_catalog_items
         WHERE is_active = true
           AND weapon_class IS NOT NULL

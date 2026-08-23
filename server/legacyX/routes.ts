@@ -611,17 +611,17 @@ export function createLegacyXRouter() {
       limit: z.coerce.number().int().min(1).max(100).default(36),
       offset: z.coerce.number().int().min(0).default(0),
     }).parse(req.query);
-    let query = db().from("skinchanger_catalog_items")
-      .select("id,external_key,category,weapon_class,display_name,weapon_defindex,paint_id,model,image_key,metadata", { count: "exact" })
-      .eq("is_active", true)
-      .order("display_name")
-      .range(input.offset, input.offset + input.limit - 1);
-    if (input.category) query = query.eq("category", input.category);
-    if (input.weaponClass) query = query.eq("weapon_class", input.weaponClass);
-    if (input.query) query = query.ilike("display_name", `%${input.query}%`);
-    const { data, error, count } = await query;
+    const { data, error } = await db().rpc("get_skinchanger_catalog_page", {
+      p_category: input.category ?? null,
+      p_weapon_class: input.weaponClass ?? null,
+      p_query: input.query ?? null,
+      p_limit: input.limit,
+      p_offset: input.offset,
+    });
     legacyXError(error, "Unable to load skinchanger catalog");
-    sendPage(res, (data ?? []).map(item => ({ ...item, image_url: apiStorageUrl(req, item.image_key) })), count, input.limit, input.offset);
+    const items = (data ?? []) as Array<DbRow & { total_count?: number | string }>;
+    const total = Number(items[0]?.total_count ?? 0);
+    sendPage(res, items.map(({ total_count: _total, ...item }) => ({ ...item, image_url: apiStorageUrl(req, item.image_key) })), total, input.limit, input.offset);
   }));
 
   router.get("/skinchanger/catalog/facets", userRoute(async (req, res) => {
