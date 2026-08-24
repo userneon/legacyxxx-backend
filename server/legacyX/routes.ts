@@ -675,6 +675,10 @@ export function createLegacyXRouter() {
       const charmId = textValue(recordValue(options.charm).catalogItemId);
       return charmId ? [...stickerIds, charmId] : stickerIds;
     })));
+    const catalogItemForResponse = (item: DbRow | null) => {
+      if (!item) return null;
+      return { ...item, image_url: staticStorageUrl(_req, textValue(item.image_key) || null) };
+    };
     let accessoryById = new Map<string, DbRow>();
     if (accessoryIds.length) {
       const { data: accessories, error: accessoryError } = await db().from("skinchanger_catalog_items")
@@ -682,7 +686,7 @@ export function createLegacyXRouter() {
         .in("id", accessoryIds)
         .eq("is_active", true);
       legacyXError(accessoryError, "Unable to resolve skinchanger accessories");
-      accessoryById = new Map(((accessories ?? []) as DbRow[]).map((item) => [textValue(item.id), item]));
+      accessoryById = new Map(((accessories ?? []) as DbRow[]).map((item) => [textValue(item.id), catalogItemForResponse(item) as DbRow]));
     }
     const enrichedEntries = entries.map((entry) => {
       const options = recordValue(entry.options);
@@ -690,7 +694,11 @@ export function createLegacyXRouter() {
       const ids = stickers.map((sticker: unknown) => textValue(recordValue(sticker).catalogItemId)).filter(Boolean);
       const charmId = textValue(recordValue(options.charm).catalogItemId);
       if (charmId) ids.push(charmId);
-      return { ...entry, resolved_accessories: ids.map((id: string) => accessoryById.get(id)).filter(Boolean) };
+      return {
+        ...entry,
+        skinchanger_catalog_items: catalogItemForResponse(firstRow(entry.skinchanger_catalog_items)),
+        resolved_accessories: ids.map((id: string) => accessoryById.get(id)).filter(Boolean),
+      };
     });
     res.json({ loadout: { ...loadout, skinchanger_loadout_entries: enrichedEntries } });
   }));
