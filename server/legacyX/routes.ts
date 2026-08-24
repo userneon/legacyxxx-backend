@@ -772,7 +772,9 @@ export function createLegacyXRouter() {
       target_id: user.id,
       metadata: { version, entryCount: entries.length },
     });
-    legacyXError(auditError, "Unable to audit skinchanger loadout");
+    // A durable loadout has already been saved at this point. Audit outages must
+    // never make the player believe their saved look failed or roll UI state back.
+    if (auditError) console.error("Unable to audit skinchanger loadout", auditError);
     res.json({ version, entryCount: entries.length });
   }));
 
