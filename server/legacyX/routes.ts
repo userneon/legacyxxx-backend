@@ -243,6 +243,10 @@ function textValue(value: unknown) {
   return typeof value === "string" ? value : "";
 }
 
+function recordValue(value: unknown): DbRow {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as DbRow : {};
+}
+
 function timestampValue(value: unknown) {
   return value == null ? "" : String(value);
 }
@@ -643,7 +647,33 @@ export function createLegacyXRouter() {
       .eq("user_id", user.id)
       .maybeSingle();
     legacyXError(error, "Unable to load skinchanger loadout");
-    res.json({ loadout: data ?? { version: 0, updated_at: null, skinchanger_loadout_entries: [] } });
+    const loadout = data ?? { version: 0, updated_at: null, skinchanger_loadout_entries: [] };
+    const entries = (loadout.skinchanger_loadout_entries ?? []) as DbRow[];
+    const accessoryIds = Array.from(new Set(entries.flatMap((entry) => {
+      const options = recordValue(entry.options);
+      const stickers = Array.isArray(options.stickers) ? options.stickers : [];
+      const stickerIds = stickers.map((sticker: unknown) => textValue(recordValue(sticker).catalogItemId)).filter(Boolean);
+      const charmId = textValue(recordValue(options.charm).catalogItemId);
+      return charmId ? [...stickerIds, charmId] : stickerIds;
+    })));
+    let accessoryById = new Map<string, DbRow>();
+    if (accessoryIds.length) {
+      const { data: accessories, error: accessoryError } = await db().from("skinchanger_catalog_items")
+        .select("id,external_key,category,weapon_class,display_name,weapon_defindex,paint_id,model,image_key,metadata")
+        .in("id", accessoryIds)
+        .eq("is_active", true);
+      legacyXError(accessoryError, "Unable to resolve skinchanger accessories");
+      accessoryById = new Map(((accessories ?? []) as DbRow[]).map((item) => [textValue(item.id), item]));
+    }
+    const enrichedEntries = entries.map((entry) => {
+      const options = recordValue(entry.options);
+      const stickers = Array.isArray(options.stickers) ? options.stickers : [];
+      const ids = stickers.map((sticker: unknown) => textValue(recordValue(sticker).catalogItemId)).filter(Boolean);
+      const charmId = textValue(recordValue(options.charm).catalogItemId);
+      if (charmId) ids.push(charmId);
+      return { ...entry, resolved_accessories: ids.map((id: string) => accessoryById.get(id)).filter(Boolean) };
+    });
+    res.json({ loadout: { ...loadout, skinchanger_loadout_entries: enrichedEntries } });
   }));
 
   router.get("/skinchanger/active-server", userRoute(async (_req, res, user) => {
