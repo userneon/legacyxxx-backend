@@ -151,7 +151,19 @@ AS $$
   )
   SELECT *
   FROM paged
-  ORDER BY display_name
+  ORDER BY
+    CASE metadata ->> 'rarity'
+      WHEN 'Covert' THEN 1
+      WHEN 'Classified' THEN 2
+      WHEN 'Restricted' THEN 3
+      WHEN 'Mil-Spec Grade' THEN 4
+      WHEN 'Industrial Grade' THEN 5
+      WHEN 'Consumer Grade' THEN 6
+      WHEN 'Contraband' THEN 7
+      WHEN 'Extraordinary' THEN 8
+      ELSE 99
+    END,
+    display_name
   LIMIT LEAST(GREATEST(p_limit, 1), 100)
   OFFSET GREATEST(p_offset, 0)
 $$;
