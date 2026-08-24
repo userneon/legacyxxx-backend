@@ -89,6 +89,20 @@ describe("LEGACY-X REST API", () => {
     expect(response.status).toBe(401);
   });
 
+  it("rejects live snapshot writes without a scoped plugin token before any database write", async () => {
+    const response = await fetch(`${baseUrl}/plugin/live-match/snapshots`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        event_id: "snapshot-test-event-0001",
+        server_id: "legacyx-match-1",
+        live_match: { schema_version: 1, snapshot_revision: 1, captured_at: "2026-08-24T15:00:00.000Z", state: "live", terrorist_players: [], counter_terrorist_players: [], spectator_players: [] },
+      }),
+    });
+
+    expect(response.status).toBe(401);
+  });
+
   it("rejects an invalid plugin bearer token before any database write", async () => {
     const response = await fetch(`${baseUrl}/plugin/maps`, {
       method: "POST",
