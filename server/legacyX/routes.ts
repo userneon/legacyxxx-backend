@@ -563,7 +563,11 @@ export function createLegacyXRouter() {
       ? z.array(liveMatchPlayerSchema).parse(value).map(player => ({ steamId: player.steam_id, name: player.name, connected: player.connected }))
       : [];
     const nullableNumber = (value: unknown) => typeof value === "number" && Number.isFinite(value) ? value : null;
-    const hasSnapshot = Boolean(snapshot);
+    const reportedAt = textValue(snapshot?.reported_at);
+    const reportedAtMs = Date.parse(reportedAt);
+    // A stale snapshot must not surface an old score or old team assignment.
+    // The connected-player fallback remains available while a plugin catches up.
+    const hasSnapshot = Boolean(snapshot) && Number.isFinite(reportedAtMs) && Date.now() - reportedAtMs <= 90_000;
     const scoreT = nullableNumber(snapshot?.score_t);
     const scoreCt = nullableNumber(snapshot?.score_ct);
     res.json({
@@ -577,7 +581,7 @@ export function createLegacyXRouter() {
         score: hasSnapshot && scoreT !== null && scoreCt !== null ? { t: scoreT, ct: scoreCt } : null,
         teams: hasSnapshot ? { t: normalizePlayers(snapshot?.terrorist_players), ct: normalizePlayers(snapshot?.counter_terrorist_players) } : { t: [], ct: [] },
         connectedPlayers: hasSnapshot ? [] : rosterOnly,
-        updatedAt: hasSnapshot ? textValue(snapshot?.reported_at) : textValue(serverResult.data.last_heartbeat_at) || null,
+        updatedAt: hasSnapshot ? reportedAt : textValue(serverResult.data.last_heartbeat_at) || null,
         availability: hasSnapshot ? "live_snapshot" : rosterOnly.length > 0 ? "roster_only" : "unavailable",
       },
     });
@@ -672,6 +676,68 @@ export function createLegacyXRouter() {
   router.get("/auth/me", userRoute(async (_req, res, user) => {
     const profile = await loadProfile(user.id);
     res.json(mapUserProfile(profile.user, profile.links));
+  }));
+
+  // Browser-safe reconnect projection. The SteamID comes only from the
+  // verified JWT; a browser never submits an identity or gains plugin access.
+  router.get("/reconnect/me", userRoute(async (_req, res, user) => {
+    const { data, error } = await db()
+      .schema("legacy_x")
+      .from("reconnect_last_played")
+      .select("session_id,server_id,server_name,connect_address,map_name,mode,disconnected_at,reconnectable_until,player_count,server_online")
+      .eq("steam_id", user.steamId)
+      .not("disconnected_at", "is", null)
+      .eq("server_online", true)
+      .gt("reconnectable_until", new Date().toISOString())
+      .order("disconnected_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    legacyXError(error, "Unable to load reconnect eligibility");
+
+    const candidate = data as DbRow | null;
+    if (!candidate) {
+      res.json({ reconnect: null });
+      return;
+    }
+
+    // A later active session is authoritative evidence the player joined this
+    // or another server, so the temporary card must disappear.
+    const disconnectedAt = textValue(candidate.disconnected_at);
+    const { data: activeSession, error: activeSessionError } = await db()
+      .schema("legacy_x")
+      .from("reconnect_sessions")
+      .select("session_id")
+      .eq("steam_id", user.steamId)
+      .is("disconnected_at", null)
+      .gt("connected_at", disconnectedAt)
+      .limit(1)
+      .maybeSingle();
+    legacyXError(activeSessionError, "Unable to verify reconnect eligibility");
+    if (activeSession) {
+      res.json({ reconnect: null });
+      return;
+    }
+
+    const connectAddress = textValue(candidate.connect_address);
+    const addressMatch = /^([a-zA-Z0-9.-]+):(\d{1,5})$/.exec(connectAddress);
+    const port = addressMatch ? Number(addressMatch[2]) : 0;
+    if (!addressMatch || port < 1 || port > 65_535) {
+      // Do not forward malformed data into the Steam URI protocol.
+      res.json({ reconnect: null });
+      return;
+    }
+
+    res.json({ reconnect: {
+      sessionId: textValue(candidate.session_id),
+      serverId: textValue(candidate.server_id),
+      serverName: textValue(candidate.server_name) || textValue(candidate.server_id),
+      connectAddress,
+      map: textValue(candidate.map_name) || "Unknown",
+      mode: textValue(candidate.mode) || "Community",
+      disconnectedAt,
+      reconnectableUntil: textValue(candidate.reconnectable_until),
+      playerCount: numberValue(candidate.player_count),
+    } });
   }));
 
   router.get("/profile/:userId", userRoute(async (req, res, user) => {

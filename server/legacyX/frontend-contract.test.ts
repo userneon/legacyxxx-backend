@@ -38,6 +38,10 @@ const competitiveEndpoints: Endpoint[] = [
   { method: "GET", path: "/competitive/me/access" },
 ];
 
+const reconnectEndpoints: Endpoint[] = [
+  { method: "GET", path: "/reconnect/me" },
+];
+
 let server: Server;
 let baseUrl: string;
 
@@ -80,6 +84,13 @@ describe("frontend API endpoint inventory", () => {
 
   it("registers competitive player access beneath /api/v1 and rejects missing authentication", async () => {
     for (const endpoint of competitiveEndpoints) {
+      const response = await fetch(`${baseUrl}${endpoint.path}`, { method: endpoint.method });
+      expect(response.status, `${endpoint.method} /api/v1${endpoint.path}`).toBe(401);
+    }
+  });
+
+  it("registers the authenticated player reconnect endpoint and rejects missing authentication", async () => {
+    for (const endpoint of reconnectEndpoints) {
       const response = await fetch(`${baseUrl}${endpoint.path}`, { method: endpoint.method });
       expect(response.status, `${endpoint.method} /api/v1${endpoint.path}`).toBe(401);
     }
