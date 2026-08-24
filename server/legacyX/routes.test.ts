@@ -14,7 +14,7 @@ async function frontendAuthHeaders() {
     id: randomUUID(),
     steamId: "76561198000000000",
     username: "frontend-contract-user",
-    isStaff: false,
+    role: "Player",
   });
   return { authorization: `Bearer ${accessToken}` };
 }
@@ -117,7 +117,7 @@ describe("LEGACY-X REST API", () => {
       id: randomUUID(),
       steamId: "76561198000000000",
       username: "transaction-guard",
-      isStaff: false,
+      role: "Player",
     });
     const response = await fetch(`${baseUrl}/store/items/${randomUUID()}/purchase`, {
       method: "POST",

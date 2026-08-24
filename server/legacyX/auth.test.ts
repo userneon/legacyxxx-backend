@@ -23,9 +23,9 @@ describe("plugin token hashing", () => {
 
   it("issues and verifies a signed user access token", async () => {
     process.env.JWT_SECRET = "test-secret-that-is-longer-than-thirty-two-characters";
-    const token = await issueAccessToken({ id: "player-id", steamId: "76561198000000000", username: "Player", isStaff: false });
+    const token = await issueAccessToken({ id: "player-id", steamId: "76561198000000000", username: "Player", role: "Player" });
 
-    await expect(verifyAccessToken(token)).resolves.toEqual({ id: "player-id", steamId: "76561198000000000", username: "Player", isStaff: false });
+    await expect(verifyAccessToken(token)).resolves.toEqual({ id: "player-id", steamId: "76561198000000000", username: "Player", role: "Player" });
     await expect(verifyAccessToken(`${token}tampered`)).rejects.toThrow();
   });
 

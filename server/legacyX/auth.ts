@@ -6,7 +6,6 @@ export type LegacyUser = {
   id: string;
   steamId: string;
   role: UserRole;
-  isStaff: boolean;
   username: string;
 };
 
@@ -49,7 +48,7 @@ export function hasPluginScope(scopes: unknown, requiredScope: string) {
 }
 
 export async function issueAccessToken(user: LegacyUser) {
-  return new SignJWT({ steamId: user.steamId, role: user.role, isStaff: isStaffRole(user.role), username: user.username })
+  return new SignJWT({ steamId: user.steamId, role: user.role, username: user.username })
     .setProtectedHeader({ alg: "HS256" })
     .setSubject(user.id)
     .setIssuedAt()
@@ -68,7 +67,6 @@ export async function verifyAccessToken(token: string): Promise<LegacyUser> {
     steamId: payload.steamId,
     username: payload.username,
     role,
-    isStaff: isStaffRole(role),
   };
 }
 
@@ -100,13 +98,13 @@ export async function rotateRefreshSession(refreshToken: string): Promise<Legacy
 
   const { data: user, error: userError } = await db
     .from("users")
-    .select("id,steam_id,username,role,is_staff")
+    .select("id,steam_id,username,role")
     .eq("id", session.user_id)
     .maybeSingle();
   legacyXError(userError, "Unable to read session user");
   if (!user) throw Object.assign(new Error("Session user no longer exists"), { statusCode: 401 });
   const role = isUserRole(user.role) ? user.role : "Player";
-  return { id: user.id, steamId: user.steam_id, username: user.username, role, isStaff: isStaffRole(role) };
+  return { id: user.id, steamId: user.steam_id, username: user.username, role };
 }
 
 export async function revokeRefreshSession(refreshToken: string) {
