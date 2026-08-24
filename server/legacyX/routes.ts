@@ -673,12 +673,22 @@ export function createLegacyXRouter() {
 
   router.get("/skinchanger/loadout", userRoute(async (_req, res, user) => {
     const { data, error } = await db().from("skinchanger_loadouts")
-      .select("version,updated_at,skinchanger_loadout_entries(catalog_item_id,slot,slot_key,team_scope,options,skinchanger_catalog_items(id,external_key,category,weapon_class,display_name,weapon_defindex,paint_id,model,image_key,metadata))")
+      .select("version,updated_at")
       .eq("user_id", user.id)
       .maybeSingle();
     legacyXError(error, "Unable to load skinchanger loadout");
-    const loadout = data ?? { version: 0, updated_at: null, skinchanger_loadout_entries: [] };
-    const entries = (loadout.skinchanger_loadout_entries ?? []) as DbRow[];
+    if (!data) {
+      res.json({ loadout: { version: 0, updated_at: null, skinchanger_loadout_entries: [] } });
+      return;
+    }
+    const loadout = data as DbRow;
+    const { data: entryData, error: entryError } = await db().from("skinchanger_loadout_entries")
+      .select("catalog_item_id,slot,slot_key,team_scope,options")
+      .eq("user_id", user.id)
+      .order("slot_key")
+      .order("team_scope");
+    legacyXError(entryError, "Unable to load skinchanger loadout entries");
+    const entries = (entryData ?? []) as DbRow[];
     const accessoryIds = Array.from(new Set(entries.flatMap((entry) => {
       const options = recordValue(entry.options);
       const stickers = Array.isArray(options.stickers) ? options.stickers : [];
@@ -686,18 +696,20 @@ export function createLegacyXRouter() {
       const charmId = textValue(recordValue(options.charm).catalogItemId);
       return charmId ? [...stickerIds, charmId] : stickerIds;
     })));
+    const catalogItemIds = Array.from(new Set(entries.map((entry) => textValue(entry.catalog_item_id)).filter(Boolean)));
     const catalogItemForResponse = (item: DbRow | null) => {
       if (!item) return null;
       return { ...item, image_url: staticStorageUrl(_req, textValue(item.image_key) || null) };
     };
-    let accessoryById = new Map<string, DbRow>();
-    if (accessoryIds.length) {
-      const { data: accessories, error: accessoryError } = await db().from("skinchanger_catalog_items")
+    const requestedCatalogIds = Array.from(new Set([...catalogItemIds, ...accessoryIds]));
+    let catalogById = new Map<string, DbRow>();
+    if (requestedCatalogIds.length) {
+      const { data: catalogItems, error: catalogError } = await db().from("skinchanger_catalog_items")
         .select("id,external_key,category,weapon_class,display_name,weapon_defindex,paint_id,model,image_key,metadata")
-        .in("id", accessoryIds)
+        .in("id", requestedCatalogIds)
         .eq("is_active", true);
-      legacyXError(accessoryError, "Unable to resolve skinchanger accessories");
-      accessoryById = new Map(((accessories ?? []) as DbRow[]).map((item) => [textValue(item.id), catalogItemForResponse(item) as DbRow]));
+      legacyXError(catalogError, "Unable to resolve skinchanger catalog items");
+      catalogById = new Map(((catalogItems ?? []) as DbRow[]).map((item) => [textValue(item.id), catalogItemForResponse(item) as DbRow]));
     }
     const enrichedEntries = entries.map((entry) => {
       const options = recordValue(entry.options);
@@ -707,8 +719,8 @@ export function createLegacyXRouter() {
       if (charmId) ids.push(charmId);
       return {
         ...entry,
-        skinchanger_catalog_items: catalogItemForResponse(firstRow(entry.skinchanger_catalog_items)),
-        resolved_accessories: ids.map((id: string) => accessoryById.get(id)).filter(Boolean),
+        skinchanger_catalog_items: catalogById.get(textValue(entry.catalog_item_id)) ?? null,
+        resolved_accessories: ids.map((id: string) => catalogById.get(id)).filter(Boolean),
       };
     });
     res.json({ loadout: { ...loadout, skinchanger_loadout_entries: enrichedEntries } });
