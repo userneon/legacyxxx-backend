@@ -24,6 +24,7 @@ const SOURCE_BASE = process.env.SKINCHANGER_CATALOG_SOURCE_BASE ?? "https://raw.
 const MAX_IMAGE_BYTES = 12 * 1024 * 1024;
 const DEFAULT_CONCURRENCY = 3;
 const categories = ["weapon", "weapon_skin", "knife", "glove", "agent", "music_kit", "pin", "sticker", "charm"];
+const firearmGroups = new Set(["Pistols", "SMGs", "Rifles", "Heavy"]);
 const args = new Map(process.argv.slice(2).map((value) => {
   const [key, raw = "true"] = value.replace(/^--/, "").split("=", 2);
   return [key, raw];
@@ -76,6 +77,11 @@ function classify(raw, sourceCategory) {
   const name = text(raw.name).toLowerCase();
   const weaponName = text(raw.weapon?.name).toLowerCase();
   const type = text(raw.type).toLowerCase();
+  const sourceGroup = text(raw.category?.name, text(raw.category, ""));
+  if (sourceCategory === "weapon") {
+    if (sourceGroup === "Knives") return "knife";
+    return firearmGroups.has(sourceGroup) ? "weapon" : null;
+  }
   if (sourceCategory === "weapon_skin") {
     if (/knife|bayonet|karambit|m9|butterfly|talon|stiletto|ursus|navaja|falchion|bowie|daggers|kukri/.test(weaponName)) return "knife";
     if (/glove|hand wrap|bloodhound|driver|moto|sport|specialist|hydra|broken fang/.test(weaponName)) return "glove";
@@ -108,6 +114,7 @@ function normalize(raw, sourceCategory) {
       source: "bymykel-csgo-api",
       sourceId: raw.id ?? null,
       weaponGroup: text(raw.category?.name, null),
+      baseModel: sourceCategory === "weapon" && category === "knife",
       rarity: raw.rarity?.name ?? raw.rarity ?? null,
       minWear: raw.min_float ?? null,
       maxWear: raw.max_float ?? null,

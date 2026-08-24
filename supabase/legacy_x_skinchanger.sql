@@ -81,6 +81,8 @@ AS $$
     WHERE item.is_active = true
       AND (p_category IS NULL OR item.category = p_category)
       AND (p_weapon_class IS NULL OR item.weapon_class = p_weapon_class)
+      AND (p_category IS DISTINCT FROM 'weapon' OR COALESCE(item.metadata ->> 'weaponGroup', '') IN ('Pistols', 'SMGs', 'Rifles', 'Heavy'))
+      AND (p_weapon_class IS NULL OR COALESCE((item.metadata ->> 'baseModel')::BOOLEAN, false) = false)
       AND (p_team IS NULL OR item.metadata ->> 'team' = p_team)
       AND (p_query IS NULL OR item.display_name ILIKE '%' || p_query || '%' OR item.weapon_class ILIKE '%' || p_query || '%')
   ),
@@ -97,6 +99,7 @@ AS $$
     FROM filtered
     JOIN ranges USING (browse_key)
     ORDER BY browse_key,
+      CASE WHEN COALESCE((filtered.metadata ->> 'baseModel')::BOOLEAN, false) THEN 0 ELSE 1 END,
       CASE regexp_replace(display_name, '^.* \(([^)]*)\)$', '\1')
         WHEN 'Factory New' THEN 0
         WHEN 'Minimal Wear' THEN 1
