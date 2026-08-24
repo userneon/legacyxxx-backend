@@ -22,3 +22,11 @@ The real catalog source is the public ByMykel CS:GO API: `https://raw.githubuser
 For the first production restoration, catalog `image_key` values may be the source's direct HTTPS static image URL. The Root API returns that URL unchanged, so image bytes do not pass through the API. A future controlled media operation may replace each external source URL with content-hashed `STATIC_ASSET_BASE_URL` WebP files without changing catalog IDs or player loadouts.
 
 The Supabase MCP request payload limit required the initial 33,221-record upsert to run as idempotent 4,000-record transactions. All nine batches were applied successfully during the 2026-08-24 production restoration. The final `category,count(*)` validation exactly matched the no-write coverage counts.
+
+## Live Validation Snapshot — 2026-08-24
+
+`https://api.legacyx.cc/api/v1/skinchanger/catalog?category=weapon&limit=3` is deployed and correctly returns **401** for a request without an authenticated session. Its CORS preflight from `https://legacyx.cc` returns **204** with that exact allowed origin, credentials enabled, and `GET, POST, PUT, PATCH, DELETE, OPTIONS` allowed.
+
+A representative database image URL resolved directly from `community.akamai.steamstatic.com` with HTTP **200**, `image/png`, and no Root API image-byte proxy. The live browser page renders the authenticated empty state when no Steam session is present; catalog browsing and loadout mutation must therefore be validated from a trusted player Steam session.
+
+The API-only SkinBridge fork built successfully in .NET 8 Release with zero warnings/errors and has no direct Supabase, Npgsql, connection-string, or `SUPABASE_*` reference in its C# source. No game server or plugin token was created during this rollout.
