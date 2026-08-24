@@ -50,6 +50,7 @@ curl --fail http://127.0.0.1:3000/health
 | `JWT_SECRET` | At least 32 characters |
 | `PUBLIC_API_ORIGIN` | HTTPS API origin |
 | `STEAM_OPENID_ORIGIN` | `https://legacyx.cc` — Steam-д харагдах relying-party domain |
+| `AUTH_COOKIE_DOMAIN` | `.legacyx.cc` — `legacyx.cc` болон `api.legacyx.cc` хооронд Secure session cookie share хийнэ |
 | `FRONTEND_ORIGIN` | HTTPS LEGACY-X frontend origin |
 | `POST_LOGIN_REDIRECT` | HTTPS post-login frontend URL |
 
@@ -75,6 +76,8 @@ location ^~ /api/v1/auth/steam {
 ```
 
 Keep the API host as the upstream. Only the browser-facing Steam realm/return URL changes to `legacyx.cc`; API credentials and session handling remain server-side.
+
+Because the OpenID callback is delivered through `legacyx.cc` while authenticated API calls continue to use `api.legacyx.cc`, set `AUTH_COOKIE_DOMAIN=.legacyx.cc`. Without this Domain attribute, the browser creates a host-only callback cookie and subsequent API calls appear logged out. After enabling it, remove any stale cookies for both hosts once and sign in again.
 
 If a token or service key is ever displayed in a terminal, browser, screenshot, chat, or log, treat it as exposed: revoke the affected refresh session, rotate the service/API key or JWT secret as appropriate, replace the server-local value, rebuild, and restart before testing login again.
 
