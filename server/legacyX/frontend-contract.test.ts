@@ -90,6 +90,11 @@ describe("frontend API endpoint inventory", () => {
     expect(response.status).not.toBe(404);
   });
 
+  it("registers the public server live match route", async () => {
+    const response = await fetch(`${baseUrl}/public/servers/legacyx-match-1/live-match`);
+    expect(response.status).not.toBe(404);
+  });
+
   it("registers the public Steam entry point beneath /api/v1", async () => {
     const response = await fetch(`${baseUrl}/auth/steam`, { redirect: "manual" });
     expect(response.status).toBe(302);

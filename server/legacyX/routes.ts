@@ -521,6 +521,16 @@ export function createLegacyXRouter() {
       return { id: textValue(server.server_id), name: textValue(server.display_name) || textValue(server.server_id), map: textValue(server.current_map) || "Unknown", players, maxPlayers: 10, mode: textValue(server.current_mode) || "Community", ping: 0, status: online ? (players >= 10 ? "full" : "online") : "offline", connectAddress: textValue(server.connect_address) };
     });
   };
+  const liveMatchPlayerSchema = z.object({ steam_id: z.string().regex(/^\d{15,20}$/), name: z.string().trim().min(1).max(128), connected: z.boolean().default(true) });
+  const reconnectLiveMatchSchema = z.object({
+    state: z.enum(["waiting", "live", "paused", "ended"]),
+    map_name: z.string().trim().max(128).optional().default(""),
+    round_number: z.coerce.number().int().min(0).max(500).nullable().optional(),
+    score_t: z.coerce.number().int().min(0).max(500).nullable().optional(),
+    score_ct: z.coerce.number().int().min(0).max(500).nullable().optional(),
+    terrorist_players: z.array(liveMatchPlayerSchema).max(16).default([]),
+    counter_terrorist_players: z.array(liveMatchPlayerSchema).max(16).default([]),
+  });
   router.get("/public/rank/leaderboard", asyncRoute(async (req, res) => {
     const season = readSeason(req.query.season);
     const { data, error } = await db().from("rank_leaderboard").select("season_slug,season_name,rank,steam_id,username,rating,tier,matches_played,wins,losses,kills,deaths,assists,kd_ratio,last_match_at").eq("season_slug", season).order("rank").limit(readLimit(req.query.limit));
@@ -536,6 +546,41 @@ export function createLegacyXRouter() {
     const { data, error } = await db().from("competitive_leaderboard").select("position,user_id,steam_id,username,avatar,current_exp,rank_id,rank_slug,rank_name,rank_image_key,pro_league_unlocked,matches_completed,wins,losses,kills,assists,headshot_kills,deaths,kd_ratio,played_hours,last_match_at").order("position").limit(readLimit(req.query.limit));
     legacyXError(error, "Unable to load competitive leaderboard");
     res.json({ entries: data ?? [] });
+  }));
+  router.get("/public/servers/:serverId/live-match", asyncRoute(async (req, res) => {
+    const serverId = z.string().trim().min(1).max(120).parse(req.params.serverId);
+    const [serverResult, snapshotResult, sessionsResult] = await Promise.all([
+      db().schema("legacy_x").from("reconnect_servers").select("server_id,display_name,current_map,current_mode,player_count,last_heartbeat_at").eq("server_id", serverId).maybeSingle(),
+      db().schema("legacy_x").from("server_live_match_snapshots").select("state,map_name,round_number,score_t,score_ct,terrorist_players,counter_terrorist_players,reported_at").eq("server_id", serverId).maybeSingle(),
+      db().schema("legacy_x").from("reconnect_sessions").select("steam_id,player_name,connected_at").eq("server_id", serverId).is("disconnected_at", null).order("connected_at").limit(32),
+    ]);
+    legacyXError(serverResult.error || snapshotResult.error || sessionsResult.error, "Unable to load live server match");
+    if (!serverResult.data) apiError(404, "Server was not found");
+
+    const snapshot = snapshotResult.data as DbRow | null;
+    const rosterOnly = ((sessionsResult.data ?? []) as DbRow[]).map(session => ({ steamId: textValue(session.steam_id), name: textValue(session.player_name) || "Unknown player", connected: true }));
+    const normalizePlayers = (value: unknown) => z.array(liveMatchPlayerSchema).safeParse(value).success
+      ? z.array(liveMatchPlayerSchema).parse(value).map(player => ({ steamId: player.steam_id, name: player.name, connected: player.connected }))
+      : [];
+    const nullableNumber = (value: unknown) => typeof value === "number" && Number.isFinite(value) ? value : null;
+    const hasSnapshot = Boolean(snapshot);
+    const scoreT = nullableNumber(snapshot?.score_t);
+    const scoreCt = nullableNumber(snapshot?.score_ct);
+    res.json({
+      liveMatch: {
+        serverId,
+        serverName: textValue(serverResult.data.display_name) || serverId,
+        map: textValue(snapshot?.map_name) || textValue(serverResult.data.current_map) || "Unknown",
+        mode: textValue(serverResult.data.current_mode) || "Community",
+        state: hasSnapshot ? textValue(snapshot?.state) : "unavailable",
+        round: hasSnapshot ? nullableNumber(snapshot?.round_number) : null,
+        score: hasSnapshot && scoreT !== null && scoreCt !== null ? { t: scoreT, ct: scoreCt } : null,
+        teams: hasSnapshot ? { t: normalizePlayers(snapshot?.terrorist_players), ct: normalizePlayers(snapshot?.counter_terrorist_players) } : { t: [], ct: [] },
+        connectedPlayers: hasSnapshot ? [] : rosterOnly,
+        updatedAt: hasSnapshot ? textValue(snapshot?.reported_at) : textValue(serverResult.data.last_heartbeat_at) || null,
+        availability: hasSnapshot ? "live_snapshot" : rosterOnly.length > 0 ? "roster_only" : "unavailable",
+      },
+    });
   }));
   router.get("/public/competitive/players/:userId", asyncRoute(async (req, res) => {
     const userId = userIdSchema.parse(req.params.userId);
@@ -1746,12 +1791,29 @@ export function createLegacyXRouter() {
     res.status(200).json({ result: data ?? {} });
   }));
   router.post("/plugin/reconnect/events", pluginRoute("servers:write", async (req, res, plugin) => {
-    const input = z.object({ event: z.enum(["player_connected", "player_disconnected", "server_heartbeat"]), event_id: z.string().min(8).max(180), server_id: z.string().min(1).max(120), server_address: z.string().min(1).max(255), map_name: z.string().max(128).optional().default(""), mode: z.string().max(128).optional().default(""), player_count: z.coerce.number().int().min(0).max(128).optional(), session_id: z.string().uuid().optional(), steam_id: z.string().regex(/^\d{15,20}$/).optional(), player_name: z.string().max(128).optional().default(""), disconnect_reason: z.string().max(96).optional().default(""), reconnect_window_minutes: z.coerce.number().int().min(5).max(1440).optional().default(720) }).parse(req.body);
+    const input = z.object({ event: z.enum(["player_connected", "player_disconnected", "server_heartbeat"]), event_id: z.string().min(8).max(180), server_id: z.string().min(1).max(120), server_address: z.string().min(1).max(255), map_name: z.string().max(128).optional().default(""), mode: z.string().max(128).optional().default(""), player_count: z.coerce.number().int().min(0).max(128).optional(), live_match: reconnectLiveMatchSchema.optional(), session_id: z.string().uuid().optional(), steam_id: z.string().regex(/^\d{15,20}$/).optional(), player_name: z.string().max(128).optional().default(""), disconnect_reason: z.string().max(96).optional().default(""), reconnect_window_minutes: z.coerce.number().int().min(5).max(1440).optional().default(720) }).parse(req.body);
     const pluginId = req.header("x-plugin-id")?.trim() || plugin.name;
     if (pluginId !== "legacyx-reconnect") apiError(403, "Reconnect plugin identity is required");
     if (input.event === "server_heartbeat") {
       const { data, error } = await db().schema("legacy_x").rpc("ingest_reconnect_heartbeat", { p_event_id: input.event_id, p_plugin_id: pluginId, p_server_id: input.server_id, p_server_address: input.server_address, p_map_name: input.map_name, p_mode: input.mode, p_player_count: input.player_count ?? 0 });
       legacyXError(error, "Unable to ingest reconnect server heartbeat");
+      if (input.live_match) {
+        const snapshot = input.live_match;
+        const { error: snapshotError } = await db().schema("legacy_x").from("server_live_match_snapshots").upsert({
+          server_id: input.server_id,
+          source_event_id: input.event_id,
+          state: snapshot.state,
+          map_name: snapshot.map_name || input.map_name,
+          round_number: snapshot.round_number ?? null,
+          score_t: snapshot.score_t ?? null,
+          score_ct: snapshot.score_ct ?? null,
+          terrorist_players: snapshot.terrorist_players,
+          counter_terrorist_players: snapshot.counter_terrorist_players,
+          reported_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        }, { onConflict: "server_id" });
+        legacyXError(snapshotError, "Unable to ingest live server match snapshot");
+      }
       res.status(200).json({ result: data ?? {} });
       return;
     }
