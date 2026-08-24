@@ -28,6 +28,8 @@ DECLARE
   v_metadata JSONB;
   v_required_scope TEXT := 'all';
   v_model_key TEXT;
+  v_existing_shared_entry legacy_x.skinchanger_loadout_entries%ROWTYPE;
+  v_opposite_scope TEXT;
 BEGIN
   IF p_expected_version IS NULL OR p_expected_version < 0 OR jsonb_typeof(p_entry) <> 'object' THEN
     RAISE EXCEPTION 'Invalid Skinchanger entry mutation' USING ERRCODE = '22023';
@@ -135,6 +137,69 @@ BEGIN
   FOR UPDATE;
   IF v_current_version <> p_expected_version THEN
     RAISE EXCEPTION 'Skinchanger loadout version conflict' USING ERRCODE = 'P0001';
+  END IF;
+
+  -- A CS2 player can only have one active knife/glove per team. Preserve a
+  -- pre-existing Both look by moving it to the opposite team when a distinct
+  -- new look is equipped to T or CT; never allow two different Both looks.
+  IF v_slot IN ('knife', 'glove') THEN
+    IF v_team_scope = 'all' THEN
+      IF EXISTS (
+        SELECT 1
+        FROM legacy_x.skinchanger_loadout_entries entry
+        WHERE entry.user_id = p_user_id
+          AND entry.slot = v_slot
+          AND entry.team_scope IN ('all', 't', 'ct')
+          AND NOT (entry.slot_key = v_slot_key AND entry.catalog_item_id = v_catalog_item_id)
+      ) THEN
+        RAISE EXCEPTION 'Choose T or CT because another % look is already equipped' , v_slot USING ERRCODE = '22023';
+      END IF;
+    ELSE
+      SELECT entry.*
+        INTO v_existing_shared_entry
+      FROM legacy_x.skinchanger_loadout_entries entry
+      WHERE entry.user_id = p_user_id
+        AND entry.slot = v_slot
+        AND entry.team_scope = 'all'
+      ORDER BY entry.updated_at DESC
+      LIMIT 1;
+
+      IF FOUND THEN
+        IF v_existing_shared_entry.catalog_item_id = v_catalog_item_id THEN
+          DELETE FROM legacy_x.skinchanger_loadout_entries
+          WHERE user_id = p_user_id
+            AND slot_key = v_existing_shared_entry.slot_key
+            AND team_scope = 'all';
+        ELSE
+          v_opposite_scope := CASE v_team_scope WHEN 't' THEN 'ct' ELSE 't' END;
+          IF EXISTS (
+            SELECT 1
+            FROM legacy_x.skinchanger_loadout_entries entry
+            WHERE entry.user_id = p_user_id
+              AND entry.slot = v_slot
+              AND entry.team_scope = v_opposite_scope
+          ) THEN
+            RAISE EXCEPTION 'Remove the existing % % look before changing Both' , v_opposite_scope, v_slot USING ERRCODE = '22023';
+          END IF;
+          UPDATE legacy_x.skinchanger_loadout_entries
+          SET team_scope = v_opposite_scope, updated_at = now()
+          WHERE user_id = p_user_id
+            AND slot_key = v_existing_shared_entry.slot_key
+            AND team_scope = 'all';
+        END IF;
+      END IF;
+
+      IF EXISTS (
+        SELECT 1
+        FROM legacy_x.skinchanger_loadout_entries entry
+        WHERE entry.user_id = p_user_id
+          AND entry.slot = v_slot
+          AND entry.team_scope = v_team_scope
+          AND NOT (entry.slot_key = v_slot_key AND entry.catalog_item_id = v_catalog_item_id)
+      ) THEN
+        RAISE EXCEPTION 'A % % look is already equipped' , v_team_scope, v_slot USING ERRCODE = '22023';
+      END IF;
+    END IF;
   END IF;
 
   -- Preserve old generic keys during the staged rollout, but replace the old
