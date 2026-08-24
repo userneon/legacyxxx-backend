@@ -42,11 +42,13 @@ AS $$
   END
 $$;
 
-DROP FUNCTION IF EXISTS legacy_x.get_skinchanger_catalog_page(TEXT, TEXT, TEXT, INTEGER, INTEGER);
+DROP FUNCTION IF EXISTS legacy_x.get_skinchanger_catalog_page(TEXT, TEXT, TEXT, TEXT, INTEGER, INTEGER);
+DROP FUNCTION IF EXISTS legacy_x.get_skinchanger_catalog_page(TEXT, TEXT, TEXT, TEXT, TEXT, INTEGER, INTEGER);
 
 CREATE OR REPLACE FUNCTION legacy_x.get_skinchanger_catalog_page(
   p_category TEXT DEFAULT NULL,
   p_weapon_class TEXT DEFAULT NULL,
+  p_weapon_group TEXT DEFAULT NULL,
   p_team TEXT DEFAULT NULL,
   p_query TEXT DEFAULT NULL,
   p_limit INTEGER DEFAULT 36,
@@ -81,6 +83,11 @@ AS $$
     WHERE item.is_active = true
       AND (p_category IS NULL OR item.category = p_category)
       AND (p_weapon_class IS NULL OR item.weapon_class = p_weapon_class)
+      AND (
+        p_weapon_group IS NULL
+        OR item.metadata ->> 'weaponGroup' = p_weapon_group
+        OR (p_weapon_group = 'Mid Tier' AND item.metadata ->> 'weaponGroup' IN ('SMGs', 'Heavy'))
+      )
       AND (p_category IS DISTINCT FROM 'weapon' OR COALESCE(item.metadata ->> 'weaponGroup', '') IN ('Pistols', 'SMGs', 'Rifles', 'Heavy'))
       AND (p_weapon_class IS NULL OR COALESCE((item.metadata ->> 'baseModel')::BOOLEAN, false) = false)
       AND (p_team IS NULL OR item.metadata ->> 'team' = p_team)
