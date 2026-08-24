@@ -16,6 +16,7 @@
  *   node scripts/ingest-skinchanger-catalog.mjs --category weapon_skin --limit 50
  */
 import crypto from "node:crypto";
+import { writeFileSync } from "node:fs";
 import process from "node:process";
 import sharp from "sharp";
 import { createClient } from "@supabase/supabase-js";
@@ -34,6 +35,8 @@ const args = new Map(process.argv.slice(2).map((value) => {
 const requestedCategory = args.get("category") ?? null;
 const limit = Math.max(0, Number.parseInt(args.get("limit") ?? "0", 10) || 0);
 const skipImages = args.has("skip-images");
+const externalImageUrls = args.has("external-image-urls");
+const emitSqlPath = args.get("emit-sql") ?? null;
 const dryRun = args.has("dry-run");
 const concurrency = Math.max(1, Math.min(8, Number.parseInt(args.get("concurrency") ?? String(DEFAULT_CONCURRENCY), 10) || DEFAULT_CONCURRENCY));
 
@@ -41,13 +44,13 @@ if (requestedCategory && !categories.includes(requestedCategory)) {
   throw new Error(`Unsupported category '${requestedCategory}'. Expected one of: ${categories.join(", ")}`);
 }
 
-if (!dryRun) {
+if (!dryRun && !emitSqlPath) {
   for (const key of ["SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "BUILT_IN_FORGE_API_URL", "BUILT_IN_FORGE_API_KEY"]) {
     if (!process.env[key]?.trim()) throw new Error(`Missing required environment variable: ${key}`);
   }
 }
 
-const supabase = dryRun
+const supabase = dryRun || emitSqlPath
   ? null
   : createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY, {
       db: { schema: "legacy_x" },
@@ -199,6 +202,46 @@ async function inPool(items, worker) {
   return output;
 }
 
+function buildCatalogUpsertSql(records) {
+  const chunks = [];
+  for (let offset = 0; offset < records.length; offset += 1_000) {
+    const chunk = records.slice(offset, offset + 1_000);
+    const delimiter = `$legacyx_catalog_${offset}$`;
+    const payload = JSON.stringify(chunk);
+    chunks.push(`
+INSERT INTO legacy_x.skinchanger_catalog_items (
+  external_key, category, weapon_class, display_name, weapon_defindex,
+  paint_id, model, image_key, metadata, is_active
+)
+SELECT
+  external_key, category, weapon_class, display_name, weapon_defindex,
+  paint_id, model, image_key, metadata, true
+FROM jsonb_to_recordset(${delimiter}${payload}${delimiter}::jsonb) AS incoming(
+  external_key TEXT,
+  category TEXT,
+  weapon_class TEXT,
+  display_name TEXT,
+  weapon_defindex INTEGER,
+  paint_id INTEGER,
+  model TEXT,
+  image_key TEXT,
+  metadata JSONB
+)
+ON CONFLICT (external_key) DO UPDATE
+SET category = EXCLUDED.category,
+    weapon_class = EXCLUDED.weapon_class,
+    display_name = EXCLUDED.display_name,
+    weapon_defindex = EXCLUDED.weapon_defindex,
+    paint_id = EXCLUDED.paint_id,
+    model = EXCLUDED.model,
+    image_key = EXCLUDED.image_key,
+    metadata = EXCLUDED.metadata,
+    is_active = true,
+    updated_at = now();`);
+  }
+  return `BEGIN;${chunks.join("\n")}\nCOMMIT;\n`;
+}
+
 const rawSets = await Promise.all(sourceEndpoints
   .filter((endpoint) => !requestedCategory || endpoint.category === requestedCategory || endpoint.category === "weapon_skin")
   .map(async (endpoint) => ({ endpoint, rows: await fetchJson(endpoint.path) })));
@@ -223,7 +266,9 @@ if (dryRun) {
   process.exit(0);
 }
 
-const results = await inPool(items, async (item) => {
+const results = externalImageUrls
+  ? items.map((item) => ({ ...item, image_key: item.source_image_url }))
+  : await inPool(items, async (item) => {
   try {
     const image_key = await convertAndStore(item);
     return { ...item, image_key };
@@ -234,6 +279,17 @@ const results = await inPool(items, async (item) => {
 });
 
 const records = results.map(({ source_image_url: _source, ...record }) => record);
+if (emitSqlPath) {
+  writeFileSync(emitSqlPath, buildCatalogUpsertSql(records));
+  console.log(JSON.stringify({
+    mode: "sql-export",
+    output: emitSqlPath,
+    records: records.length,
+    categoryCounts,
+    directExternalImageUrls: externalImageUrls,
+  }, null, 2));
+  process.exit(0);
+}
 for (let offset = 0; offset < records.length; offset += 200) {
   const chunk = records.slice(offset, offset + 200);
   const { error } = await supabase.from("skinchanger_catalog_items").upsert(chunk, { onConflict: "external_key" });

@@ -14,3 +14,11 @@ The production data path is **Frontend → Root API → Supabase**. Image assets
 2. Do not run catalog ingestion until the protected storage/CDN destination and a designated operator environment are configured.
 3. Do not issue the `legacyx-skinbridge` plugin token or install a game server until a CounterStrikeSharp server is available.
 4. Run backend contract tests and Root API environment checks before publishing the corresponding Git commits.
+
+## Real Catalog Restoration
+
+The real catalog source is the public ByMykel CS:GO API: `https://raw.githubusercontent.com/ByMykel/CSGO-API/main/public/api/en`. A no-write coverage run resolved **33,221** normalized items: 34 firearms, 16,917 weapon skins, 4,042 knife rows, 470 glove rows, 63 agents, 189 music kits, 294 pins, 11,134 stickers, and 78 charms.
+
+For the first production restoration, catalog `image_key` values may be the source's direct HTTPS static image URL. The Root API returns that URL unchanged, so image bytes do not pass through the API. A future controlled media operation may replace each external source URL with content-hashed `STATIC_ASSET_BASE_URL` WebP files without changing catalog IDs or player loadouts.
+
+The Supabase MCP request payload limit required the initial 33,221-record upsert to run as idempotent 4,000-record transactions. All nine batches were applied successfully during the 2026-08-24 production restoration. The final `category,count(*)` validation exactly matched the no-write coverage counts.

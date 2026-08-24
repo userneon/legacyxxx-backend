@@ -136,6 +136,7 @@ function sendPage(res: Response, data: unknown, count: number | null, limit: num
 
 function staticStorageUrl(req: Request, key: string | null | undefined) {
   if (!key) return null;
+  if (/^https:\/\//i.test(key)) return key;
   const configuredBase = process.env.STATIC_ASSET_BASE_URL?.trim().replace(/\/$/, "");
   const encodedKey = key.split("/").map(encodeURIComponent).join("/");
   if (configuredBase) return `${configuredBase}/${encodedKey}`;
