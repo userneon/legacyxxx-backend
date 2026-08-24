@@ -49,7 +49,7 @@ curl --fail http://127.0.0.1:3000/health
 | `STEAM_WEB_API_KEY` | Server-only Steam Web API key |
 | `JWT_SECRET` | At least 32 characters |
 | `PUBLIC_API_ORIGIN` | HTTPS API origin |
-| `STEAM_OPENID_ORIGIN` | HTTPS Steam callback/API origin |
+| `STEAM_OPENID_ORIGIN` | `https://legacyx.cc` — Steam-д харагдах relying-party domain |
 | `FRONTEND_ORIGIN` | HTTPS LEGACY-X frontend origin |
 | `POST_LOGIN_REDIRECT` | HTTPS post-login frontend URL |
 
@@ -58,6 +58,23 @@ The AdminPlus service under `adminplus/backend/` is a separate API-only bridge w
 ## Steam login callback policy
 
 Steam OpenID is a browser navigation flow. After successful verification, the API writes short-lived access and refresh cookies, adds `Cache-Control: no-store`, and responds with a `302` redirect to `POST_LOGIN_REDIRECT` (or `FRONTEND_ORIGIN` when the explicit redirect is absent). It never renders access or refresh tokens in the browser response body based on the `Accept` header.
+
+### Canonical `legacyx.cc` Steam identity
+
+Set `STEAM_OPENID_ORIGIN=https://legacyx.cc` in the backend VPS `.env`. This produces Steam OpenID parameters with `openid.realm=https://legacyx.cc` and `openid.return_to=https://legacyx.cc/api/v1/auth/steam/callback`, so Steam displays **legacyx.cc** instead of **api.legacyx.cc**.
+
+The public website Nginx virtual host must forward the two OpenID paths to the Root API; do not serve the callback as a static frontend route:
+
+```nginx
+location ^~ /api/v1/auth/steam {
+    proxy_pass https://api.legacyx.cc;
+    proxy_set_header Host api.legacyx.cc;
+    proxy_set_header X-Forwarded-Proto https;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+}
+```
+
+Keep the API host as the upstream. Only the browser-facing Steam realm/return URL changes to `legacyx.cc`; API credentials and session handling remain server-side.
 
 If a token or service key is ever displayed in a terminal, browser, screenshot, chat, or log, treat it as exposed: revoke the affected refresh session, rotate the service/API key or JWT secret as appropriate, replace the server-local value, rebuild, and restart before testing login again.
 

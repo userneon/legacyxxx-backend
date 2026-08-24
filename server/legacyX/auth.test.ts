@@ -29,6 +29,13 @@ describe("plugin token hashing", () => {
     await expect(verifyAccessToken(`${token}tampered`)).rejects.toThrow();
   });
 
+  it("uses legacyx.cc as the public Steam OpenID realm and return URL", () => {
+    const loginUrl = new URL(steamLoginUrl("https://legacyx.cc"));
+
+    expect(loginUrl.searchParams.get("openid.realm")).toBe("https://legacyx.cc");
+    expect(loginUrl.searchParams.get("openid.return_to")).toBe("https://legacyx.cc/api/v1/auth/steam/callback");
+  });
+
   it("creates an API-subdomain Steam return URL and rejects malformed callback identities before network verification", async () => {
     const redirect = new URL(steamLoginUrl("https://api.legacyx.cc"));
     expect(redirect.searchParams.get("openid.return_to")).toBe("https://api.legacyx.cc/api/v1/auth/steam/callback");
