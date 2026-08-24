@@ -1053,7 +1053,7 @@ export function createLegacyXRouter() {
     res.json(penalty);
   }));
 
-  router.get("/feedback", userRoute(async (_req, res) => {
+  router.get("/feedback", asyncRoute(async (_req, res) => {
     const { data, error } = await db().from("feedback").select("id,user_id,name,rating,message,created_at").order("created_at", { ascending: false });
     legacyXError(error, "Unable to load feedback");
     res.json(await mapFeedbackRows((data ?? []) as DbRow[]));

@@ -19,7 +19,7 @@ const frontendEndpoints: Endpoint[] = [
   { method: "GET", path: "/store/items" }, { method: "GET", path: "/store/items/00000000-0000-4000-8000-000000000007" }, { method: "POST", path: "/store/items/00000000-0000-4000-8000-000000000007/purchase" },
   { method: "GET", path: "/wallet/balance" }, { method: "GET", path: "/wallet/transactions" }, { method: "POST", path: "/wallet/charge" },
   { method: "GET", path: "/moderation/penalties" }, { method: "GET", path: "/penalties/00000000-0000-4000-8000-000000000008" }, { method: "GET", path: "/moderation/penalties/stats" },
-  { method: "GET", path: "/feedback" }, { method: "POST", path: "/feedback" }, { method: "GET", path: "/search/players?query=test" }, { method: "GET", path: "/search/clans?query=test" }, { method: "GET", path: "/community/content" },
+  { method: "GET", path: "/feedback", public: true }, { method: "POST", path: "/feedback" }, { method: "GET", path: "/search/players?query=test" }, { method: "GET", path: "/search/clans?query=test" }, { method: "GET", path: "/community/content" },
 ];
 
 const skinchangerEndpoints: Endpoint[] = [
