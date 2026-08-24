@@ -4,6 +4,7 @@ const productionRequired = [
   "STEAM_WEB_API_KEY",
   "JWT_SECRET",
   "PUBLIC_API_ORIGIN",
+  "STATIC_ASSET_BASE_URL",
   "STEAM_OPENID_ORIGIN",
   "FRONTEND_ORIGIN",
   "POST_LOGIN_REDIRECT",
@@ -32,6 +33,7 @@ export function validateProductionRuntime() {
 
   validateHttpsUrl("SUPABASE_URL");
   validateHttpsUrl("PUBLIC_API_ORIGIN");
+  validateHttpsUrl("STATIC_ASSET_BASE_URL");
   validateHttpsUrl("STEAM_OPENID_ORIGIN");
   validateHttpsUrl("FRONTEND_ORIGIN");
   validateHttpsUrl("POST_LOGIN_REDIRECT");

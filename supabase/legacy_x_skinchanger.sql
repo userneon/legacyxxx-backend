@@ -529,7 +529,7 @@ ALTER TABLE legacy_x.skinchanger_plugin_receipts ENABLE ROW LEVEL SECURITY;
 REVOKE ALL ON legacy_x.skinchanger_catalog_items, legacy_x.skinchanger_loadouts, legacy_x.skinchanger_loadout_entries, legacy_x.skinchanger_server_sessions, legacy_x.skinchanger_apply_jobs, legacy_x.skinchanger_plugin_receipts FROM anon, authenticated;
 GRANT SELECT, INSERT, UPDATE, DELETE ON legacy_x.skinchanger_catalog_items, legacy_x.skinchanger_loadouts, legacy_x.skinchanger_loadout_entries, legacy_x.skinchanger_server_sessions, legacy_x.skinchanger_apply_jobs, legacy_x.skinchanger_plugin_receipts TO service_role;
 GRANT EXECUTE ON FUNCTION legacy_x.save_skinchanger_loadout(UUID, JSONB) TO service_role;
-GRANT EXECUTE ON FUNCTION legacy_x.get_skinchanger_catalog_facets() TO service_role;
+GRANT EXECUTE ON FUNCTION legacy_x.get_skinchanger_catalog_facets(TEXT) TO service_role;
 GRANT EXECUTE ON FUNCTION legacy_x.queue_skinchanger_apply(UUID, TEXT) TO service_role;
 GRANT EXECUTE ON FUNCTION legacy_x.claim_skinchanger_apply_jobs(TEXT, INTEGER) TO service_role;
 GRANT EXECUTE ON FUNCTION legacy_x.ack_skinchanger_apply(UUID, UUID, TEXT, TEXT, TEXT) TO service_role;

@@ -134,12 +134,17 @@ function sendPage(res: Response, data: unknown, count: number | null, limit: num
   res.json({ data, pagination: { limit, offset, total: count ?? 0 } });
 }
 
-function apiStorageUrl(req: Request, key: string | null | undefined) {
+function staticStorageUrl(req: Request, key: string | null | undefined) {
   if (!key) return null;
+  const configuredBase = process.env.STATIC_ASSET_BASE_URL?.trim().replace(/\/$/, "");
+  const encodedKey = key.split("/").map(encodeURIComponent).join("/");
+  if (configuredBase) return `${configuredBase}/${encodedKey}`;
+
+  // Development-only fallback. Production runtime validation requires
+  // STATIC_ASSET_BASE_URL so catalog images remain direct static/CDN requests.
   const protocol = req.header("x-forwarded-proto")?.split(",")[0]?.trim() || req.protocol;
   const host = req.get("host");
   if (!host) return null;
-  const encodedKey = key.split("/").map(encodeURIComponent).join("/");
   return `${protocol}://${host}/manus-storage/${encodedKey}`;
 }
 
@@ -644,7 +649,7 @@ export function createLegacyXRouter() {
     legacyXError(error, "Unable to load skinchanger catalog");
     const items = (data ?? []) as Array<DbRow & { total_count?: number | string }>;
     const total = Number(items[0]?.total_count ?? 0);
-    sendPage(res, items.map(({ total_count: _total, ...item }) => ({ ...item, image_url: apiStorageUrl(req, item.image_key) })), total, input.limit, input.offset);
+    sendPage(res, items.map(({ total_count: _total, ...item }) => ({ ...item, image_url: staticStorageUrl(req, item.image_key) })), total, input.limit, input.offset);
   }));
 
   router.get("/skinchanger/catalog/facets", userRoute(async (req, res) => {
