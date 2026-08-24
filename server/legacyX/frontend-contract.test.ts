@@ -34,6 +34,10 @@ const skinchangerEndpoints: Endpoint[] = [
   { method: "GET", path: "/skinchanger/status" },
 ];
 
+const competitiveEndpoints: Endpoint[] = [
+  { method: "GET", path: "/competitive/me/access" },
+];
+
 let server: Server;
 let baseUrl: string;
 
@@ -72,6 +76,18 @@ describe("frontend API endpoint inventory", () => {
       });
       expect(response.status, `${endpoint.method} /api/v1${endpoint.path}`).toBe(401);
     }
+  });
+
+  it("registers competitive player access beneath /api/v1 and rejects missing authentication", async () => {
+    for (const endpoint of competitiveEndpoints) {
+      const response = await fetch(`${baseUrl}${endpoint.path}`, { method: endpoint.method });
+      expect(response.status, `${endpoint.method} /api/v1${endpoint.path}`).toBe(401);
+    }
+  });
+
+  it("registers the public competitive leaderboard route", async () => {
+    const response = await fetch(`${baseUrl}/public/competitive/leaderboard`);
+    expect(response.status).not.toBe(404);
   });
 
   it("registers the public Steam entry point beneath /api/v1", async () => {

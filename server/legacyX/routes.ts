@@ -169,6 +169,17 @@ const feedbackSchema = z.object({ name: z.string().trim().min(1).max(64).optiona
 const pluginServerSchema = z.object({ id: z.string().uuid().optional(), name: z.string().trim().min(1).max(100), map: z.string().trim().min(1).max(64), mode: z.string().trim().min(1).max(64), max_players: z.number().int().min(0).max(256), current_players: z.number().int().min(0).max(256), ping: z.number().int().min(0).max(10000).default(0), status: z.enum(["online", "offline", "full"]), ip_address: z.string().max(255).optional(), port: z.number().int().min(1).max(65535).optional() });
 const pluginMatchSchema = z.object({ id: z.string().uuid().optional(), server_id: z.string().uuid().optional(), map: z.string().trim().min(1).max(64), mode: z.enum(["5vs5", "fun", "proleague", "tournaments"]), number: z.number().int().min(0), status: z.enum(["live", "waiting", "finished", "locked"]).default("waiting"), players: z.number().int().min(0).max(256).default(0), max_players: z.number().int().min(1).max(256).default(10), score_t: z.number().int().min(0).default(0), score_ct: z.number().int().min(0).default(0), signal: z.number().int().min(0).default(0) });
 const pluginHistorySchema = z.object({ user_id: z.string().uuid(), match_id: z.string().uuid().optional(), map: z.string().trim().min(1).max(64), result: z.enum(["Win", "Loss"]), score: z.string().trim().min(1).max(32), kd: z.string().trim().min(1).max(32), stats: z.object({ matches: z.number().int().min(0), wins: z.number().int().min(0), kills: z.number().int().min(0), deaths: z.number().int().min(0), headshots: z.number().int().min(0), kd_ratio: z.number().min(0), rating: z.number().min(0), experience: z.number().int().min(0), played_hours: z.number().min(0) }).optional() });
+const pluginEventIdSchema = z.string().trim().min(8).max(220).regex(/^[A-Za-z0-9:_-]+$/, "event_id contains unsupported characters");
+const matchCoreEventTypeSchema = z.enum(["match_created", "state_transition", "player_disconnected", "player_returned", "fill_assigned", "fill_removed", "snapshot_saved", "result_final", "match_cancelled"]);
+const matchCoreEventSchema = z.object({
+  event_id: pluginEventIdSchema,
+  event: matchCoreEventTypeSchema.optional(),
+  event_type: matchCoreEventTypeSchema.optional(),
+  match_id: z.string().uuid().optional(),
+}).passthrough().superRefine((input, context) => {
+  if (!input.event && !input.event_type) context.addIssue({ code: z.ZodIssueCode.custom, message: "event or event_type is required", path: ["event_type"] });
+  if (input.event && input.event_type && input.event !== input.event_type) context.addIssue({ code: z.ZodIssueCode.custom, message: "event and event_type must match", path: ["event_type"] });
+});
 const userIdSchema = z.string().uuid();
 const playModeSchema = z.enum(["5vs5", "fun", "proleague", "tournaments"]);
 const matchStatusSchema = z.enum(["live", "waiting", "finished", "locked"]);
@@ -520,6 +531,18 @@ export function createLegacyXRouter() {
     const { data, error } = await db().from("community_experience_leaderboard").select("rank,steam_id,username,level,experience,matches_played,last_match_at").order("rank").limit(readLimit(req.query.limit));
     legacyXError(error, "Unable to load public experience leaderboard");
     res.json({ entries: data ?? [] });
+  }));
+  router.get("/public/competitive/leaderboard", asyncRoute(async (req, res) => {
+    const { data, error } = await db().from("competitive_leaderboard").select("position,user_id,steam_id,username,avatar,current_exp,rank_id,rank_slug,rank_name,rank_image_key,pro_league_unlocked,matches_completed,wins,losses,kills,assists,headshot_kills,deaths,kd_ratio,played_hours,last_match_at").order("position").limit(readLimit(req.query.limit));
+    legacyXError(error, "Unable to load competitive leaderboard");
+    res.json({ entries: data ?? [] });
+  }));
+  router.get("/public/competitive/players/:userId", asyncRoute(async (req, res) => {
+    const userId = userIdSchema.parse(req.params.userId);
+    const { data, error } = await db().from("competitive_player_profiles").select("user_id,steam_id,username,avatar,current_exp,rank_id,rank_slug,rank_name,rank_image_key,pro_league_unlocked,matches_completed,wins,losses,kills,assists,headshot_kills,last_match_at").eq("user_id", userId).maybeSingle();
+    legacyXError(error, "Unable to load competitive player profile");
+    if (!data) apiError(404, "Competitive player profile was not found");
+    res.json({ profile: data });
   }));
   router.get("/public/servers", asyncRoute(async (_req, res) => {
     res.json({ entries: await readServers() });
@@ -1281,6 +1304,16 @@ export function createLegacyXRouter() {
     legacyXError(error, "Unable to update profile");
     res.json({ profile: data });
   }));
+  router.get("/competitive/me/access", userRoute(async (_req, res, user) => {
+    const { data, error } = await db().from("competitive_player_profiles").select("current_exp,rank_id,rank_name,rank_image_key,pro_league_unlocked").eq("user_id", user.id).maybeSingle();
+    legacyXError(error, "Unable to load competitive access");
+    res.json({
+      competitive: data ?? null,
+      proLeagueUnlocked: Boolean(data?.pro_league_unlocked),
+      requiredRankId: 11,
+      requiredRankName: "Master Guardian I",
+    });
+  }));
   router.get("/profile/:userId/stats", asyncRoute(async (req, res) => {
     const { data, error } = await db().from("player_stats").select("*").eq("user_id", req.params.userId).maybeSingle();
     legacyXError(error, "Unable to load player stats");
@@ -1598,27 +1631,29 @@ export function createLegacyXRouter() {
   }));
 
   router.post("/plugin/match-core/events", pluginRoute("matches:write", async (req, res, plugin) => {
-    const input = z.object({ event_id: z.string().uuid(), event: z.enum(["match_created", "state_transition", "player_disconnected", "player_returned", "fill_assigned", "fill_removed", "snapshot_saved", "result_final", "match_cancelled"]), match_id: z.string().uuid().optional() }).passthrough().parse(req.body);
+    const parsed = matchCoreEventSchema.parse(req.body);
+    const input = { ...parsed, event_type: parsed.event_type ?? parsed.event! };
     const pluginId = req.header("x-plugin-id")?.trim() || plugin.name;
     if (pluginId !== "legacyx-match-core") apiError(403, "Match Core plugin identity is required");
     const { data, error } = await db().schema("legacy_x").rpc("ingest_core_match_event", { p_plugin_id: pluginId, p_event_id: input.event_id, p_payload: input });
     legacyXError(error, "Unable to ingest Match Core event");
-    res.status(200).json({ result: data ?? {} });
+    const matchCoreResult = recordValue(data);
+    let competitive: unknown = null;
+    if (input.event_type === "result_final" && ["processed", "duplicate"].includes(textValue(matchCoreResult.status))) {
+      const result = await db().schema("legacy_x").rpc("ingest_competitive_match_result", { p_plugin_id: pluginId, p_event_id: input.event_id, p_payload: input });
+      legacyXError(result.error, "Unable to ingest competitive match result");
+      competitive = result.data ?? null;
+    }
+    res.status(200).json({ result: data ?? {}, competitive });
   }));
   router.post("/plugin/matchzy/events", pluginRoute("stats:write", async (req, res, plugin) => {
-    const input = z.object({ event_id: z.string().uuid(), event: z.string().min(1).max(64) }).passthrough().parse(req.body);
+    const input = z.object({ event_id: pluginEventIdSchema, event: z.string().min(1).max(64) }).passthrough().parse(req.body);
     const pluginId = req.header("x-plugin-id")?.trim() || plugin.name;
     if (pluginId !== "matchzy") apiError(403, "MatchZy plugin identity is required");
-    if (input.event !== "map_result") {
-      res.status(202).json({ accepted: true, ignored: true });
-      return;
-    }
-    const [rankResult, communityResult] = await Promise.all([
-      db().schema("legacy_x").rpc("ingest_rank_map_result", { p_plugin_id: pluginId, p_event_id: input.event_id, p_payload: input }),
-      db().schema("legacy_x").rpc("ingest_community_map_result", { p_plugin_id: pluginId, p_event_id: input.event_id, p_payload: input }),
-    ]);
-    legacyXError(rankResult.error || communityResult.error, "Unable to ingest MatchZy map result");
-    res.status(201).json({ accepted: true, rank: rankResult.data ?? null, community: communityResult.data ?? null });
+    // Competitive EXP is final-match only through authenticated Match Core. The
+    // legacy map callback remains accepted as telemetry so old MatchZy builds do
+    // not fail, but it can never create a second progression authority.
+    res.status(202).json({ accepted: true, ignored: true, reason: "competitive_exp_is_awarded_by_match_core_final_only" });
   }));
   router.get("/plugin/community/players/:steamId", pluginRoute("stats:write", async (req, res) => {
     const steamId = String(req.params.steamId || "").trim();
