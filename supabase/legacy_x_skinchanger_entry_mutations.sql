@@ -58,14 +58,14 @@ BEGIN
   END IF;
 
   v_model_defindex := v_weapon_defindex;
-  -- Weapon-skin catalog rows deliberately retain their paint identity and have
-  -- no own defindex. Resolve their stable slot model from the matching base
-  -- weapon so the client key `weapon:7` remains valid for every AK-47 skin.
-  IF v_slot = 'weapon' AND v_model_defindex IS NULL THEN
+  -- Weapon and knife skin rows deliberately retain their paint identity and
+  -- have no own defindex. Resolve their stable slot model from the matching
+  -- base item so client keys such as `weapon:7` and `knife:500` remain valid.
+  IF v_slot IN ('weapon', 'knife') AND v_model_defindex IS NULL THEN
     SELECT base_item.weapon_defindex
       INTO v_model_defindex
     FROM legacy_x.skinchanger_catalog_items base_item
-    WHERE base_item.category = 'weapon'
+    WHERE base_item.category = v_slot
       AND base_item.weapon_class = v_weapon_class
       AND base_item.weapon_defindex IS NOT NULL
       AND base_item.is_active = true
