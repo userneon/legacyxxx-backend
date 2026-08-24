@@ -23,6 +23,7 @@ DECLARE
   v_category TEXT;
   v_weapon_class TEXT;
   v_weapon_defindex INTEGER;
+  v_model_defindex INTEGER;
   v_display_name TEXT;
   v_metadata JSONB;
   v_required_scope TEXT := 'all';
@@ -56,7 +57,22 @@ BEGIN
     RAISE EXCEPTION 'Selected Skinchanger item does not match slot' USING ERRCODE = '22023';
   END IF;
 
-  v_model_key := regexp_replace(lower(COALESCE(v_weapon_defindex::TEXT, v_weapon_class, v_display_name, v_catalog_item_id::TEXT)), '[^a-z0-9_-]+', '-', 'g');
+  v_model_defindex := v_weapon_defindex;
+  -- Weapon-skin catalog rows deliberately retain their paint identity and have
+  -- no own defindex. Resolve their stable slot model from the matching base
+  -- weapon so the client key `weapon:7` remains valid for every AK-47 skin.
+  IF v_slot = 'weapon' AND v_model_defindex IS NULL THEN
+    SELECT base_item.weapon_defindex
+      INTO v_model_defindex
+    FROM legacy_x.skinchanger_catalog_items base_item
+    WHERE base_item.category = 'weapon'
+      AND base_item.weapon_class = v_weapon_class
+      AND base_item.weapon_defindex IS NOT NULL
+      AND base_item.is_active = true
+    ORDER BY base_item.id
+    LIMIT 1;
+  END IF;
+  v_model_key := regexp_replace(lower(COALESCE(v_model_defindex::TEXT, v_weapon_class, v_display_name, v_catalog_item_id::TEXT)), '[^a-z0-9_-]+', '-', 'g');
   IF (v_slot = 'weapon' AND v_slot_key <> ('weapon:' || v_model_key))
      OR (v_slot IN ('knife', 'glove') AND v_slot_key <> (v_slot || ':' || v_model_key))
      OR (v_slot NOT IN ('weapon', 'knife', 'glove') AND v_slot_key <> v_slot) THEN
