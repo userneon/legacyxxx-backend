@@ -25,6 +25,8 @@ const MAX_IMAGE_BYTES = 12 * 1024 * 1024;
 const DEFAULT_CONCURRENCY = 3;
 const categories = ["weapon", "weapon_skin", "knife", "glove", "agent", "music_kit", "pin", "sticker", "charm"];
 const firearmGroups = new Set(["Pistols", "SMGs", "Rifles", "Heavy"]);
+const tOnlyFirearms = new Set(["AK-47", "Galil AR", "SG 553", "G3SG1", "Glock-18", "Tec-9", "MAC-10", "Sawed-Off"]);
+const ctOnlyFirearms = new Set(["AUG", "FAMAS", "M4A1-S", "M4A4", "SCAR-20", "USP-S", "P2000", "Five-SeveN", "MP9", "MAG-7"]);
 const args = new Map(process.argv.slice(2).map((value) => {
   const [key, raw = "true"] = value.replace(/^--/, "").split("=", 2);
   return [key, raw];
@@ -90,6 +92,16 @@ function classify(raw, sourceCategory) {
   return sourceCategory;
 }
 
+function canonicalTeam(raw, weaponClass) {
+  const declared = text(raw.team?.name, text(raw.team, null));
+  const normalized = declared?.toLowerCase();
+  if (normalized === "t" || normalized?.includes("terrorist")) return "Terrorist";
+  if (normalized === "ct" || normalized?.includes("counter")) return "Counter-Terrorist";
+  if (tOnlyFirearms.has(weaponClass ?? "")) return "Terrorist";
+  if (ctOnlyFirearms.has(weaponClass ?? "")) return "Counter-Terrorist";
+  return null;
+}
+
 function normalize(raw, sourceCategory) {
   const category = classify(raw, sourceCategory);
   if (!category) return null;
@@ -118,7 +130,7 @@ function normalize(raw, sourceCategory) {
       rarity: raw.rarity?.name ?? raw.rarity ?? null,
       minWear: raw.min_float ?? null,
       maxWear: raw.max_float ?? null,
-      team: raw.team?.name ?? raw.team ?? null,
+      team: canonicalTeam(raw, weaponClass),
     },
   };
 }

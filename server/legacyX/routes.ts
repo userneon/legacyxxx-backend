@@ -247,6 +247,19 @@ function recordValue(value: unknown): DbRow {
   return value && typeof value === "object" && !Array.isArray(value) ? value as DbRow : {};
 }
 
+const tOnlyFirearms = new Set(["AK-47", "Galil AR", "SG 553", "G3SG1", "Glock-18", "Tec-9", "MAC-10", "Sawed-Off"]);
+const ctOnlyFirearms = new Set(["AUG", "FAMAS", "M4A1-S", "M4A4", "SCAR-20", "USP-S", "P2000", "Five-SeveN", "MP9", "MAG-7"]);
+
+function catalogTeamScope(metadata: unknown, weaponClass: unknown, displayName: unknown): "all" | "t" | "ct" {
+  const team = textValue(recordValue(metadata).team).toLowerCase();
+  if (team === "ct" || (team.includes("counter") && !team.includes("terrorist"))) return "ct";
+  if (team === "t" || (team.includes("terrorist") && !team.includes("counter"))) return "t";
+  const firearmName = textValue(weaponClass) || textValue(displayName);
+  if (ctOnlyFirearms.has(firearmName)) return "ct";
+  if (tOnlyFirearms.has(firearmName)) return "t";
+  return "all";
+}
+
 function timestampValue(value: unknown) {
   return value == null ? "" : String(value);
 }
@@ -691,6 +704,19 @@ export function createLegacyXRouter() {
 
   router.put("/skinchanger/loadout", userRoute(async (req, res, user) => {
     const input = skinchangerLoadoutSchema.parse(req.body);
+    const selectedCatalogItemIds = Array.from(new Set(input.entries.map((entry) => entry.catalogItemId)));
+    const itemTeamScopeById = new Map<string, "all" | "t" | "ct">();
+    if (selectedCatalogItemIds.length > 0) {
+      const { data, error } = await db().from("skinchanger_catalog_items")
+        .select("id,metadata,weapon_class,display_name")
+        .eq("is_active", true)
+        .in("id", selectedCatalogItemIds);
+      legacyXError(error, "Unable to validate selected items");
+      if ((data ?? []).length !== selectedCatalogItemIds.length) apiError(400, "One or more selected items are unavailable");
+      for (const item of data ?? []) {
+        itemTeamScopeById.set(item.id, catalogTeamScope(item.metadata, item.weapon_class, item.display_name));
+      }
+    }
     const accessoryIds = Array.from(new Set(input.entries.flatMap((entry) => [
       ...(entry.options.stickers?.map((sticker) => sticker.catalogItemId) ?? []),
       ...(entry.options.charm ? [entry.options.charm.catalogItemId] : []),
@@ -709,10 +735,13 @@ export function createLegacyXRouter() {
       if (!item || item.category !== category || item.defindex === null) apiError(400, "One or more custom items are unavailable");
       return item.defindex;
     };
-    const entries = input.entries.map(entry => ({
+    const entries = input.entries.map(entry => {
+      const requiredScope = itemTeamScopeById.get(entry.catalogItemId) ?? "all";
+      if (requiredScope !== "all" && entry.teamScope !== requiredScope) apiError(400, "This item is limited to one team");
+      return {
       slot: entry.slot,
       slot_key: entry.slotKey,
-      team_scope: entry.teamScope,
+      team_scope: requiredScope === "all" ? entry.teamScope : requiredScope,
       catalog_item_id: entry.catalogItemId,
       options: {
         ...entry.options,
@@ -725,7 +754,8 @@ export function createLegacyXRouter() {
           id: resolveAccessoryDefindex(entry.options.charm.catalogItemId, "charm"),
         } : undefined,
       },
-    }));
+    };
+    });
     const { data: version, error } = await db().rpc("save_skinchanger_loadout", { p_user_id: user.id, p_entries: entries });
     legacyXError(error, "Unable to save skinchanger loadout");
     const { error: auditError } = await db().from("audit_logs").insert({
