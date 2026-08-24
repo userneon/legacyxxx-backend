@@ -222,7 +222,9 @@ const skinchangerLoadoutEntrySchema = z.object({
     context.addIssue({ code: z.ZodIssueCode.custom, path: ["options"], message: "Only weapons can be customised with stickers or charms" });
   }
 });
-const skinchangerLoadoutSchema = z.object({ entries: z.array(skinchangerLoadoutEntrySchema).min(1).max(128) });
+// An empty entry list is the intentional, confirmed action for removing the
+// final saved look. The database RPC then advances the version and clears rows.
+const skinchangerLoadoutSchema = z.object({ entries: z.array(skinchangerLoadoutEntrySchema).max(128) });
 const skinchangerApplySchema = z.object({ serverId: z.string().trim().min(1).max(120) });
 const skinchangerPluginSessionSchema = z.object({
   eventId: z.string().min(8).max(180),
