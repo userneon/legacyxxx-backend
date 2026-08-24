@@ -42,9 +42,12 @@ AS $$
   END
 $$;
 
+DROP FUNCTION IF EXISTS legacy_x.get_skinchanger_catalog_page(TEXT, TEXT, TEXT, INTEGER, INTEGER);
+
 CREATE OR REPLACE FUNCTION legacy_x.get_skinchanger_catalog_page(
   p_category TEXT DEFAULT NULL,
   p_weapon_class TEXT DEFAULT NULL,
+  p_team TEXT DEFAULT NULL,
   p_query TEXT DEFAULT NULL,
   p_limit INTEGER DEFAULT 36,
   p_offset INTEGER DEFAULT 0
@@ -78,6 +81,7 @@ AS $$
     WHERE item.is_active = true
       AND (p_category IS NULL OR item.category = p_category)
       AND (p_weapon_class IS NULL OR item.weapon_class = p_weapon_class)
+      AND (p_team IS NULL OR item.metadata ->> 'team' = p_team)
       AND (p_query IS NULL OR item.display_name ILIKE '%' || p_query || '%' OR item.weapon_class ILIKE '%' || p_query || '%')
   ),
   ranges AS (

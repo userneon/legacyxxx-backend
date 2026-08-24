@@ -607,13 +607,16 @@ export function createLegacyXRouter() {
     const input = z.object({
       category: skinchangerCategorySchema.optional(),
       weaponClass: z.string().trim().min(1).max(64).optional(),
+      team: z.enum(["t", "ct"]).optional(),
       query: z.string().trim().min(1).max(96).optional(),
       limit: z.coerce.number().int().min(1).max(100).default(36),
       offset: z.coerce.number().int().min(0).default(0),
     }).parse(req.query);
+    if (input.team && input.category !== "agent") apiError(400, "Team selection is only available for agents");
     const { data, error } = await db().rpc("get_skinchanger_catalog_page", {
       p_category: input.category ?? null,
       p_weapon_class: input.weaponClass ?? null,
+      p_team: input.team === "t" ? "Terrorist" : input.team === "ct" ? "Counter-Terrorist" : null,
       p_query: input.query ?? null,
       p_limit: input.limit,
       p_offset: input.offset,
