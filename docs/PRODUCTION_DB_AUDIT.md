@@ -30,3 +30,26 @@ The Supabase MCP request payload limit required the initial 33,221-record upsert
 A representative database image URL resolved directly from `community.akamai.steamstatic.com` with HTTP **200**, `image/png`, and no Root API image-byte proxy. The live browser page renders the authenticated empty state when no Steam session is present; catalog browsing and loadout mutation must therefore be validated from a trusted player Steam session.
 
 The API-only SkinBridge fork built successfully in .NET 8 Release with zero warnings/errors and has no direct Supabase, Npgsql, connection-string, or `SUPABASE_*` reference in its C# source. No game server or plugin token was created during this rollout.
+
+## Reviews and Loadout Audit — 2026-08-24
+
+| Surface | Evidence | Finding | Required correction |
+| --- | --- | --- | --- |
+| `legacy_x.feedback` | Production table has eight live rows; existing advisory flags legacy RLS disabled | Existing feedback data is live and must not be dropped. Public review listing and authenticated submit require an explicit, versioned access contract. | Add a dedicated policy migration only after API/RPC regression tests; do not enable RLS without policies. |
+| Feedback API | Legacy response variants include an array and `{ feedback: ... }` envelopes | Frontend list/submit handling can break when the deployed route shape differs. | Normalize temporary response forms client-side, then converge the Root API on one canonical response. |
+| Loadout persistence | Latest persisted row has version 29, weapon `weapon:7`, team `t`, and active AK-47 Asiimov options | The database write is durable. Refresh disappearance is a GET-response, frontend hydration, or stale deployment issue, not a missing write. | Snapshot-test `GET /skinchanger/loadout` and frontend hydration; deploy matching frontend/backend commits as a pair. |
+| Loadout RPC | `save_skinchanger_loadout` deletes and reinserts entries for one `p_user_id` | Root API user isolation is present, but simultaneous saves can overwrite one another and SQL does not independently whitelist slot/model/team combinations. | Add expected-version concurrency and server-side slot/model/team validation in a new additive migration; retain a compatibility wrapper and rollback migration. |
+| Skinchanger objects | 33,221 catalog rows, one loadout, one loadout entry; active user foreign keys | No Skinchanger table, function, index, or schema can be classified as obsolete from current evidence. | Do not drop production objects in this rollout. |
+| Security-definer RPCs | Save, feedback submit, queue/claim, and ack functions are security definer | Caller identity, `search_path`, and EXECUTE grants need a dedicated hardening review. | Keep browser access behind the Root API; audit function bodies and grants before direct client or RLS policy changes. |
+
+> Source records: read-only production Supabase schema, table, function, and advisor checks performed on 2026-08-24. No legacy table, schema, function, index, or production user data was deleted during this audit.
+
+### Read-only confirmation after the audit snapshot
+
+The live public `GET https://api.legacyx.cc/api/v1/feedback` response is the canonical array consumed by the current frontend and contains the eight persisted reviews with mapped Steam identities. The reported submit error is consistent with the `submit_feedback_weekly` rule: the player already submitted on 2026-08-22 and the RPC enforces one review per seven days. The UI previously reduced this controlled `429` response to a generic failure instead of showing the next eligible time.
+
+Production function introspection confirmed that the deployed `save_skinchanger_loadout(uuid,jsonb)` still performs a user-wide `DELETE` followed by an insert and lacks an expected-version argument. A later read-only loadout query proved the reported player's data persisted at version 43 with independent `knife` and `glove` rows, including catalog relations and custom options. Therefore database durability is not the refresh failure; response hydration/deployment pairing and the whole-snapshot mutation model remain the corrective targets.
+
+The additive migration `legacy_x_skinchanger_entry_mutations` was applied successfully after this audit. It creates service-role-only `upsert_skinchanger_loadout_entry` and `delete_skinchanger_loadout_entry` functions, each requiring the authenticated Root API user's expected loadout version. Existing tables, rows, indexes, catalog IDs, and legacy `save_skinchanger_loadout` compatibility behavior were retained. The repository includes a rollback SQL artifact that drops only these two new functions after the matching API commit has first been reverted.
+
+The database advisory also reports RLS disabled on 24 older `legacy_x` tables, including `feedback`. This is a critical security finding, but it is not evidence that any table is obsolete. Enabling RLS without feature-specific policies could immediately break the live Root API, so no bulk RLS enablement or table deletion is included in this rollout. See [Supabase RLS guidance](https://supabase.com/docs/guides/database/postgres/row-level-security).

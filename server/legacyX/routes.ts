@@ -225,6 +225,15 @@ const skinchangerLoadoutEntrySchema = z.object({
 // An empty entry list is the intentional, confirmed action for removing the
 // final saved look. The database RPC then advances the version and clears rows.
 const skinchangerLoadoutSchema = z.object({ entries: z.array(skinchangerLoadoutEntrySchema).max(128) });
+const skinchangerEntryMutationSchema = z.object({
+  expectedVersion: z.number().int().min(0),
+  entry: skinchangerLoadoutEntrySchema,
+});
+const skinchangerEntryRemovalSchema = z.object({
+  expectedVersion: z.number().int().min(0),
+  slotKey: z.string().regex(/^[a-z0-9:_-]{1,96}$/),
+  teamScope: skinchangerTeamScopeSchema,
+});
 const skinchangerApplySchema = z.object({ serverId: z.string().trim().min(1).max(120) });
 const skinchangerPluginSessionSchema = z.object({
   eventId: z.string().min(8).max(180),
@@ -718,6 +727,97 @@ export function createLegacyXRouter() {
     res.json({ session: data ?? null });
   }));
 
+  router.put("/skinchanger/loadout/entry", userRoute(async (req, res, user) => {
+    const input = skinchangerEntryMutationSchema.parse(req.body);
+    const entry = input.entry;
+    const { data: selectedItems, error: selectedItemError } = await db().from("skinchanger_catalog_items")
+      .select("id,category,metadata,weapon_class,display_name")
+      .eq("is_active", true)
+      .eq("id", entry.catalogItemId);
+    legacyXError(selectedItemError, "Unable to validate selected item");
+    const selectedItem = (selectedItems ?? [])[0] as DbRow | undefined;
+    if (!selectedItem) apiError(400, "The selected item is unavailable");
+
+    const requiredScope = catalogTeamScope(selectedItem.metadata, selectedItem.weapon_class, selectedItem.display_name);
+    if (requiredScope !== "all" && entry.teamScope !== requiredScope) apiError(400, "This item is limited to one team");
+    if ((entry.slot === "weapon" && !["weapon", "weapon_skin"].includes(textValue(selectedItem.category))) || (entry.slot !== "weapon" && textValue(selectedItem.category) !== entry.slot)) {
+      apiError(400, "The selected item does not match this loadout slot");
+    }
+
+    const accessoryIds = Array.from(new Set([
+      ...(entry.options.stickers?.map((sticker) => sticker.catalogItemId) ?? []),
+      ...(entry.options.charm ? [entry.options.charm.catalogItemId] : []),
+    ]));
+    const accessoryDefindexes = new Map<string, { category: string; defindex: number | null }>();
+    if (accessoryIds.length > 0) {
+      const { data: accessories, error: accessoryError } = await db().from("skinchanger_catalog_items")
+        .select("id,category,weapon_defindex")
+        .eq("is_active", true)
+        .in("id", accessoryIds);
+      legacyXError(accessoryError, "Unable to validate custom items");
+      for (const item of accessories ?? []) accessoryDefindexes.set(item.id, { category: item.category, defindex: item.weapon_defindex });
+    }
+    const resolveAccessoryDefindex = (catalogItemId: string, category: "sticker" | "charm") => {
+      const item = accessoryDefindexes.get(catalogItemId);
+      if (!item || item.category !== category || item.defindex === null) apiError(400, "One or more custom items are unavailable");
+      return item.defindex;
+    };
+    const preparedEntry = {
+      slot: entry.slot,
+      slot_key: entry.slotKey,
+      team_scope: requiredScope === "all" ? entry.teamScope : requiredScope,
+      catalog_item_id: entry.catalogItemId,
+      options: {
+        ...entry.options,
+        stickers: entry.options.stickers?.map((sticker) => ({ ...sticker, id: resolveAccessoryDefindex(sticker.catalogItemId, "sticker") })),
+        charm: entry.options.charm ? { ...entry.options.charm, id: resolveAccessoryDefindex(entry.options.charm.catalogItemId, "charm") } : undefined,
+      },
+    };
+    const { data, error } = await db().rpc("upsert_skinchanger_loadout_entry", {
+      p_user_id: user.id,
+      p_expected_version: input.expectedVersion,
+      p_entry: preparedEntry,
+    });
+    legacyXError(error, "Unable to save skinchanger loadout entry");
+    const outcome = recordValue(data);
+    const version = numberValue(outcome.version);
+    if (version < 1) apiError(500, "Loadout entry save did not return a version");
+    const { error: auditError } = await db().from("audit_logs").insert({
+      actor_type: "user",
+      actor_id: user.id,
+      action: "skinchanger.loadout.entry.upsert",
+      target_type: "skinchanger_loadout_entries",
+      target_id: `${preparedEntry.slot_key}:${preparedEntry.team_scope}`,
+      metadata: { version, slot: preparedEntry.slot, slotKey: preparedEntry.slot_key, teamScope: preparedEntry.team_scope, catalogItemId: preparedEntry.catalog_item_id },
+    });
+    if (auditError) console.error("Unable to audit skinchanger entry save", auditError);
+    res.json({ version });
+  }));
+
+  router.delete("/skinchanger/loadout/entry", userRoute(async (req, res, user) => {
+    const input = skinchangerEntryRemovalSchema.parse(req.body);
+    const { data, error } = await db().rpc("delete_skinchanger_loadout_entry", {
+      p_user_id: user.id,
+      p_expected_version: input.expectedVersion,
+      p_slot_key: input.slotKey,
+      p_team_scope: input.teamScope,
+    });
+    legacyXError(error, "Unable to remove skinchanger loadout entry");
+    const outcome = recordValue(data);
+    const version = numberValue(outcome.version);
+    if (version < 1 || outcome.removed !== true) apiError(500, "Loadout entry removal did not complete");
+    const { error: auditError } = await db().from("audit_logs").insert({
+      actor_type: "user",
+      actor_id: user.id,
+      action: "skinchanger.loadout.entry.delete",
+      target_type: "skinchanger_loadout_entries",
+      target_id: `${input.slotKey}:${input.teamScope}`,
+      metadata: { version, slotKey: input.slotKey, teamScope: input.teamScope },
+    });
+    if (auditError) console.error("Unable to audit skinchanger entry deletion", auditError);
+    res.json({ version, removed: true });
+  }));
+
   router.put("/skinchanger/loadout", userRoute(async (req, res, user) => {
     const input = skinchangerLoadoutSchema.parse(req.body);
     const selectedCatalogItemIds = Array.from(new Set(input.entries.map((entry) => entry.catalogItemId)));
@@ -1070,7 +1170,8 @@ export function createLegacyXRouter() {
     const outcome = (data ?? {}) as { accepted?: boolean; next_eligible_at?: string; feedback?: DbRow };
     if (!outcome.accepted) {
       const nextEligibleAt = textValue(outcome.next_eligible_at);
-      apiError(429, nextEligibleAt ? `You can submit your next review after ${nextEligibleAt}.` : "You can submit one review every 7 days.");
+      res.status(429).json({ error: "weekly_cooldown", nextEligibleAt: nextEligibleAt || null });
+      return;
     }
     if (!outcome.feedback) apiError(500, "Feedback submission did not return a review.");
     res.status(201).json(mapFeedback(outcome.feedback, new Map([[user.id, { steamId: user.steamId, avatar: "" }]])));
@@ -1406,20 +1507,6 @@ export function createLegacyXRouter() {
     legacyXError(error, "Unable to load penalty");
     if (!data) apiError(404, "Penalty was not found");
     res.json({ penalty: data });
-  }));
-  router.get("/feedback", asyncRoute(async (_req, res) => {
-    const { data, error } = await db().from("feedback").select("*").order("created_at", { ascending: false });
-    legacyXError(error, "Unable to load feedback");
-    res.json({ feedback: data ?? [] });
-  }));
-  router.post("/feedback", asyncRoute(async (req, res) => {
-    const input = feedbackSchema.parse(req.body);
-    let user: LegacyUser | undefined;
-    try { user = await requireUser(req); } catch { user = undefined; }
-    if (!user && !input.name) apiError(401, "Anonymous feedback requires a display name");
-    const { data, error } = await db().from("feedback").insert({ user_id: user?.id ?? null, name: user?.username ?? input.name!, rating: input.rating, message: input.message }).select("*").single();
-    legacyXError(error, "Unable to submit feedback");
-    res.status(201).json({ feedback: data });
   }));
 
   router.get("/search/players", asyncRoute(async (req, res) => {
