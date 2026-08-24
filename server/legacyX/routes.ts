@@ -539,10 +539,47 @@ export function createLegacyXRouter() {
   }));
   router.get("/public/competitive/players/:userId", asyncRoute(async (req, res) => {
     const userId = userIdSchema.parse(req.params.userId);
-    const { data, error } = await db().from("competitive_player_profiles").select("user_id,steam_id,username,avatar,current_exp,rank_id,rank_slug,rank_name,rank_image_key,pro_league_unlocked,matches_completed,wins,losses,kills,assists,headshot_kills,last_match_at").eq("user_id", userId).maybeSingle();
+    const profileColumns = "user_id,steam_id,username,avatar,current_exp,rank_id,rank_slug,rank_name,rank_image_key,pro_league_unlocked,matches_completed,wins,losses,kills,assists,headshot_kills,last_match_at,current_rank_min_exp,next_rank_id,next_rank_name,next_rank_min_exp";
+    const { data, error } = await db().from("competitive_player_profiles").select(profileColumns).eq("user_id", userId).maybeSingle();
     legacyXError(error, "Unable to load competitive player profile");
-    if (!data) apiError(404, "Competitive player profile was not found");
-    res.json({ profile: data });
+    if (data) {
+      res.json({ profile: data });
+      return;
+    }
+
+    const [{ data: user, error: userError }, { data: definitions, error: definitionError }] = await Promise.all([
+      db().from("users").select("id,steam_id,username,avatar,role").eq("id", userId).maybeSingle(),
+      db().from("competitive_rank_definitions").select("rank_id,slug,display_name,image_key,minimum_exp").in("rank_id", [1, 2]).order("rank_id"),
+    ]);
+    legacyXError(userError, "Unable to load competitive player");
+    legacyXError(definitionError, "Unable to load competitive rank definitions");
+    if (!user || user.role === "Owner") apiError(404, "Competitive player profile was not found");
+    const silverOne = definitions?.find((definition) => definition.rank_id === 1);
+    const silverTwo = definitions?.find((definition) => definition.rank_id === 2);
+    if (!silverOne || !silverTwo) apiError(500, "Competitive rank definitions are unavailable");
+    res.json({ profile: {
+      user_id: user.id,
+      steam_id: user.steam_id,
+      username: user.username,
+      avatar: user.avatar,
+      current_exp: 0,
+      rank_id: silverOne.rank_id,
+      rank_slug: silverOne.slug,
+      rank_name: silverOne.display_name,
+      rank_image_key: silverOne.image_key,
+      pro_league_unlocked: false,
+      matches_completed: 0,
+      wins: 0,
+      losses: 0,
+      kills: 0,
+      assists: 0,
+      headshot_kills: 0,
+      last_match_at: null,
+      current_rank_min_exp: silverOne.minimum_exp,
+      next_rank_id: silverTwo.rank_id,
+      next_rank_name: silverTwo.display_name,
+      next_rank_min_exp: silverTwo.minimum_exp,
+    } });
   }));
   router.get("/public/servers", asyncRoute(async (_req, res) => {
     res.json({ entries: await readServers() });
