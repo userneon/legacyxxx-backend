@@ -95,8 +95,8 @@ function classify(raw, sourceCategory) {
 function canonicalTeam(raw, weaponClass) {
   const declared = text(raw.team?.name, text(raw.team, null));
   const normalized = declared?.toLowerCase();
-  if (normalized === "t" || normalized?.includes("terrorist")) return "Terrorist";
   if (normalized === "ct" || normalized?.includes("counter")) return "Counter-Terrorist";
+  if (normalized === "t" || normalized?.includes("terrorist")) return "Terrorist";
   if (tOnlyFirearms.has(weaponClass ?? "")) return "Terrorist";
   if (ctOnlyFirearms.has(weaponClass ?? "")) return "Counter-Terrorist";
   return null;
