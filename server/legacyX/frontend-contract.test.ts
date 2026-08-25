@@ -18,6 +18,7 @@ const frontendEndpoints: Endpoint[] = [
   { method: "GET", path: "/tournaments/matches" }, { method: "GET", path: "/tournaments/matches/00000000-0000-4000-8000-000000000006" }, { method: "GET", path: "/tournaments/bracket" }, { method: "GET", path: "/tournaments/info" }, { method: "POST", path: "/tournaments/register" },
   { method: "GET", path: "/store/items" }, { method: "GET", path: "/store/items/00000000-0000-4000-8000-000000000007" }, { method: "POST", path: "/store/items/00000000-0000-4000-8000-000000000007/purchase" },
   { method: "GET", path: "/wallet/balance" }, { method: "GET", path: "/wallet/transactions" }, { method: "POST", path: "/wallet/charge" },
+  { method: "POST", path: "/wallet/promo/preview" }, { method: "POST", path: "/wallet/promo/redeem" }, { method: "GET", path: "/wallet/promotions" },
   { method: "GET", path: "/moderation/penalties" }, { method: "GET", path: "/penalties/00000000-0000-4000-8000-000000000008" }, { method: "GET", path: "/moderation/penalties/stats" },
   { method: "GET", path: "/feedback", public: true }, { method: "POST", path: "/feedback" }, { method: "GET", path: "/search/players?query=test" }, { method: "GET", path: "/search/clans?query=test" }, { method: "GET", path: "/community/content" },
 ];
@@ -56,8 +57,8 @@ beforeAll(async () => {
 afterAll(async () => { await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())); });
 
 describe("frontend API endpoint inventory", () => {
-  it("contains all 49 endpoint entries listed in the supplied frontend contract", () => {
-    expect(frontendEndpoints).toHaveLength(49);
+  it("contains the frontend endpoint inventory including authenticated wallet promotion routes", () => {
+    expect(frontendEndpoints).toHaveLength(52);
   });
 
   it("registers every protected contract endpoint beneath /api/v1 and rejects missing authentication", async () => {

@@ -1,4 +1,5 @@
 import { Router, type NextFunction, type Request, type Response } from "express";
+import { randomBytes } from "node:crypto";
 import rateLimit from "express-rate-limit";
 import { z } from "zod";
 import { parseCookieHeader } from "../_core/cookieHeader";
@@ -12,6 +13,7 @@ import {
   revokeRefreshSession,
   revokeUserRefreshSessions,
   rotateRefreshSession,
+  sha256,
   steamLoginUrl,
   verifyAccessToken,
   verifySteamCallback,
@@ -211,6 +213,52 @@ const tournamentMatchStatusSchema = z.enum(["live", "upcoming", "completed"]);
 const penaltyTypeSchema = z.enum(["ban", "comm", "gag"]);
 const userRoleSchema = z.enum(["Owner", "Founder", "Manager", "Admin", "Player", "Designer", "Developer"]);
 const shopRaritySchema = z.enum(["Common", "Rare", "Epic", "Legendary"]);
+const promoOwnerKindSchema = z.enum(["legacyx", "creator", "partner"]);
+const promoBenefitTypeSchema = z.enum(["wallet_credit", "wallet_rate_override", "wallet_percent", "wallet_fixed", "store_percent", "store_fixed", "admin_role"]);
+const promoContextSchema = z.enum(["wallet_topup", "wallet_redeem", "store_purchase"]);
+const promoCodeSchema = z.string().trim().min(6).max(48).regex(/^[A-Za-z0-9-]+$/, "Promo code can only contain letters, numbers and hyphens");
+const promoPreviewSchema = z.object({
+  code: promoCodeSchema,
+  context: promoContextSchema,
+  coinAmount: z.number().int().min(1).max(1_000_000).optional(),
+  itemId: userIdSchema.optional(),
+}).strict();
+const promoRedeemSchema = z.object({
+  code: promoCodeSchema,
+  idempotencyKey: z.string().trim().min(8).max(96).regex(/^[A-Za-z0-9:_-]+$/).optional(),
+}).strict();
+const promoCampaignCreateSchema = z.object({
+  name: z.string().trim().min(3).max(96),
+  ownerKind: promoOwnerKindSchema,
+  ownerUserId: userIdSchema.optional().nullable(),
+  benefitType: promoBenefitTypeSchema,
+  benefitValue: z.number().int().min(0).max(1_000_000),
+  startsAt: z.string().datetime({ offset: true }).optional().nullable(),
+  expiresAt: z.string().datetime({ offset: true }).optional().nullable(),
+  maxRedemptions: z.number().int().min(1).max(10_000_000).optional().nullable(),
+  perUserLimit: z.number().int().min(1).max(100).default(1),
+  metadata: z.record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.null()])).optional().default({}),
+}).strict().superRefine((input, context) => {
+  if ((input.ownerKind === "creator" || input.ownerKind === "partner") && !input.ownerUserId) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["ownerUserId"], message: "Creator and partner campaigns require an owner user" });
+  }
+  if (input.startsAt && input.expiresAt && new Date(input.expiresAt).getTime() <= new Date(input.startsAt).getTime()) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["expiresAt"], message: "Expiry must be after campaign start" });
+  }
+  if ((input.benefitType === "wallet_percent" || input.benefitType === "store_percent") && input.benefitValue > 100) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["benefitValue"], message: "Percentage discount cannot exceed 100" });
+  }
+  if (input.benefitType === "wallet_rate_override" && input.benefitValue < 1) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["benefitValue"], message: "Wallet rate must be at least 1₮ per coin" });
+  }
+});
+const promoCodeCreateSchema = z.object({
+  code: promoCodeSchema.optional(),
+  maxRedemptions: z.number().int().min(1).max(10_000_000).optional().nullable(),
+  perUserLimit: z.number().int().min(1).max(100).optional().nullable(),
+  startsAt: z.string().datetime({ offset: true }).optional().nullable(),
+  expiresAt: z.string().datetime({ offset: true }).optional().nullable(),
+}).strict();
 const skinchangerCategorySchema = z.enum(["weapon", "weapon_skin", "knife", "glove", "agent", "music_kit", "pin", "sticker", "charm"]);
 const skinchangerSlotSchema = z.enum(["weapon", "knife", "glove", "agent", "music_kit", "pin"]);
 const skinchangerTeamScopeSchema = z.enum(["all", "t", "ct"]);
@@ -397,6 +445,36 @@ function mapShopItem(item: DbRow) {
 function mapWalletTransaction(transaction: DbRow) {
   const type = textValue(transaction.type);
   return { id: textValue(transaction.id), type: type === "charge" ? "Charge" : "Purchase", amount: numberValue(transaction.amount), method: textValue(transaction.method), date: timestampValue(transaction.created_at) };
+}
+
+function normalizePromoCode(code: string) {
+  return promoCodeSchema.parse(code).replace(/-/g, "").toUpperCase();
+}
+
+function promoCodeHint(code: string) {
+  return `${code.slice(0, 3)}•••${code.slice(-3)}`;
+}
+
+function generatedPromoCode() {
+  const token = randomBytes(8).toString("hex").toUpperCase();
+  return `LX-${token.slice(0, 4)}-${token.slice(4, 8)}-${token.slice(8, 12)}-${token.slice(12)}`;
+}
+
+function mapPromotionCampaign(row: DbRow) {
+  return {
+    id: textValue(row.id), name: textValue(row.name), ownerKind: textValue(row.owner_kind), ownerUserId: row.owner_user_id == null ? null : textValue(row.owner_user_id),
+    benefitType: textValue(row.benefit_type), benefitValue: numberValue(row.benefit_value), startsAt: row.starts_at == null ? null : timestampValue(row.starts_at),
+    expiresAt: row.expires_at == null ? null : timestampValue(row.expires_at), maxRedemptions: row.max_redemptions == null ? null : numberValue(row.max_redemptions),
+    redemptionCount: numberValue(row.redemption_count), perUserLimit: numberValue(row.per_user_limit), isActive: Boolean(row.is_active), createdAt: timestampValue(row.created_at),
+  };
+}
+
+function mapPromotionCode(row: DbRow) {
+  return {
+    id: textValue(row.id), campaignId: textValue(row.campaign_id), hint: textValue(row.code_hint), maxRedemptions: row.max_redemptions == null ? null : numberValue(row.max_redemptions),
+    redemptionCount: numberValue(row.redemption_count), perUserLimit: row.per_user_limit == null ? null : numberValue(row.per_user_limit), startsAt: row.starts_at == null ? null : timestampValue(row.starts_at),
+    expiresAt: row.expires_at == null ? null : timestampValue(row.expires_at), isActive: Boolean(row.is_active), createdAt: timestampValue(row.created_at),
+  };
 }
 
 function mapPenalty(penalty: DbRow, adminSteamIds: Map<string, string> = new Map(), moderationStatuses: Map<string, ModerationStatus> = new Map()) {
@@ -1345,8 +1423,10 @@ export function createLegacyXRouter() {
     res.json(mapShopItem(data as DbRow));
   }));
   router.post("/store/items/:itemId/purchase", userRoute(async (req, res, user) => {
-    noBody(req);
-    const { error } = await db().rpc("purchase_store_item", { p_user_id: user.id, p_item_id: userIdSchema.parse(req.params.itemId) });
+    const input = z.object({ promoCode: promoCodeSchema.optional(), idempotencyKey: z.string().trim().min(8).max(96).regex(/^[A-Za-z0-9:_-]+$/).optional() }).strict().optional().parse(req.body ?? undefined);
+    const { error } = await db().rpc(input?.promoCode ? "purchase_store_item_with_promotion" : "purchase_store_item", input?.promoCode
+      ? { p_user_id: user.id, p_item_id: userIdSchema.parse(req.params.itemId), p_code_hash: sha256(normalizePromoCode(input.promoCode)), p_idempotency_key: input.idempotencyKey ?? null }
+      : { p_user_id: user.id, p_item_id: userIdSchema.parse(req.params.itemId) });
     legacyXError(error, "Unable to complete purchase");
     res.status(204).end();
   }));
@@ -1360,6 +1440,51 @@ export function createLegacyXRouter() {
     const { data, error } = await db().from("wallet_transactions").select("id,type,amount,method,created_at").eq("user_id", user.id).order("created_at", { ascending: false });
     legacyXError(error, "Unable to load wallet transactions");
     res.json(((data ?? []) as DbRow[]).map(mapWalletTransaction));
+  }));
+  const promoRateLimit = rateLimit({ windowMs: 60_000, limit: 12, standardHeaders: "draft-7", legacyHeaders: false, message: { error: "Too many promotion requests. Please try again shortly." } });
+  router.post("/wallet/promo/preview", promoRateLimit, userRoute(async (req, res, user) => {
+    const input = promoPreviewSchema.parse(req.body);
+    const { data, error } = await db().rpc("quote_promotion_code", { p_user_id: user.id, p_code_hash: sha256(normalizePromoCode(input.code)), p_context: input.context, p_coin_amount: input.coinAmount ?? null, p_item_id: input.itemId ?? null });
+    legacyXError(error, "Unable to validate promotion code");
+    res.json(data);
+  }));
+  router.post("/wallet/promo/redeem", promoRateLimit, userRoute(async (req, res, user) => {
+    const input = promoRedeemSchema.parse(req.body);
+    const { data, error } = await db().rpc("redeem_promotion_code", { p_user_id: user.id, p_code_hash: sha256(normalizePromoCode(input.code)), p_idempotency_key: input.idempotencyKey ?? null });
+    legacyXError(error, "Unable to redeem promotion code");
+    res.status(201).json(data);
+  }));
+  router.get("/wallet/promotions", userRoute(async (_req, res, user) => {
+    const { data, error } = await db().from("promotion_redemptions").select("id,context,status,benefit_type,benefit_value,code_hint,created_at,promotion_campaigns(name,owner_kind)").eq("user_id", user.id).order("created_at", { ascending: false }).limit(50);
+    legacyXError(error, "Unable to load promotion history");
+    res.json((data ?? []).map((row: DbRow) => ({ id: textValue(row.id), context: textValue(row.context), status: textValue(row.status), benefitType: textValue(row.benefit_type), benefitValue: numberValue(row.benefit_value), codeHint: textValue(row.code_hint), createdAt: timestampValue(row.created_at), campaignName: textValue(firstRow(row.promotion_campaigns)?.name), ownerKind: textValue(firstRow(row.promotion_campaigns)?.owner_kind) })));
+  }));
+  router.get("/staff/promotions/campaigns", staffRoute(async (_req, res) => {
+    const { data, error } = await db().from("promotion_campaigns").select("*").order("created_at", { ascending: false }).limit(100);
+    legacyXError(error, "Unable to load promotion campaigns");
+    res.json((data ?? []).map((row: DbRow) => mapPromotionCampaign(row)));
+  }));
+  router.post("/staff/promotions/campaigns", staffRoute(async (req, res, user) => {
+    const input = promoCampaignCreateSchema.parse(req.body);
+    if (input.benefitType === "admin_role" && (input.ownerKind !== "legacyx" || !["Owner", "Founder"].includes(user.role))) apiError(403, "Only an Owner or Founder can create a LEGACY-X Admin entitlement campaign");
+    const { data, error } = await db().from("promotion_campaigns").insert({ name: input.name, owner_kind: input.ownerKind, owner_user_id: input.ownerUserId ?? null, benefit_type: input.benefitType, benefit_value: input.benefitValue, starts_at: input.startsAt ?? null, expires_at: input.expiresAt ?? null, max_redemptions: input.maxRedemptions ?? null, per_user_limit: input.perUserLimit, metadata: input.metadata, created_by_user_id: user.id }).select("*").single();
+    legacyXError(error, "Unable to create promotion campaign");
+    await db().from("audit_logs").insert({ actor_type: "user", actor_id: user.id, action: "promotion.campaign.create", target_type: "promotion_campaign", target_id: data.id, metadata: { ownerKind: input.ownerKind, benefitType: input.benefitType } });
+    res.status(201).json(mapPromotionCampaign(data as DbRow));
+  }));
+  router.post("/staff/promotions/campaigns/:campaignId/codes", staffRoute(async (req, res, user) => {
+    const input = promoCodeCreateSchema.parse(req.body);
+    const campaignId = userIdSchema.parse(req.params.campaignId);
+    const { data: campaign, error: campaignError } = await db().from("promotion_campaigns").select("id,benefit_type").eq("id", campaignId).maybeSingle();
+    legacyXError(campaignError, "Unable to validate promotion campaign");
+    if (!campaign) apiError(404, "Promotion campaign was not found");
+    if (textValue(campaign.benefit_type) === "admin_role" && !["Owner", "Founder"].includes(user.role)) apiError(403, "Only an Owner or Founder can issue an Admin entitlement code");
+    const rawCode = input.code ? input.code.toUpperCase() : generatedPromoCode();
+    const normalizedCode = normalizePromoCode(rawCode);
+    const { data, error } = await db().from("promotion_codes").insert({ campaign_id: campaignId, code_hash: sha256(normalizedCode), code_hint: promoCodeHint(normalizedCode), max_redemptions: input.maxRedemptions ?? null, per_user_limit: input.perUserLimit ?? null, starts_at: input.startsAt ?? null, expires_at: input.expiresAt ?? null, created_by_user_id: user.id }).select("*").single();
+    legacyXError(error, "Unable to issue promotion code");
+    await db().from("audit_logs").insert({ actor_type: "user", actor_id: user.id, action: "promotion.code.issue", target_type: "promotion_code", target_id: data.id, metadata: { campaignId, codeHint: promoCodeHint(normalizedCode) } });
+    res.status(201).json({ code: rawCode, promotion: mapPromotionCode(data as DbRow) });
   }));
   router.post("/wallet/charge", userRoute(async (req, _res, _user) => {
     z.object({ amount: z.number().positive(), method: z.enum(["qpay", "card"]) }).parse(req.body);
