@@ -9,7 +9,7 @@ The `/staffpanel` entry point always begins a fresh Steam OpenID flow. It does n
 | Staff role | Access |
 |---|---|
 | `OWNER` | Database metadata, product lifecycle, system/repository metadata, all permitted server/player/match operations |
-| `MANAGER` | Ban, kick, mute, rename, map change, match/HUD/player announcement, subject to explicit permissions when populated |
+| `MANAGER` | Ban, unban, kick, mute, rename, map change, match/HUD/player announcement, subject to explicit permissions when populated |
 | `ADMIN`, `DEVELOPER`, `DESIGNER`, no staff record, inactive record | Redirect to `/`; no staff session or `/api/v1/staffpanel/*` access |
 
 Normal frontend hiding is not authorization. Every staff endpoint verifies the isolated cookie, current active staff record, role and capability server-side.
@@ -20,10 +20,10 @@ Browser requests never contain shell, SQL, RCON or arbitrary console commands. T
 
 | Action | Role |
 |---|---|
-| `ban`, `kick`, `mute`, `rename`, `map_change`, `server_announcement`, `match_announcement`, `hud_announcement`, `player_message` | `MANAGER` or `OWNER` |
-| `restart_all`, `restart_server`, `start_server`, `stop_server`, `timeout`, `player_ip_lookup` | `OWNER` only |
+| `ban`, `unban`, `kick`, `mute`, `rename`, `map_change`, `server_announcement`, `match_announcement`, `hud_announcement`, `player_message` | `MANAGER` or `OWNER` |
+| `restart_all`, `restart_server`, `start_server`, `stop_server`, `timeout`, `round_restart`, `round_restore`, `player_ip_lookup` | `OWNER` only |
 
-An action stays `pending` until a future server-side, scoped plugin executor claims it. This source package deliberately does **not** report an action as successful before a game-server executor acknowledges it. Start/stop process control, IP disclosure and game-specific command semantics require the future VPS/CS2 executor integration and a real-server validation.
+Every operation requires an explicit browser confirmation that displays the target server and relevant player, map or message fields before it is queued. An action then stays `pending` until a future server-side, scoped plugin executor claims it. This source package deliberately does **not** report an action as successful before a game-server executor acknowledges it. Start/stop process control, IP disclosure and game-specific command semantics require the future VPS/CS2 executor integration and a real-server validation.
 
 ## Deferred Rollout Order
 

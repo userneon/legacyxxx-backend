@@ -107,6 +107,25 @@ describe("LEGACY-X REST API", () => {
     expect(response.status).toBe(401);
   });
 
+  it("rejects staffpanel reads and queued server actions without the isolated staff session", async () => {
+    const [accessResponse, actionResponse] = await Promise.all([
+      fetch(`${baseUrl}/staffpanel/access`),
+      fetch(`${baseUrl}/staffpanel/actions`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          serverId: "legacyx-match-1",
+          type: "ban",
+          playerSteamId: "76561198000000000",
+          message: "contract test",
+        }),
+      }),
+    ]);
+
+    expect(accessResponse.status).toBe(401);
+    expect(actionResponse.status).toBe(401);
+  });
+
   integrationIt("rejects an invalid plugin bearer token before any database write", async () => {
     const response = await fetch(`${baseUrl}/plugin/maps`, {
       method: "POST",

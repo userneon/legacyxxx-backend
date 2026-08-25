@@ -88,7 +88,7 @@ type StaffPanelRole = "OWNER" | "MANAGER";
 type StaffPrincipal = { staffId: string; userId: string; role: StaffPanelRole; permissions: string[]; username: string };
 
 const managerStaffCapabilities = new Set([
-  "overview", "ban", "kick", "rename", "map_change", "match_announcement", "hud_announcement", "mute", "player_message",
+  "overview", "ban", "unban", "kick", "rename", "map_change", "match_announcement", "hud_announcement", "mute", "player_message",
 ]);
 
 function requireStaffCapability(staff: StaffPrincipal, capability: string) {
@@ -326,14 +326,26 @@ const staffPanelProductSchema = z.object({
 });
 const staffPanelActionSchema = z.object({
   serverId: staffPanelServerSchema,
-  type: z.enum(["ban", "kick", "mute", "rename", "map_change", "server_announcement", "match_announcement", "hud_announcement", "player_message", "restart_all", "restart_server", "start_server", "stop_server", "timeout", "player_ip_lookup"]),
+  type: z.enum(["ban", "unban", "kick", "mute", "rename", "map_change", "server_announcement", "match_announcement", "hud_announcement", "player_message", "restart_all", "restart_server", "start_server", "stop_server", "timeout", "round_restart", "round_restore", "player_ip_lookup"]),
   playerSteamId: z.string().regex(/^\d{17}$/).optional(),
   playerName: z.string().trim().min(1).max(64).optional(),
   map: z.string().trim().min(1).max(64).regex(/^[A-Za-z0-9_/-]+$/).optional(),
   message: z.string().trim().min(1).max(240).optional(),
   durationSeconds: z.number().int().min(1).max(1800).optional(),
   reason: z.string().trim().min(1).max(240).optional(),
-}).strict();
+}).strict().superRefine((input, context) => {
+  const playerActions = new Set(["ban", "unban", "kick", "mute", "rename", "player_message", "player_ip_lookup"]);
+  const messageActions = new Set(["ban", "unban", "kick", "mute", "rename", "server_announcement", "match_announcement", "hud_announcement", "player_message", "timeout"]);
+  if (playerActions.has(input.type) && !input.playerSteamId) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["playerSteamId"], message: "A 17-digit SteamID is required for this action" });
+  }
+  if (input.type === "map_change" && !input.map) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["map"], message: "A map is required for a map change" });
+  }
+  if (messageActions.has(input.type) && !input.message) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["message"], message: "A reason or announcement is required for this action" });
+  }
+});
 const promoPreviewSchema = z.object({
   code: promoCodeSchema,
   context: promoContextSchema,
@@ -1777,8 +1789,8 @@ export function createLegacyXRouter() {
       role: staff.role,
       username: staff.username,
       capabilities: staff.role === "OWNER"
-        ? ["database_overview", "products", "repository_downloads", "restart_all", "restart_server", "start_server", "stop_server", "ban", "kick", "mute", "timeout", "map_change", "server_announcement", "match_announcement", "hud_announcement", "player_message", "player_ip_lookup", "rename"]
-        : ["ban", "kick", "mute", "map_change", "match_announcement", "hud_announcement", "player_message", "rename"],
+        ? ["database_overview", "products", "repository_downloads", "restart_all", "restart_server", "start_server", "stop_server", "ban", "unban", "kick", "mute", "timeout", "round_restart", "round_restore", "map_change", "server_announcement", "match_announcement", "hud_announcement", "player_message", "player_ip_lookup", "rename"]
+        : ["ban", "unban", "kick", "mute", "map_change", "match_announcement", "hud_announcement", "player_message", "rename"],
     });
   }));
 
