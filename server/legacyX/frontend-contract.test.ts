@@ -43,6 +43,15 @@ const reconnectEndpoints: Endpoint[] = [
   { method: "GET", path: "/reconnect/me" },
 ];
 
+const staffPanelEndpoints: Endpoint[] = [
+  { method: "GET", path: "/staffpanel/access" },
+  { method: "GET", path: "/staffpanel/overview" },
+  { method: "GET", path: "/staffpanel/database" },
+  { method: "GET", path: "/staffpanel/products" },
+  { method: "POST", path: "/staffpanel/products" },
+  { method: "POST", path: "/staffpanel/actions" },
+];
+
 let server: Server;
 let baseUrl: string;
 
@@ -93,6 +102,17 @@ describe("frontend API endpoint inventory", () => {
   it("registers the authenticated player reconnect endpoint and rejects missing authentication", async () => {
     for (const endpoint of reconnectEndpoints) {
       const response = await fetch(`${baseUrl}${endpoint.path}`, { method: endpoint.method });
+      expect(response.status, `${endpoint.method} /api/v1${endpoint.path}`).toBe(401);
+    }
+  });
+
+  it("registers all staffpanel routes and rejects unauthenticated requests", async () => {
+    for (const endpoint of staffPanelEndpoints) {
+      const response = await fetch(`${baseUrl}${endpoint.path}`, {
+        method: endpoint.method,
+        headers: endpoint.method === "GET" ? undefined : { "content-type": "application/json" },
+        body: endpoint.method === "GET" ? undefined : "{}",
+      });
       expect(response.status, `${endpoint.method} /api/v1${endpoint.path}`).toBe(401);
     }
   });

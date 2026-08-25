@@ -48,7 +48,8 @@ export function hasPluginScope(scopes: unknown, requiredScope: string) {
 }
 
 export async function issueAccessToken(user: LegacyUser) {
-  return new SignJWT({ steamId: user.steamId, role: user.role, username: user.username })
+  const claims: Record<string, string | number> = { steamId: user.steamId, role: user.role, username: user.username };
+  return new SignJWT(claims)
     .setProtectedHeader({ alg: "HS256" })
     .setSubject(user.id)
     .setIssuedAt()
@@ -142,8 +143,8 @@ function steamQueryValue(value: unknown) {
   return typeof value === "string" ? value : Array.isArray(value) && typeof value[0] === "string" ? value[0] : "";
 }
 
-export function steamLoginUrl(origin: string) {
-  const callback = `${origin}/api/v1/auth/steam/callback`;
+export function steamLoginUrl(origin: string, callbackOverride?: string) {
+  const callback = callbackOverride ?? `${origin}/api/v1/auth/steam/callback`;
   const params = new URLSearchParams({
     "openid.ns": "http://specs.openid.net/auth/2.0",
     "openid.mode": "checkid_setup",

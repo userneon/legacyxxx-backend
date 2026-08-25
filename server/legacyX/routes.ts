@@ -84,6 +84,65 @@ function staffRoute(handler: (req: ApiRequest, res: Response, user: LegacyUser) 
   });
 }
 
+type StaffPanelRole = "OWNER" | "MANAGER";
+type StaffPrincipal = { staffId: string; userId: string; role: StaffPanelRole; permissions: string[]; username: string };
+
+const managerStaffCapabilities = new Set([
+  "overview", "ban", "kick", "rename", "map_change", "match_announcement", "hud_announcement", "mute", "player_message",
+]);
+
+function requireStaffCapability(staff: StaffPrincipal, capability: string) {
+  if (staff.role === "OWNER") return;
+  if (!managerStaffCapabilities.has(capability)) apiError(403, "Owner access is required for this operation");
+  if (staff.permissions.length > 0 && !staff.permissions.includes("*") && !staff.permissions.includes(capability)) {
+    apiError(403, "This staff permission is not active");
+  }
+}
+
+async function requireFreshStaffSession(req: ApiRequest): Promise<StaffPrincipal> {
+  const raw = parseCookieHeader(req.headers.cookie ?? "").legacyx_staff_session;
+  if (!raw) apiError(401, "Fresh Staff Panel Steam authentication is required");
+
+  const db = legacyXDb();
+  const { data: session, error: sessionError } = await db
+    .from("staff_sessions")
+    .select("staff_id,expires_at,revoked_at")
+    .eq("session_hash", sha256(raw))
+    .maybeSingle();
+  legacyXError(sessionError, "Unable to verify staff session");
+  if (!session || session.revoked_at || new Date(session.expires_at).getTime() <= Date.now()) {
+    apiError(401, "Fresh Staff Panel Steam authentication is required");
+  }
+
+  const { data: staff, error: staffError } = await db
+    .from("staff")
+    .select("id,user_id,role,permissions,status,users(username)")
+    .eq("id", session.staff_id)
+    .eq("status", "active")
+    .maybeSingle();
+  legacyXError(staffError, "Unable to verify staff access");
+  if (!staff || (staff.role !== "OWNER" && staff.role !== "MANAGER")) apiError(403, "Staff panel access is restricted");
+  const relatedUser = Array.isArray(staff.users) ? staff.users[0] : staff.users;
+  return {
+    staffId: staff.id,
+    userId: staff.user_id,
+    role: staff.role,
+    permissions: Array.isArray(staff.permissions) ? staff.permissions.filter((value): value is string => typeof value === "string") : [],
+    username: relatedUser && typeof relatedUser.username === "string" ? relatedUser.username : "Staff",
+  };
+}
+
+function staffPanelRoute(handler: (req: ApiRequest, res: Response, staff: StaffPrincipal) => Promise<void>) {
+  return asyncRoute(async (req, res) => handler(req, res, await requireFreshStaffSession(req)));
+}
+
+function ownerPanelRoute(handler: (req: ApiRequest, res: Response, staff: StaffPrincipal) => Promise<void>) {
+  return staffPanelRoute(async (req, res, staff) => {
+    if (staff.role !== "OWNER") apiError(403, "Owner access is required");
+    await handler(req, res, staff);
+  });
+}
+
 function pluginRoute(scope: string, handler: (req: ApiRequest, res: Response, plugin: PluginPrincipal) => Promise<void>) {
   return asyncRoute(async (req, res) => {
     const plugin = await authenticatePlugin(pluginCredential(req), scope);
@@ -113,6 +172,46 @@ function sessionCookieOptions(maxAge: number) {
     path: "/",
     maxAge,
   };
+}
+
+function staffSessionCookieOptions(maxAge: number) {
+  const domain = process.env.AUTH_COOKIE_DOMAIN?.trim();
+  return {
+    httpOnly: true,
+    secure: true,
+    sameSite: "lax" as const,
+    domain: domain || undefined,
+    path: "/api/v1/staff",
+    maxAge,
+  };
+}
+
+async function createStaffSession(userId: string) {
+  const { data: staff, error } = await legacyXDb()
+    .from("staff")
+    .select("id,role,status")
+    .eq("user_id", userId)
+    .eq("status", "active")
+    .maybeSingle();
+  legacyXError(error, "Unable to verify Staff Panel access");
+  if (!staff || (staff.role !== "OWNER" && staff.role !== "MANAGER")) return null;
+
+  const raw = randomBytes(48).toString("base64url");
+  const db = legacyXDb();
+  const { error: sessionError } = await db.from("staff_sessions").insert({
+    staff_id: staff.id,
+    session_hash: sha256(raw),
+    expires_at: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
+  });
+  legacyXError(sessionError, "Unable to create Staff Panel session");
+  const { error: auditError } = await db.from("staff_audit_logs").insert({
+    staff_id: staff.id,
+    event_type: "staff_session_started",
+    target_type: "staffpanel",
+    metadata: { role: staff.role },
+  });
+  legacyXError(auditError, "Unable to audit Staff Panel session");
+  return raw;
 }
 
 function postLoginRedirect() {
@@ -217,6 +316,24 @@ const promoOwnerKindSchema = z.enum(["legacyx", "creator", "partner"]);
 const promoBenefitTypeSchema = z.enum(["wallet_credit", "wallet_rate_override", "wallet_percent", "wallet_fixed", "store_percent", "store_fixed", "admin_role"]);
 const promoContextSchema = z.enum(["wallet_topup", "wallet_redeem", "store_purchase"]);
 const promoCodeSchema = z.string().trim().min(6).max(48).regex(/^[A-Za-z0-9-]+$/, "Promo code can only contain letters, numbers and hyphens");
+const staffPanelServerSchema = z.string().trim().min(1).max(80).regex(/^[A-Za-z0-9_-]+$/);
+const staffPanelProductSchema = z.object({
+  name: z.string().trim().min(1).max(120),
+  category: z.string().trim().min(1).max(64),
+  price: z.number().int().min(0).max(1_000_000),
+  image: z.string().trim().url().max(1024).optional().default(""),
+  rarity: shopRaritySchema,
+});
+const staffPanelActionSchema = z.object({
+  serverId: staffPanelServerSchema,
+  type: z.enum(["ban", "kick", "mute", "rename", "map_change", "server_announcement", "match_announcement", "hud_announcement", "player_message", "restart_all", "restart_server", "start_server", "stop_server", "timeout", "player_ip_lookup"]),
+  playerSteamId: z.string().regex(/^\d{17}$/).optional(),
+  playerName: z.string().trim().min(1).max(64).optional(),
+  map: z.string().trim().min(1).max(64).regex(/^[A-Za-z0-9_/-]+$/).optional(),
+  message: z.string().trim().min(1).max(240).optional(),
+  durationSeconds: z.number().int().min(1).max(1800).optional(),
+  reason: z.string().trim().min(1).max(240).optional(),
+}).strict();
 const promoPreviewSchema = z.object({
   code: promoCodeSchema,
   context: promoContextSchema,
@@ -1581,22 +1698,55 @@ export function createLegacyXRouter() {
 
   router.get("/health", (_req, res) => res.json({ ok: true, service: "legacy-x-api" }));
 
-  const beginSteam = (req: Request, res: Response) => res.redirect(302, steamLoginUrl(steamOpenIdOrigin(req)));
+  const beginSteam = (req: Request, res: Response) => {
+    const staffPanel = req.query.staffpanel === "1";
+    const origin = steamOpenIdOrigin(req);
+    const callback = staffPanel ? `${origin}/api/v1/auth/steam/callback?staffpanel=1` : undefined;
+    res.redirect(302, steamLoginUrl(origin, callback));
+  };
   router.get("/auth/steam", beginSteam);
   router.post("/auth/steam", beginSteam);
   router.get("/auth/steam/callback", asyncRoute(async (req, res) => {
     const steamId = await verifySteamCallback(req.query as Record<string, unknown>);
-    const { data: userId, error } = await db().rpc("ensure_steam_user", { p_steam_id: steamId, p_username: `Steam ${steamId}`, p_avatar: "" });
-    legacyXError(error, "Unable to create Steam user");
-    if (!userId) apiError(500, "Steam user was not created");
-    await syncSteamUserProfile(steamId);
+    const staffPanel = req.query.staffpanel === "1";
+    const redirect = postLoginRedirect();
+    let userId: string | null = null;
+    if (staffPanel) {
+      const { data: identity, error } = await db().from("users").select("id").eq("steam_id", steamId).maybeSingle();
+      legacyXError(error, "Unable to resolve Staff Panel identity");
+      if (!redirect) apiError(500, "POST_LOGIN_REDIRECT or FRONTEND_ORIGIN must be configured for Steam login");
+      if (!identity?.id) {
+        res.setHeader("Cache-Control", "no-store");
+        res.redirect(302, new URL("/", redirect).toString());
+        return;
+      }
+      userId = identity.id;
+    } else {
+      const { data, error } = await db().rpc("ensure_steam_user", { p_steam_id: steamId, p_username: `Steam ${steamId}`, p_avatar: "" });
+      legacyXError(error, "Unable to create Steam user");
+      if (!data) apiError(500, "Steam user was not created");
+      userId = data;
+      await syncSteamUserProfile(steamId);
+    }
+    if (!userId) apiError(401, "Steam identity is not eligible for Staff Panel access");
     const user = await getUserWithStats(userId);
     const role: UserRole = isUserRole(user.role) ? user.role : "Player";
     const principal: LegacyUser = { id: user.id, steamId: user.steam_id, username: user.username, role };
+    if (staffPanel) {
+      const staffSession = await createStaffSession(principal.id);
+      res.setHeader("Cache-Control", "no-store");
+      if (!redirect) apiError(500, "POST_LOGIN_REDIRECT or FRONTEND_ORIGIN must be configured for Steam login");
+      if (!staffSession) {
+        res.redirect(302, new URL("/", redirect).toString());
+        return;
+      }
+      res.cookie("legacyx_staff_session", staffSession, staffSessionCookieOptions(15 * 60 * 1000));
+      res.redirect(302, new URL("/staffpanel?reauth=done", redirect).toString());
+      return;
+    }
     const [accessToken, refreshToken] = await Promise.all([issueAccessToken(principal), createRefreshSession(principal.id)]);
     res.cookie("legacyx_access_token", accessToken, sessionCookieOptions(15 * 60 * 1000));
     res.cookie("legacyx_refresh_token", refreshToken, sessionCookieOptions(30 * 24 * 60 * 60 * 1000));
-    const redirect = postLoginRedirect();
     if (redirect) {
       res.setHeader("Cache-Control", "no-store");
       res.redirect(302, redirect);
@@ -1619,6 +1769,90 @@ export function createLegacyXRouter() {
   }));
   router.get("/auth/me", userRoute(async (_req, res, user) => {
     res.json({ user: await getUserWithStats(user.id) });
+  }));
+
+  router.get("/staffpanel/access", staffPanelRoute(async (_req, res, staff) => {
+    res.setHeader("Cache-Control", "no-store");
+    res.json({
+      role: staff.role,
+      username: staff.username,
+      capabilities: staff.role === "OWNER"
+        ? ["database_overview", "products", "repository_downloads", "restart_all", "restart_server", "start_server", "stop_server", "ban", "kick", "mute", "timeout", "map_change", "server_announcement", "match_announcement", "hud_announcement", "player_message", "player_ip_lookup", "rename"]
+        : ["ban", "kick", "mute", "map_change", "match_announcement", "hud_announcement", "player_message", "rename"],
+    });
+  }));
+
+  router.get("/staffpanel/overview", staffPanelRoute(async (_req, res, staff) => {
+    requireStaffCapability(staff, "overview");
+    const [servers, pendingActions] = await Promise.all([
+      db().from("reconnect_servers").select("server_id,name,map_name,mode,player_count,last_heartbeat_at").order("name"),
+      db().from("staff_panel_actions").select("id,status,action_type,server_id,created_at").in("status", ["pending", "claimed"]).order("created_at", { ascending: false }).limit(12),
+    ]);
+    legacyXError(servers.error || pendingActions.error, "Unable to load staff panel overview");
+    res.json({ role: staff.role, servers: servers.data ?? [], pendingActions: pendingActions.data ?? [] });
+  }));
+
+  router.get("/staffpanel/database", ownerPanelRoute(async (_req, res) => {
+    const [users, products, transactions, matches, actions] = await Promise.all([
+      db().from("users").select("id", { count: "exact", head: true }),
+      db().from("store_items").select("id", { count: "exact", head: true }),
+      db().from("wallet_transactions").select("id", { count: "exact", head: true }),
+      db().from("matches").select("id", { count: "exact", head: true }),
+      db().from("staff_panel_actions").select("id", { count: "exact", head: true }),
+    ]);
+    legacyXError(users.error || products.error || transactions.error || matches.error || actions.error, "Unable to load database overview");
+    res.json({ tables: [
+      { name: "users", count: users.count ?? 0 }, { name: "store_items", count: products.count ?? 0 },
+      { name: "wallet_transactions", count: transactions.count ?? 0 }, { name: "matches", count: matches.count ?? 0 },
+      { name: "staff_panel_actions", count: actions.count ?? 0 },
+    ] });
+  }));
+
+  router.get("/staffpanel/products", ownerPanelRoute(async (_req, res) => {
+    const { data, error } = await db().from("store_items").select("*").order("created_at", { ascending: false });
+    legacyXError(error, "Unable to load products");
+    res.json(((data ?? []) as DbRow[]).map((item) => ({ ...mapShopItem(item), active: Boolean(item.is_active) })));
+  }));
+  router.post("/staffpanel/products", ownerPanelRoute(async (req, res) => {
+    const input = staffPanelProductSchema.parse(req.body);
+    const { data, error } = await db().from("store_items").insert({ ...input, is_active: true }).select("*").single();
+    legacyXError(error, "Unable to create product");
+    res.status(201).json({ ...mapShopItem(data as DbRow), active: true });
+  }));
+  router.patch("/staffpanel/products/:itemId", ownerPanelRoute(async (req, res) => {
+    const input = staffPanelProductSchema.partial().extend({ active: z.boolean().optional() }).parse(req.body);
+    const { active, ...product } = input;
+    const { data, error } = await db().from("store_items").update({ ...product, ...(active === undefined ? {} : { is_active: active }) }).eq("id", userIdSchema.parse(req.params.itemId)).select("*").single();
+    legacyXError(error, "Unable to update product");
+    res.json({ ...mapShopItem(data as DbRow), active: Boolean((data as DbRow).is_active) });
+  }));
+  router.delete("/staffpanel/products/:itemId", ownerPanelRoute(async (req, res) => {
+    const { error } = await db().from("store_items").update({ is_active: false }).eq("id", userIdSchema.parse(req.params.itemId));
+    legacyXError(error, "Unable to archive product");
+    res.status(204).end();
+  }));
+
+  router.post("/staffpanel/actions", staffPanelRoute(async (req, res, staff) => {
+    const input = staffPanelActionSchema.parse(req.body);
+    requireStaffCapability(staff, input.type);
+    const { data, error } = await db().from("staff_panel_actions").insert({
+      server_id: input.serverId,
+      requested_by: staff.userId,
+      requested_by_staff_id: staff.staffId,
+      action_type: input.type,
+      payload: input,
+      status: "pending",
+    }).select("id,status,action_type,server_id,created_at").single();
+    legacyXError(error, "Unable to queue server action");
+    const audit = await db().from("staff_audit_logs").insert({
+      staff_id: staff.staffId,
+      event_type: "staffpanel_action_queued",
+      target_type: "server_action",
+      target_id: (data as DbRow).id,
+      metadata: { action_type: input.type, server_id: input.serverId },
+    });
+    legacyXError(audit.error, "Unable to audit server action");
+    res.status(202).json({ action: data });
   }));
 
   const leaderboardHandler = asyncRoute(async (req, res) => {
