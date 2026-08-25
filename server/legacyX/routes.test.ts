@@ -8,6 +8,8 @@ import { createLegacyXRouter } from "./routes";
 
 let server: Server;
 let baseUrl: string;
+const hasDatabaseIntegration = Boolean(process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY);
+const integrationIt = hasDatabaseIntegration ? it : it.skip;
 
 async function frontendAuthHeaders() {
   const accessToken = await issueAccessToken({
@@ -20,6 +22,8 @@ async function frontendAuthHeaders() {
 }
 
 beforeAll(async () => {
+  process.env.STEAM_OPENID_ORIGIN ??= "https://legacyx.cc";
+  process.env.FRONTEND_ORIGIN ??= "https://legacyx.cc";
   const app = express();
   app.use(express.json());
   app.use("/api/v1", createLegacyXRouter());
@@ -35,7 +39,7 @@ afterAll(async () => {
 });
 
 describe("LEGACY-X REST API", () => {
-  it("returns the frontend leaderboard array for an authenticated user", async () => {
+  integrationIt("returns the frontend leaderboard array for an authenticated user", async () => {
     const response = await fetch(`${baseUrl}/leaderboard?mode=5vs5`, { headers: await frontendAuthHeaders() });
 
     expect(response.status).toBe(200);
@@ -103,7 +107,7 @@ describe("LEGACY-X REST API", () => {
     expect(response.status).toBe(401);
   });
 
-  it("rejects an invalid plugin bearer token before any database write", async () => {
+  integrationIt("rejects an invalid plugin bearer token before any database write", async () => {
     const response = await fetch(`${baseUrl}/plugin/maps`, {
       method: "POST",
       headers: {
@@ -126,7 +130,7 @@ describe("LEGACY-X REST API", () => {
     expect(response.status).toBe(401);
   });
 
-  it("keeps an atomic purchase from writing when the requested item does not exist", async () => {
+  integrationIt("keeps an atomic purchase from writing when the requested item does not exist", async () => {
     const accessToken = await issueAccessToken({
       id: randomUUID(),
       steamId: "76561198000000000",

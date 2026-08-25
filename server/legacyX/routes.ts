@@ -21,7 +21,7 @@ import {
   type PluginPrincipal,
   type UserRole,
 } from "./auth";
-import { apiRateLimitMax } from "./config";
+import { apiAuthRateLimitMax, apiRateLimitMax, apiSensitiveRateLimitMax } from "./config";
 import { getFaceitProfileSnapshot, getFaceitProfileSnapshotForSteamId, resolveFaceitNickname } from "./faceit";
 import { legacyXDb, legacyXError } from "./supabase";
 import { resolvePublicSteamBackground } from "./steamBackground";
@@ -550,6 +550,22 @@ export function createLegacyXRouter() {
     legacyHeaders: false,
     message: { error: "Too many requests. Please retry shortly." },
   }));
+  const authRateLimit = rateLimit({
+    windowMs: 60_000,
+    limit: process.env.NODE_ENV === "test" ? 1_000 : apiAuthRateLimitMax(),
+    standardHeaders: "draft-8",
+    legacyHeaders: false,
+    message: { error: "Too many authentication requests. Please retry shortly." },
+  });
+  const sensitiveMutationRateLimit = rateLimit({
+    windowMs: 60_000,
+    limit: process.env.NODE_ENV === "test" ? 1_000 : apiSensitiveRateLimitMax(),
+    standardHeaders: "draft-8",
+    legacyHeaders: false,
+    message: { error: "Too many sensitive requests. Please retry shortly." },
+  });
+  router.use("/auth", authRateLimit);
+  router.use("/staff", sensitiveMutationRateLimit);
   router.use((req, res, next) => {
     res.setHeader("X-Content-Type-Options", "nosniff");
     res.setHeader("X-Frame-Options", "DENY");
@@ -562,6 +578,7 @@ export function createLegacyXRouter() {
       res.setHeader("Access-Control-Allow-Credentials", "true");
       res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type");
       res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
+      res.setHeader("Vary", "Origin");
       if (req.method === "OPTIONS") return res.sendStatus(204);
     }
     if (req.method === "OPTIONS") return res.sendStatus(403);
@@ -2076,10 +2093,10 @@ export function createLegacyXRouter() {
   });
 
   router.use((error: Error & { statusCode?: number }, _req: Request, res: Response, _next: NextFunction) => {
-    if (error instanceof z.ZodError) return res.status(400).json({ error: "Validation failed", details: error.flatten() });
+    if (error instanceof z.ZodError) return res.status(400).json({ error: "Validation failed" });
     const status = error.statusCode ?? 500;
     if (status >= 500) console.error("[legacy-x-api]", error);
-    res.status(status).json({ error: error.message || "Unexpected server error" });
+    res.status(status).json({ error: status >= 500 ? "Unexpected server error" : (error.message || "Request failed") });
   });
 
   return router;

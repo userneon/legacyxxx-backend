@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import { legacyXDb, legacyXError } from "./supabase";
 import { syncSteamUserProfile, validateSteamWebApiKey } from "./steamProfile";
 
-describe("Steam Web API credential", () => {
+const describeWithSteamIntegration = process.env.STEAM_WEB_API_KEY && process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY ? describe : describe.skip;
+
+describeWithSteamIntegration("Steam Web API credential", () => {
   it("validates the server-only Steam Web API key with Steam's lightweight server-info endpoint", async () => {
     await expect(validateSteamWebApiKey()).resolves.toBeUndefined();
   }, 20_000);

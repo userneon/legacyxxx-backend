@@ -3,7 +3,8 @@ import "dotenv/config";
 import express from "express";
 import { createServer } from "http";
 import { createLegacyXRouter } from "../legacyX/routes";
-import { runtimeHost, runtimePort, trustProxyValue, validateProductionRuntime } from "../legacyX/config";
+import { apiBodyLimit, runtimeHost, runtimePort, trustProxyValue, validateProductionRuntime } from "../legacyX/config";
+import { apiParseErrorHandler, apiSecurityMiddleware } from "./security";
 
 async function startServer() {
   if (process.env.NODE_ENV === "production") validateProductionRuntime();
@@ -13,8 +14,10 @@ async function startServer() {
   app.disable("x-powered-by");
   // Nginx terminates TLS and forwards the client protocol/IP to the private Node listener.
   app.set("trust proxy", trustProxyValue());
-  app.use("/api/v1", express.json({ limit: "1mb" }), express.urlencoded({ limit: "1mb", extended: true }), createLegacyXRouter());
+  app.use(apiSecurityMiddleware);
+  app.use("/api/v1", express.json({ limit: apiBodyLimit() }), express.urlencoded({ limit: apiBodyLimit(), extended: true }), createLegacyXRouter());
   app.get("/health", (_req, res) => res.json({ ok: true, service: "legacy-x-backend" }));
+  app.use(apiParseErrorHandler);
 
   const port = runtimePort();
   const host = runtimeHost();

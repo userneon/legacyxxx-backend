@@ -3,8 +3,9 @@ import { createClient } from "@supabase/supabase-js";
 
 const supabaseUrl = process.env.SUPABASE_URL;
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const describeWithSupabase = supabaseUrl && serviceRoleKey ? describe : describe.skip;
 
-describe("Supabase server connection", () => {
+describeWithSupabase("Supabase server connection", () => {
   it("accepts the configured server-only credentials", async () => {
     expect(supabaseUrl).toMatch(/^https:\/\/[a-z0-9-]+\.supabase\.co\/?$/i);
     expect(serviceRoleKey).toBeTruthy();

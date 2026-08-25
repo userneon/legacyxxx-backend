@@ -69,3 +69,24 @@ export function apiRateLimitMax() {
   }
   return limit;
 }
+
+function boundedEnvInt(name: string, fallback: number, min: number, max: number) {
+  const value = process.env[name] ?? String(fallback);
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isInteger(parsed) || parsed < min || parsed > max) {
+    throw new Error(`${name} must be an integer between ${min} and ${max}`);
+  }
+  return parsed;
+}
+
+export function apiAuthRateLimitMax() {
+  return boundedEnvInt("API_AUTH_RATE_LIMIT_MAX", 30, 1, 1_000);
+}
+
+export function apiSensitiveRateLimitMax() {
+  return boundedEnvInt("API_SENSITIVE_RATE_LIMIT_MAX", 45, 1, 1_000);
+}
+
+export function apiBodyLimit() {
+  return `${boundedEnvInt("API_BODY_LIMIT_KB", 1024, 16, 5_120)}kb`;
+}
