@@ -88,7 +88,7 @@ type StaffPanelRole = "OWNER" | "MANAGER";
 type StaffPrincipal = { staffId: string; userId: string; role: StaffPanelRole; permissions: string[]; username: string };
 
 const managerStaffCapabilities = new Set([
-  "overview", "ban", "unban", "kick", "rename", "map_change", "match_announcement", "hud_announcement", "mute", "player_message",
+  "overview", "ban", "unban", "kick", "rename", "map_change", "match_announcement", "hud_announcement", "player_hud_alert", "mute", "player_message",
 ]);
 
 function requireStaffCapability(staff: StaffPrincipal, capability: string) {
@@ -326,16 +326,21 @@ const staffPanelProductSchema = z.object({
 });
 const staffPanelActionSchema = z.object({
   serverId: staffPanelServerSchema,
-  type: z.enum(["ban", "unban", "kick", "mute", "rename", "map_change", "server_announcement", "match_announcement", "hud_announcement", "player_message", "restart_all", "restart_server", "start_server", "stop_server", "timeout", "round_restart", "round_restore", "player_ip_lookup"]),
+  type: z.enum(["ban", "unban", "kick", "mute", "rename", "map_change", "server_announcement", "match_announcement", "hud_announcement", "player_hud_alert", "player_message", "restart_all", "restart_server", "start_server", "stop_server", "timeout", "round_restart", "round_restore", "player_ip_lookup"]),
   playerSteamId: z.string().regex(/^\d{17}$/).optional(),
   playerName: z.string().trim().min(1).max(64).optional(),
   map: z.string().trim().min(1).max(64).regex(/^[A-Za-z0-9_/-]+$/).optional(),
   message: z.string().trim().min(1).max(240).optional(),
-  durationSeconds: z.number().int().min(1).max(1800).optional(),
+  durationSeconds: z.number().int().min(1).max(86_400).optional(),
   reason: z.string().trim().min(1).max(240).optional(),
+  banTerm: z.enum(["10m", "30m", "1h", "1d", "7d", "permanent"]).optional(),
+  enforceAfterSeconds: z.number().int().min(0).max(60).optional(),
+  alertColor: z.enum(["gold", "sky", "red", "green", "neutral"]).optional(),
+  countdownSeconds: z.number().int().min(0).max(600).optional(),
+  newName: z.string().trim().min(2).max(64).optional(),
 }).strict().superRefine((input, context) => {
-  const playerActions = new Set(["ban", "unban", "kick", "mute", "rename", "player_message", "player_ip_lookup"]);
-  const messageActions = new Set(["ban", "unban", "kick", "mute", "rename", "server_announcement", "match_announcement", "hud_announcement", "player_message", "timeout"]);
+  const playerActions = new Set(["ban", "unban", "kick", "mute", "rename", "player_hud_alert", "player_message", "player_ip_lookup"]);
+  const messageActions = new Set(["ban", "unban", "kick", "mute", "server_announcement", "match_announcement", "hud_announcement", "player_hud_alert", "player_message", "timeout"]);
   if (playerActions.has(input.type) && !input.playerSteamId) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ["playerSteamId"], message: "A 17-digit SteamID is required for this action" });
   }
@@ -344,6 +349,15 @@ const staffPanelActionSchema = z.object({
   }
   if (messageActions.has(input.type) && !input.message) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ["message"], message: "A reason or announcement is required for this action" });
+  }
+  if (input.type === "ban" && !input.banTerm) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["banTerm"], message: "A ban term is required" });
+  }
+  if (input.type === "ban" && input.enforceAfterSeconds !== 10) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["enforceAfterSeconds"], message: "Ban enforcement must use the approved 10 second player notice" });
+  }
+  if (input.type === "rename" && !input.newName) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["newName"], message: "A new player name is required" });
   }
 });
 const promoPreviewSchema = z.object({
@@ -1789,8 +1803,8 @@ export function createLegacyXRouter() {
       role: staff.role,
       username: staff.username,
       capabilities: staff.role === "OWNER"
-        ? ["database_overview", "products", "repository_downloads", "restart_all", "restart_server", "start_server", "stop_server", "ban", "unban", "kick", "mute", "timeout", "round_restart", "round_restore", "map_change", "server_announcement", "match_announcement", "hud_announcement", "player_message", "player_ip_lookup", "rename"]
-        : ["ban", "unban", "kick", "mute", "map_change", "match_announcement", "hud_announcement", "player_message", "rename"],
+        ? ["database_overview", "products", "repository_downloads", "restart_all", "restart_server", "start_server", "stop_server", "ban", "unban", "kick", "mute", "timeout", "round_restart", "round_restore", "map_change", "server_announcement", "match_announcement", "hud_announcement", "player_hud_alert", "player_message", "player_ip_lookup", "rename"]
+        : ["ban", "unban", "kick", "mute", "map_change", "match_announcement", "hud_announcement", "player_hud_alert", "player_message", "rename"],
     });
   }));
 
@@ -1802,6 +1816,31 @@ export function createLegacyXRouter() {
     ]);
     legacyXError(servers.error || pendingActions.error, "Unable to load staff panel overview");
     res.json({ role: staff.role, servers: servers.data ?? [], pendingActions: pendingActions.data ?? [] });
+  }));
+
+  router.get("/staffpanel/servers/:serverId/roster", staffPanelRoute(async (req, res, staff) => {
+    requireStaffCapability(staff, "overview");
+    const serverId = staffPanelServerSchema.parse(req.params.serverId);
+    const [serverResult, snapshotResult, sessionsResult] = await Promise.all([
+      db().schema("legacy_x").from("reconnect_servers").select("server_id,display_name,current_map,current_mode,player_count,last_heartbeat_at").eq("server_id", serverId).maybeSingle(),
+      db().schema("legacy_x").from("server_live_match_snapshots").select("state,map_name,terrorist_players,counter_terrorist_players,spectator_players,reported_at").eq("server_id", serverId).maybeSingle(),
+      db().schema("legacy_x").from("reconnect_sessions").select("steam_id,player_name,connected_at").eq("server_id", serverId).is("disconnected_at", null).order("connected_at").limit(64),
+    ]);
+    legacyXError(serverResult.error || snapshotResult.error || sessionsResult.error, "Unable to load staff server roster");
+    if (!serverResult.data) apiError(404, "Server was not found");
+
+    const snapshot = snapshotResult.data as DbRow | null;
+    const reportedAt = textValue(snapshot?.reported_at);
+    const reportedAtMs = Date.parse(reportedAt);
+    const hasSnapshot = Boolean(snapshot) && Number.isFinite(reportedAtMs) && Date.now() - reportedAtMs <= 90_000;
+    const normalizePlayers = (value: unknown, team: "T" | "CT" | "SPECTATOR") => z.array(liveMatchPlayerSchema).safeParse(value).success
+      ? z.array(liveMatchPlayerSchema).parse(value).map(player => ({ steamId: player.steam_id, name: player.name, team, connected: player.connected, rankId: player.rank_id ?? null, rankName: player.rank_name ?? null, rankImageKey: player.rank_image_key ?? null, adr: player.adr ?? null, ping: player.ping ?? null }))
+      : [];
+    const rosterOnly = ((sessionsResult.data ?? []) as DbRow[]).map(session => ({ steamId: textValue(session.steam_id), name: textValue(session.player_name) || "Unknown player", team: "UNASSIGNED" as const, connected: true, rankId: null, rankName: null, rankImageKey: null, adr: null, ping: null }));
+    const players = hasSnapshot
+      ? [...normalizePlayers(snapshot?.terrorist_players, "T"), ...normalizePlayers(snapshot?.counter_terrorist_players, "CT"), ...normalizePlayers(snapshot?.spectator_players, "SPECTATOR")]
+      : rosterOnly;
+    res.json({ server: { id: serverId, name: textValue(serverResult.data.display_name) || serverId, map: textValue(snapshot?.map_name) || textValue(serverResult.data.current_map) || "Unknown", mode: textValue(serverResult.data.current_mode) || "Community", playerCount: numberValue(serverResult.data.player_count), state: hasSnapshot ? textValue(snapshot?.state) : "unavailable", availability: hasSnapshot ? "live_snapshot" : rosterOnly.length > 0 ? "roster_only" : "unavailable", updatedAt: hasSnapshot ? reportedAt : textValue(serverResult.data.last_heartbeat_at) || null }, players });
   }));
 
   router.get("/staffpanel/database", ownerPanelRoute(async (_req, res) => {
@@ -1847,6 +1886,9 @@ export function createLegacyXRouter() {
   router.post("/staffpanel/actions", staffPanelRoute(async (req, res, staff) => {
     const input = staffPanelActionSchema.parse(req.body);
     requireStaffCapability(staff, input.type);
+    const { data: targetServer, error: targetServerError } = await db().schema("legacy_x").from("reconnect_servers").select("server_id").eq("server_id", input.serverId).maybeSingle();
+    legacyXError(targetServerError, "Unable to validate target server");
+    if (!targetServer) apiError(404, "Target server was not found");
     const { data, error } = await db().from("staff_panel_actions").insert({
       server_id: input.serverId,
       requested_by: staff.userId,
@@ -1861,7 +1903,7 @@ export function createLegacyXRouter() {
       event_type: "staffpanel_action_queued",
       target_type: "server_action",
       target_id: (data as DbRow).id,
-      metadata: { action_type: input.type, server_id: input.serverId },
+      metadata: { action_type: input.type, server_id: input.serverId, player_steam_id: input.playerSteamId ?? null, enforce_after_seconds: input.enforceAfterSeconds ?? null },
     });
     legacyXError(audit.error, "Unable to audit server action");
     res.status(202).json({ action: data });

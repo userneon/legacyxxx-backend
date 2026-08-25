@@ -47,7 +47,7 @@ CREATE TABLE IF NOT EXISTS legacy_x.staff_panel_actions (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   server_id text NOT NULL CHECK (server_id ~ '^[A-Za-z0-9_-]{1,80}$'),
   requested_by uuid NOT NULL REFERENCES legacy_x.users(id) ON DELETE RESTRICT,
-  action_type text NOT NULL CHECK (action_type IN ('ban','unban','kick','mute','rename','map_change','server_announcement','match_announcement','hud_announcement','player_message','restart_all','restart_server','start_server','stop_server','timeout','round_restart','round_restore','player_ip_lookup')),
+  action_type text NOT NULL CHECK (action_type IN ('ban','unban','kick','mute','rename','map_change','server_announcement','match_announcement','hud_announcement','player_hud_alert','player_message','restart_all','restart_server','start_server','stop_server','timeout','round_restart','round_restore','player_ip_lookup')),
   payload jsonb NOT NULL DEFAULT '{}'::jsonb,
   status text NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','claimed','completed','failed','cancelled')),
   claimed_at timestamptz,
@@ -60,7 +60,7 @@ CREATE INDEX IF NOT EXISTS staff_panel_actions_requester_created_idx ON legacy_x
 ALTER TABLE legacy_x.staff_panel_actions ADD COLUMN IF NOT EXISTS requested_by_staff_id uuid REFERENCES legacy_x.staff(id) ON DELETE RESTRICT;
 CREATE INDEX IF NOT EXISTS staff_panel_actions_staff_created_idx ON legacy_x.staff_panel_actions (requested_by_staff_id, created_at DESC);
 ALTER TABLE legacy_x.staff_panel_actions DROP CONSTRAINT IF EXISTS staff_panel_actions_action_type_check;
-ALTER TABLE legacy_x.staff_panel_actions ADD CONSTRAINT staff_panel_actions_action_type_check CHECK (action_type IN ('ban','unban','kick','mute','rename','map_change','server_announcement','match_announcement','hud_announcement','player_message','restart_all','restart_server','start_server','stop_server','timeout','round_restart','round_restore','player_ip_lookup'));
+ALTER TABLE legacy_x.staff_panel_actions ADD CONSTRAINT staff_panel_actions_action_type_check CHECK (action_type IN ('ban','unban','kick','mute','rename','map_change','server_announcement','match_announcement','hud_announcement','player_hud_alert','player_message','restart_all','restart_server','start_server','stop_server','timeout','round_restart','round_restore','player_ip_lookup'));
 ALTER TABLE legacy_x.staff_panel_actions ENABLE ROW LEVEL SECURITY;
 REVOKE ALL ON legacy_x.staff_panel_actions FROM anon, authenticated;
 GRANT SELECT, INSERT, UPDATE, DELETE ON legacy_x.staff_panel_actions TO service_role;
