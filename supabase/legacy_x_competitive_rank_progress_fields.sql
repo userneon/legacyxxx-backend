@@ -22,6 +22,6 @@ SELECT
   next_d.display_name AS next_rank_name,
   next_d.minimum_exp AS next_rank_min_exp
 FROM legacy_x.competitive_player_progression cpp
-JOIN legacy_x.users u ON u.id = cpp.user_id AND u.role <> 'Owner'
+JOIN legacy_x.users u ON u.id = cpp.user_id
 JOIN legacy_x.competitive_rank_definitions d ON d.rank_id = cpp.current_rank_id
 LEFT JOIN legacy_x.competitive_rank_definitions next_d ON next_d.rank_id = d.rank_id + 1;

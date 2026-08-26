@@ -337,7 +337,7 @@ SELECT
   cpp.headshot_kills,
   cpp.last_match_at
 FROM legacy_x.competitive_player_progression cpp
-JOIN legacy_x.users u ON u.id = cpp.user_id AND u.role <> 'Owner'
+JOIN legacy_x.users u ON u.id = cpp.user_id
 JOIN legacy_x.competitive_rank_definitions d ON d.rank_id = cpp.current_rank_id;
 
 CREATE OR REPLACE VIEW legacy_x.competitive_leaderboard AS
@@ -364,7 +364,7 @@ SELECT
   COALESCE(ps.kd_ratio, 0) AS kd_ratio,
   COALESCE(ps.played_hours, 0) AS played_hours
 FROM legacy_x.competitive_player_progression cp
-JOIN legacy_x.users u ON u.id = cp.user_id AND u.role <> 'Owner'
+JOIN legacy_x.users u ON u.id = cp.user_id
 JOIN legacy_x.competitive_rank_definitions rd ON rd.rank_id = cp.current_rank_id
 LEFT JOIN legacy_x.player_stats ps ON ps.user_id = cp.user_id;
 
