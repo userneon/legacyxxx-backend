@@ -1746,52 +1746,62 @@ export function createLegacyXRouter() {
   router.get("/auth/steam", beginSteam);
   router.post("/auth/steam", beginSteam);
   router.get("/auth/steam/callback", asyncRoute(async (req, res) => {
-    const steamId = await verifySteamCallback(req.query as Record<string, unknown>);
     const staffPanel = req.query.staffpanel === "1";
     const redirect = postLoginRedirect();
-    let userId: string | null = null;
-    if (staffPanel) {
-      const { data: identity, error } = await db().from("users").select("id").eq("steam_id", steamId).maybeSingle();
-      legacyXError(error, "Unable to resolve Staff Panel identity");
-      if (!redirect) apiError(500, "POST_LOGIN_REDIRECT or FRONTEND_ORIGIN must be configured for Steam login");
-      if (!identity?.id) {
+    try {
+      const steamId = await verifySteamCallback(req.query as Record<string, unknown>);
+      let userId: string | null = null;
+      if (staffPanel) {
+        const { data: identity, error } = await db().from("users").select("id").eq("steam_id", steamId).maybeSingle();
+        legacyXError(error, "Unable to resolve Staff Panel identity");
+        if (!redirect) apiError(500, "POST_LOGIN_REDIRECT or FRONTEND_ORIGIN must be configured for Steam login");
+        if (!identity?.id) {
+          res.setHeader("Cache-Control", "no-store");
+          res.redirect(302, new URL("/", redirect).toString());
+          return;
+        }
+        userId = identity.id;
+      } else {
+        const { data, error } = await db().rpc("ensure_steam_user", { p_steam_id: steamId, p_username: `Steam ${steamId}`, p_avatar: "" });
+        legacyXError(error, "Unable to create Steam user");
+        if (!data) apiError(500, "Steam user was not created");
+        userId = data;
+        await syncSteamUserProfile(steamId);
+      }
+      if (!userId) apiError(401, "Steam identity is not eligible for Staff Panel access");
+      const user = await getUserWithStats(userId);
+      const role: UserRole = isUserRole(user.role) ? user.role : "Player";
+      const principal: LegacyUser = { id: user.id, steamId: user.steam_id, username: user.username, role };
+      if (staffPanel) {
+        const staffSession = await createStaffSession(principal.id);
         res.setHeader("Cache-Control", "no-store");
-        res.redirect(302, new URL("/", redirect).toString());
+        if (!redirect) apiError(500, "POST_LOGIN_REDIRECT or FRONTEND_ORIGIN must be configured for Steam login");
+        if (!staffSession) {
+          res.redirect(302, new URL("/", redirect).toString());
+          return;
+        }
+        res.cookie("legacyx_staff_session", staffSession, staffSessionCookieOptions(15 * 60 * 1000));
+        res.redirect(302, new URL("/staffpanel?reauth=done", redirect).toString());
         return;
       }
-      userId = identity.id;
-    } else {
-      const { data, error } = await db().rpc("ensure_steam_user", { p_steam_id: steamId, p_username: `Steam ${steamId}`, p_avatar: "" });
-      legacyXError(error, "Unable to create Steam user");
-      if (!data) apiError(500, "Steam user was not created");
-      userId = data;
-      await syncSteamUserProfile(steamId);
-    }
-    if (!userId) apiError(401, "Steam identity is not eligible for Staff Panel access");
-    const user = await getUserWithStats(userId);
-    const role: UserRole = isUserRole(user.role) ? user.role : "Player";
-    const principal: LegacyUser = { id: user.id, steamId: user.steam_id, username: user.username, role };
-    if (staffPanel) {
-      const staffSession = await createStaffSession(principal.id);
-      res.setHeader("Cache-Control", "no-store");
-      if (!redirect) apiError(500, "POST_LOGIN_REDIRECT or FRONTEND_ORIGIN must be configured for Steam login");
-      if (!staffSession) {
-        res.redirect(302, new URL("/", redirect).toString());
+      const [accessToken, refreshToken] = await Promise.all([issueAccessToken(principal), createRefreshSession(principal.id)]);
+      res.cookie("legacyx_access_token", accessToken, sessionCookieOptions(15 * 60 * 1000));
+      res.cookie("legacyx_refresh_token", refreshToken, sessionCookieOptions(30 * 24 * 60 * 1000));
+      if (redirect) {
+        res.setHeader("Cache-Control", "no-store");
+        res.redirect(302, redirect);
         return;
       }
-      res.cookie("legacyx_staff_session", staffSession, staffSessionCookieOptions(15 * 60 * 1000));
-      res.redirect(302, new URL("/staffpanel?reauth=done", redirect).toString());
-      return;
-    }
-    const [accessToken, refreshToken] = await Promise.all([issueAccessToken(principal), createRefreshSession(principal.id)]);
-    res.cookie("legacyx_access_token", accessToken, sessionCookieOptions(15 * 60 * 1000));
-    res.cookie("legacyx_refresh_token", refreshToken, sessionCookieOptions(30 * 24 * 60 * 60 * 1000));
-    if (redirect) {
+      apiError(500, "POST_LOGIN_REDIRECT or FRONTEND_ORIGIN must be configured for Steam login");
+    } catch (error) {
+      if (!staffPanel || !redirect) throw error;
+      const trace = randomBytes(8).toString("hex");
+      const status = (error as { statusCode?: number }).statusCode ?? 500;
+      const code = status >= 500 ? "staff_setup_required" : "staff_auth_failed";
+      console.error("[legacy-x-api] staffpanel_callback_failed", { trace, status, message: error instanceof Error ? error.message : "Unknown error" });
       res.setHeader("Cache-Control", "no-store");
-      res.redirect(302, redirect);
-      return;
+      res.redirect(302, new URL(`/staffpanel?staff_error=${code}&trace=${trace}`, redirect).toString());
     }
-    apiError(500, "POST_LOGIN_REDIRECT or FRONTEND_ORIGIN must be configured for Steam login");
   }));
   router.post("/auth/logout", asyncRoute(async (req, res) => {
     await revokeRefreshSession(refreshTokenFromRequest(req));
