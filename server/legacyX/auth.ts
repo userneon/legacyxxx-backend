@@ -5,20 +5,8 @@ import { legacyXDb, legacyXError } from "./supabase";
 export type LegacyUser = {
   id: string;
   steamId: string;
-  role: UserRole;
   username: string;
 };
-
-export const userRoles = ["Owner", "Founder", "Manager", "Admin", "Player", "Designer", "Developer"] as const;
-export type UserRole = typeof userRoles[number];
-
-export function isUserRole(value: unknown): value is UserRole {
-  return typeof value === "string" && (userRoles as readonly string[]).includes(value);
-}
-
-export function isStaffRole(role: UserRole) {
-  return role !== "Player";
-}
 
 export type PluginPrincipal = {
   id: string;
@@ -48,7 +36,7 @@ export function hasPluginScope(scopes: unknown, requiredScope: string) {
 }
 
 export async function issueAccessToken(user: LegacyUser) {
-  const claims: Record<string, string | number> = { steamId: user.steamId, role: user.role, username: user.username };
+  const claims: Record<string, string | number> = { steamId: user.steamId, username: user.username };
   return new SignJWT(claims)
     .setProtectedHeader({ alg: "HS256" })
     .setSubject(user.id)
@@ -62,12 +50,10 @@ export async function verifyAccessToken(token: string): Promise<LegacyUser> {
   if (!payload.sub || typeof payload.steamId !== "string" || typeof payload.username !== "string") {
     throw Object.assign(new Error("Invalid access token payload"), { statusCode: 401 });
   }
-  const role = isUserRole(payload.role) ? payload.role : "Player";
   return {
     id: payload.sub,
     steamId: payload.steamId,
     username: payload.username,
-    role,
   };
 }
 
@@ -99,13 +85,12 @@ export async function rotateRefreshSession(refreshToken: string): Promise<Legacy
 
   const { data: user, error: userError } = await db
     .from("users")
-    .select("id,steam_id,username,role")
+    .select("id,steam_id,username")
     .eq("id", session.user_id)
     .maybeSingle();
   legacyXError(userError, "Unable to read session user");
   if (!user) throw Object.assign(new Error("Session user no longer exists"), { statusCode: 401 });
-  const role = isUserRole(user.role) ? user.role : "Player";
-  return { id: user.id, steamId: user.steam_id, username: user.username, role };
+  return { id: user.id, steamId: user.steam_id, username: user.username };
 }
 
 export async function revokeRefreshSession(refreshToken: string) {

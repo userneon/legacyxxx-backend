@@ -6,8 +6,6 @@ import { parseCookieHeader } from "../_core/cookieHeader";
 import {
   authenticatePlugin,
   createRefreshSession,
-  isStaffRole,
-  isUserRole,
   issueAccessToken,
   refreshLifetimeMs,
   revokeRefreshSession,
@@ -19,7 +17,6 @@ import {
   verifySteamCallback,
   type LegacyUser,
   type PluginPrincipal,
-  type UserRole,
 } from "./auth";
 import { apiAuthRateLimitMax, apiRateLimitMax, apiSensitiveRateLimitMax } from "./config";
 import { getFaceitProfileSnapshot, getFaceitProfileSnapshotForSteamId, resolveFaceitNickname } from "./faceit";
@@ -79,9 +76,17 @@ function userRoute(handler: (req: ApiRequest, res: Response, user: LegacyUser) =
 
 function staffRoute(handler: (req: ApiRequest, res: Response, user: LegacyUser) => Promise<void>) {
   return userRoute(async (req, res, user) => {
-    if (!isStaffRole(user.role)) apiError(403, "Staff access is required");
+    const { data: staff, error } = await legacyXDb().from("staff").select("id").eq("user_id", user.id).eq("status", "active").maybeSingle();
+    legacyXError(error, "Unable to verify staff access");
+    if (!staff) apiError(403, "Staff access is required");
     await handler(req, res, user);
   });
+}
+
+async function requireOwnerStaffRole(userId: string) {
+  const { data: staff, error } = await legacyXDb().from("staff").select("role").eq("user_id", userId).eq("status", "active").maybeSingle();
+  legacyXError(error, "Unable to verify Owner staff access");
+  if (!staff || staff.role !== "OWNER") apiError(403, "Only an Owner can perform this operation");
 }
 
 type StaffPanelRole = "OWNER" | "MANAGER";
@@ -229,7 +234,7 @@ function postLoginRedirect() {
 async function getUserWithStats(id: string) {
   const { data, error } = await legacyXDb()
     .from("users")
-    .select("id,steam_id,username,avatar,level,rank,balance,faceit_username,faceit_elo,faceit_level,role,created_at,updated_at,player_stats(*)")
+    .select("id,steam_id,username,avatar,level,rank,balance,faceit_username,faceit_elo,faceit_level,created_at,updated_at,player_stats(*)")
     .eq("id", id)
     .maybeSingle();
   legacyXError(error, "Unable to load player");
@@ -529,7 +534,6 @@ function statsRow(user: DbRow) {
 }
 
 function mapUserProfile(user: DbRow, links: DbRow[] = []) {
-  const role: UserRole = isUserRole(user.role) ? user.role : "Player";
   const profile: Record<string, unknown> = {
     id: textValue(user.id),
     steamId: textValue(user.steam_id),
@@ -538,7 +542,6 @@ function mapUserProfile(user: DbRow, links: DbRow[] = []) {
     level: numberValue(user.level),
     rank: textValue(user.rank),
     balance: numberValue(user.balance),
-    role,
   };
   if (user.faceit_username && user.faceit_elo != null && user.faceit_level != null) {
     profile.faceit = { username: textValue(user.faceit_username), elo: numberValue(user.faceit_elo), level: numberValue(user.faceit_level) };
@@ -753,7 +756,7 @@ export function createLegacyXRouter() {
   };
   const loadProfile = async (id: string) => {
     const [userResult, linksResult] = await Promise.all([
-      db().from("users").select("id,steam_id,username,avatar,level,rank,balance,faceit_username,faceit_elo,faceit_level,role,player_stats(*)").eq("id", id).maybeSingle(),
+      db().from("users").select("id,steam_id,username,avatar,level,rank,balance,faceit_username,faceit_elo,faceit_level,player_stats(*)").eq("id", id).maybeSingle(),
       db().from("user_links").select("url").eq("user_id", id).order("created_at"),
     ]);
     legacyXError(userResult.error || linksResult.error, "Unable to load profile");
@@ -881,12 +884,12 @@ export function createLegacyXRouter() {
     }
 
     const [{ data: user, error: userError }, { data: definitions, error: definitionError }] = await Promise.all([
-      db().from("users").select("id,steam_id,username,avatar,role").eq("id", userId).maybeSingle(),
+      db().from("users").select("id,steam_id,username,avatar").eq("id", userId).maybeSingle(),
       db().from("competitive_rank_definitions").select("rank_id,slug,display_name,image_key,minimum_exp").in("rank_id", [1, 2]).order("rank_id"),
     ]);
     legacyXError(userError, "Unable to load competitive player");
     legacyXError(definitionError, "Unable to load competitive rank definitions");
-    if (!user || user.role === "Owner") apiError(404, "Competitive player profile was not found");
+    if (!user) apiError(404, "Competitive player profile was not found");
     const silverOne = definitions?.find((definition) => definition.rank_id === 1);
     const silverTwo = definitions?.find((definition) => definition.rank_id === 2);
     if (!silverOne || !silverTwo) apiError(500, "Competitive rank definitions are unavailable");
@@ -1639,7 +1642,10 @@ export function createLegacyXRouter() {
   }));
   router.post("/staff/promotions/campaigns", staffRoute(async (req, res, user) => {
     const input = promoCampaignCreateSchema.parse(req.body);
-    if (input.benefitType === "admin_role" && (input.ownerKind !== "legacyx" || !["Owner", "Founder"].includes(user.role))) apiError(403, "Only an Owner or Founder can create a LEGACY-X Admin entitlement campaign");
+    if (input.benefitType === "admin_role") {
+      if (input.ownerKind !== "legacyx") apiError(403, "Admin entitlements are reserved for LEGACY-X campaigns");
+      await requireOwnerStaffRole(user.id);
+    }
     const { data, error } = await db().from("promotion_campaigns").insert({ name: input.name, owner_kind: input.ownerKind, owner_user_id: input.ownerUserId ?? null, benefit_type: input.benefitType, benefit_value: input.benefitValue, starts_at: input.startsAt ?? null, expires_at: input.expiresAt ?? null, max_redemptions: input.maxRedemptions ?? null, per_user_limit: input.perUserLimit, metadata: input.metadata, created_by_user_id: user.id }).select("*").single();
     legacyXError(error, "Unable to create promotion campaign");
     await db().from("audit_logs").insert({ actor_type: "user", actor_id: user.id, action: "promotion.campaign.create", target_type: "promotion_campaign", target_id: data.id, metadata: { ownerKind: input.ownerKind, benefitType: input.benefitType } });
@@ -1651,7 +1657,7 @@ export function createLegacyXRouter() {
     const { data: campaign, error: campaignError } = await db().from("promotion_campaigns").select("id,benefit_type").eq("id", campaignId).maybeSingle();
     legacyXError(campaignError, "Unable to validate promotion campaign");
     if (!campaign) apiError(404, "Promotion campaign was not found");
-    if (textValue(campaign.benefit_type) === "admin_role" && !["Owner", "Founder"].includes(user.role)) apiError(403, "Only an Owner or Founder can issue an Admin entitlement code");
+    if (textValue(campaign.benefit_type) === "admin_role") await requireOwnerStaffRole(user.id);
     const rawCode = input.code ? input.code.toUpperCase() : generatedPromoCode();
     const normalizedCode = normalizePromoCode(rawCode);
     const { data, error } = await db().from("promotion_codes").insert({ campaign_id: campaignId, code_hash: sha256(normalizedCode), code_hint: promoCodeHint(normalizedCode), max_redemptions: input.maxRedemptions ?? null, per_user_limit: input.perUserLimit ?? null, starts_at: input.startsAt ?? null, expires_at: input.expiresAt ?? null, created_by_user_id: user.id }).select("*").single();
@@ -1770,8 +1776,7 @@ export function createLegacyXRouter() {
       }
       if (!userId) apiError(401, "Steam identity is not eligible for Staff Panel access");
       const user = await getUserWithStats(userId);
-      const role: UserRole = isUserRole(user.role) ? user.role : "Player";
-      const principal: LegacyUser = { id: user.id, steamId: user.steam_id, username: user.username, role };
+      const principal: LegacyUser = { id: user.id, steamId: user.steam_id, username: user.username };
       if (staffPanel) {
         const staffSession = await createStaffSession(principal.id);
         res.setHeader("Cache-Control", "no-store");
@@ -2023,7 +2028,7 @@ export function createLegacyXRouter() {
   }));
   router.put("/profile/me", userRoute(async (req, res, user) => {
     const updates = profileUpdateSchema.parse(req.body);
-    const { data, error } = await db().from("users").update(updates).eq("id", user.id).select("id,steam_id,username,avatar,level,rank,balance,faceit_username,faceit_elo,faceit_level,role").single();
+    const { data, error } = await db().from("users").update(updates).eq("id", user.id).select("id,steam_id,username,avatar,level,rank,balance,faceit_username,faceit_elo,faceit_level").single();
     legacyXError(error, "Unable to update profile");
     res.json({ profile: data });
   }));
