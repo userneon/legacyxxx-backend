@@ -93,8 +93,8 @@ describe("LEGACY-X REST API", () => {
     expect(response.status).toBe(401);
   });
 
-  it("rejects live snapshot writes without a scoped plugin token before any database write", async () => {
-    const response = await fetch(`${baseUrl}/plugin/live-match/snapshots`, {
+	it("rejects live snapshot writes without a scoped plugin token before any database write", async () => {
+		const response = await fetch(`${baseUrl}/plugin/live-match/snapshots`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
@@ -104,10 +104,34 @@ describe("LEGACY-X REST API", () => {
       }),
     });
 
-    expect(response.status).toBe(401);
-  });
+		expect(response.status).toBe(401);
+	});
 
-  it("rejects staffpanel reads, governance configuration and queued actions without the isolated staff session", async () => {
+	it("rejects player telemetry writes without a scoped plugin token before any database write", async () => {
+		const response = await fetch(`${baseUrl}/plugin/player-telemetry/events`, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({
+				event_id: "telemetry-test-event-0001",
+				event_type: "player_disconnected",
+				server_id: "legacyx-match-1",
+				server_mode: "competitive_5v5",
+				match_reference: "legacyx-match-1:de_mirage:20260826150000",
+				map_name: "de_mirage",
+				steam_id: "76561198000000000",
+				player_name: "Telemetry test",
+				round_number: 8,
+				match_state: "live",
+				active_seconds: 901,
+				disconnect_method: "client_disconnect",
+				metrics: { kills: 10, deaths: 8, damage_dealt: 1294, damage_taken: 1011 },
+			}),
+		});
+
+		expect(response.status).toBe(401);
+	});
+
+	it("rejects staffpanel reads, governance configuration and queued actions without the isolated staff session", async () => {
     const [accessResponse, rosterResponse, penaltyResponse, staffResponse, maintenanceResponse, healthResponse, actionResponse] = await Promise.all([
       fetch(`${baseUrl}/staffpanel/access`),
       fetch(`${baseUrl}/staffpanel/servers/legacyx-match-1/roster`),

@@ -285,6 +285,27 @@ const pluginServerSchema = z.object({ id: z.string().uuid().optional(), name: z.
 const pluginMatchSchema = z.object({ id: z.string().uuid().optional(), server_id: z.string().uuid().optional(), map: z.string().trim().min(1).max(64), mode: z.enum(["5vs5", "fun", "proleague", "tournaments"]), number: z.number().int().min(0), status: z.enum(["live", "waiting", "finished", "locked"]).default("waiting"), players: z.number().int().min(0).max(256).default(0), max_players: z.number().int().min(1).max(256).default(10), score_t: z.number().int().min(0).default(0), score_ct: z.number().int().min(0).default(0), signal: z.number().int().min(0).default(0) });
 const pluginHistorySchema = z.object({ user_id: z.string().uuid(), match_id: z.string().uuid().optional(), map: z.string().trim().min(1).max(64), result: z.enum(["Win", "Loss"]), score: z.string().trim().min(1).max(32), kd: z.string().trim().min(1).max(32), stats: z.object({ matches: z.number().int().min(0), wins: z.number().int().min(0), kills: z.number().int().min(0), deaths: z.number().int().min(0), headshots: z.number().int().min(0), kd_ratio: z.number().min(0), rating: z.number().min(0), experience: z.number().int().min(0), played_hours: z.number().min(0) }).optional() });
 const pluginEventIdSchema = z.string().trim().min(8).max(220).regex(/^[A-Za-z0-9:_-]+$/, "event_id contains unsupported characters");
+const playerTelemetryEventSchema = z.object({
+  event_id: pluginEventIdSchema,
+  event_type: z.enum(["round_snapshot", "player_disconnected"]),
+  server_id: z.string().trim().min(1).max(120),
+  server_mode: z.string().trim().min(1).max(64),
+  match_reference: z.string().trim().min(1).max(255),
+  map_name: z.string().trim().max(128).default(""),
+  steam_id: z.string().regex(/^\d{15,20}$/),
+  player_name: z.string().trim().max(128).default(""),
+  round_number: z.coerce.number().int().min(0).max(500),
+  match_state: z.enum(["waiting", "live", "paused", "ended"]),
+  active_seconds: z.coerce.number().int().min(0).max(172800),
+  disconnect_method: z.enum(["client_disconnect", "admin_kick", "admin_ban", "server_shutdown", "unknown"]).nullable().optional(),
+  disconnect_reason: z.string().trim().max(160).nullable().optional(),
+  metrics: z.object({
+    kills: z.coerce.number().int().min(0).max(500),
+    deaths: z.coerce.number().int().min(0).max(500),
+    damage_dealt: z.coerce.number().int().min(0).max(100000),
+    damage_taken: z.coerce.number().int().min(0).max(100000),
+  }).strict(),
+}).strict();
 const liveMatchPlayerSchema = z.object({
   steam_id: z.string().regex(/^\d{15,20}$/),
   name: z.string().trim().min(1).max(128),
@@ -2410,6 +2431,25 @@ export function createLegacyXRouter() {
     // legacy map callback remains accepted as telemetry so old MatchZy builds do
     // not fail, but it can never create a second progression authority.
     res.status(202).json({ accepted: true, ignored: true, reason: "competitive_exp_is_awarded_by_match_core_final_only" });
+  }));
+  router.post("/plugin/player-telemetry/events", pluginRoute("stats:write", async (req, res, plugin) => {
+    const input = playerTelemetryEventSchema.parse(req.body);
+    const pluginId = req.header("x-plugin-id")?.trim() || plugin.name;
+    if (pluginId !== "legacyx-player-telemetry") apiError(403, "Player Telemetry plugin identity is required");
+    const { data, error } = await db().schema("legacy_x").rpc("ingest_player_telemetry_event", {
+      p_plugin_id: pluginId,
+      p_event_id: input.event_id,
+      p_payload: input,
+    });
+    legacyXError(error, "Unable to ingest player telemetry event");
+    await writePluginAudit(plugin, `player_telemetry.${input.event_type}`, "player_telemetry_events", input.steam_id, {
+      eventId: input.event_id,
+      serverId: input.server_id,
+      matchReference: input.match_reference,
+      roundNumber: input.round_number,
+      disconnectMethod: input.disconnect_method ?? null,
+    });
+    res.status(202).json({ result: data ?? {} });
   }));
   router.get("/plugin/community/players/:steamId", pluginRoute("stats:write", async (req, res) => {
     const steamId = String(req.params.steamId || "").trim();
