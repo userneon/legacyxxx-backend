@@ -248,7 +248,10 @@ function sendPage(res: Response, data: unknown, count: number | null, limit: num
 
 function staticStorageUrl(req: Request, key: string | null | undefined) {
   if (!key) return null;
-  if (/^https:\/\//i.test(key)) return key;
+  // Catalog image_key is an API-owned object-storage key, never an external URL.
+  // Rejecting legacy absolute keys prevents third-party origins (including Akamai)
+  // from leaking into browser requests or frontend source inspection.
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(key)) return null;
   const configuredBase = process.env.STATIC_ASSET_BASE_URL?.trim().replace(/\/$/, "");
   const encodedKey = key.split("/").map(encodeURIComponent).join("/");
   if (configuredBase) return `${configuredBase}/${encodedKey}`;

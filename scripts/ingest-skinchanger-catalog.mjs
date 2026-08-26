@@ -35,7 +35,6 @@ const args = new Map(process.argv.slice(2).map((value) => {
 const requestedCategory = args.get("category") ?? null;
 const limit = Math.max(0, Number.parseInt(args.get("limit") ?? "0", 10) || 0);
 const skipImages = args.has("skip-images");
-const externalImageUrls = args.has("external-image-urls");
 const emitSqlPath = args.get("emit-sql") ?? null;
 const dryRun = args.has("dry-run");
 const concurrency = Math.max(1, Math.min(8, Number.parseInt(args.get("concurrency") ?? String(DEFAULT_CONCURRENCY), 10) || DEFAULT_CONCURRENCY));
@@ -266,9 +265,7 @@ if (dryRun) {
   process.exit(0);
 }
 
-const results = externalImageUrls
-  ? items.map((item) => ({ ...item, image_key: item.source_image_url }))
-  : await inPool(items, async (item) => {
+const results = await inPool(items, async (item) => {
   try {
     const image_key = await convertAndStore(item);
     return { ...item, image_key };
@@ -276,7 +273,7 @@ const results = externalImageUrls
     console.warn(`[skinchanger] asset skipped for ${item.display_name}: ${error instanceof Error ? error.message : String(error)}`);
     return { ...item, image_key: null };
   }
-});
+  });
 
 const records = results.map(({ source_image_url: _source, ...record }) => record);
 if (emitSqlPath) {
@@ -286,7 +283,7 @@ if (emitSqlPath) {
     output: emitSqlPath,
     records: records.length,
     categoryCounts,
-    directExternalImageUrls: externalImageUrls,
+    directExternalImageUrls: false,
   }, null, 2));
   process.exit(0);
 }
