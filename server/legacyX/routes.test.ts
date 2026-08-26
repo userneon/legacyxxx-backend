@@ -16,7 +16,6 @@ async function frontendAuthHeaders() {
     id: randomUUID(),
     steamId: "76561198000000000",
     username: "frontend-contract-user",
-    role: "Player",
   });
   return { authorization: `Bearer ${accessToken}` };
 }
@@ -24,6 +23,7 @@ async function frontendAuthHeaders() {
 beforeAll(async () => {
   process.env.STEAM_OPENID_ORIGIN ??= "https://legacyx.cc";
   process.env.FRONTEND_ORIGIN ??= "https://legacyx.cc";
+  process.env.STAFF_PANEL_ENABLED = "true";
   const app = express();
   app.use(express.json());
   app.use("/api/v1", createLegacyXRouter());

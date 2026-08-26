@@ -18,7 +18,7 @@ import {
   type LegacyUser,
   type PluginPrincipal,
 } from "./auth";
-import { apiAuthRateLimitMax, apiRateLimitMax, apiSensitiveRateLimitMax } from "./config";
+import { apiAuthRateLimitMax, apiRateLimitMax, apiSensitiveRateLimitMax, isDeferredFeatureEnabled, publicDeferredFeatureFlags, type DeferredFeatureKey } from "./config";
 import { getFaceitProfileSnapshot, getFaceitProfileSnapshotForSteamId, resolveFaceitNickname } from "./faceit";
 import { legacyXDb, legacyXError } from "./supabase";
 import { resolvePublicSteamBackground } from "./steamBackground";
@@ -690,6 +690,20 @@ function noBody(req: Request) {
   if (req.body && Object.keys(req.body).length > 0) apiError(400, "This endpoint does not accept a request body");
 }
 
+function deferredFeatureForRequest(req: Request): DeferredFeatureKey | null {
+  const path = req.path;
+  if (path.startsWith("/staffpanel")) return "staffPanel";
+  if (path.startsWith("/auth/steam") && String(req.query.staffpanel ?? "") === "1") return "staffPanel";
+  if (path.startsWith("/staff/promotions")) return "promoCodes";
+  if (path.startsWith("/wallet/promo") || path.startsWith("/wallet/promotions")) return "promoCodes";
+  if (path.startsWith("/wallet")) return "wallet";
+  if (path.startsWith("/credits")) return "credits";
+  if (path.startsWith("/store") || path.startsWith("/shop")) return "shop";
+  if (path.startsWith("/clans") || path.startsWith("/clan")) return "clan";
+  if (path === "/search/clans") return "clan";
+  return null;
+}
+
 export function createLegacyXRouter() {
   const router = Router();
   const db = () => legacyXDb();
@@ -741,6 +755,17 @@ export function createLegacyXRouter() {
       if (req.method === "OPTIONS") return res.sendStatus(204);
     }
     if (req.method === "OPTIONS") return res.sendStatus(403);
+    next();
+  });
+  router.get("/public/features", (_req, res) => {
+    res.setHeader("Cache-Control", "no-store");
+    res.json({ features: publicDeferredFeatureFlags() });
+  });
+  router.use((req, _res, next) => {
+    const feature = deferredFeatureForRequest(req);
+    if (feature && !isDeferredFeatureEnabled(feature)) {
+      return next(Object.assign(new Error("This feature is not currently available"), { statusCode: 404 }));
+    }
     next();
   });
 

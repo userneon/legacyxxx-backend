@@ -56,6 +56,12 @@ let server: Server;
 let baseUrl: string;
 
 beforeAll(async () => {
+  process.env.SHOP_ENABLED = "true";
+  process.env.WALLET_ENABLED = "true";
+  process.env.CREDITS_ENABLED = "true";
+  process.env.PROMO_CODES_ENABLED = "true";
+  process.env.CLAN_ENABLED = "true";
+  process.env.STAFF_PANEL_ENABLED = "true";
   const app = express();
   app.use(express.json());
   app.use("/api/v1", createLegacyXRouter());
@@ -66,6 +72,25 @@ beforeAll(async () => {
 afterAll(async () => { await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())); });
 
 describe("frontend API endpoint inventory", () => {
+  it("fails closed for deferred public feature APIs and exposes only launch booleans", async () => {
+    const previous = Object.fromEntries(["SHOP_ENABLED", "WALLET_ENABLED", "CREDITS_ENABLED", "PROMO_CODES_ENABLED", "CLAN_ENABLED", "STAFF_PANEL_ENABLED"].map(name => [name, process.env[name]]));
+    Object.assign(process.env, {
+      SHOP_ENABLED: "false", WALLET_ENABLED: "false", CREDITS_ENABLED: "false", PROMO_CODES_ENABLED: "false", CLAN_ENABLED: "false", STAFF_PANEL_ENABLED: "false",
+    });
+    try {
+      const featureResponse = await fetch(`${baseUrl}/public/features`);
+      await expect(featureResponse.json()).resolves.toEqual({ features: { shop: false, wallet: false, credits: false, promoCodes: false, clan: false, staffPanel: false } });
+      for (const path of ["/store/items", "/wallet", "/wallet/promo/preview", "/clans", "/staffpanel/access"]) {
+        const response = await fetch(`${baseUrl}${path}`, { method: path === "/wallet/promo/preview" ? "POST" : "GET", headers: path === "/wallet/promo/preview" ? { "content-type": "application/json" } : undefined, body: path === "/wallet/promo/preview" ? "{}" : undefined });
+        expect(response.status, path).toBe(404);
+      }
+    } finally {
+      for (const [name, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[name]; else process.env[name] = value;
+      }
+    }
+  });
+
   it("contains the frontend endpoint inventory including authenticated wallet promotion routes", () => {
     expect(frontendEndpoints).toHaveLength(52);
   });

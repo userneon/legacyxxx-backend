@@ -90,3 +90,29 @@ export function apiSensitiveRateLimitMax() {
 export function apiBodyLimit() {
   return `${boundedEnvInt("API_BODY_LIMIT_KB", 1024, 16, 5_120)}kb`;
 }
+
+export const deferredFeatureKeys = ["shop", "wallet", "credits", "promoCodes", "clan", "staffPanel"] as const;
+export type DeferredFeatureKey = typeof deferredFeatureKeys[number];
+
+const deferredFeatureEnvironment: Record<DeferredFeatureKey, string> = {
+  shop: "SHOP_ENABLED",
+  wallet: "WALLET_ENABLED",
+  credits: "CREDITS_ENABLED",
+  promoCodes: "PROMO_CODES_ENABLED",
+  clan: "CLAN_ENABLED",
+  staffPanel: "STAFF_PANEL_ENABLED",
+};
+
+function featureFlagValue(name: string) {
+  return process.env[name]?.trim().toLowerCase() === "true";
+}
+
+/** Public launch switches fail closed: any absent or malformed value is disabled. */
+export function isDeferredFeatureEnabled(feature: DeferredFeatureKey) {
+  return featureFlagValue(deferredFeatureEnvironment[feature]);
+}
+
+/** This includes only public launch state, never secrets, permissions or database values. */
+export function publicDeferredFeatureFlags() {
+  return Object.fromEntries(deferredFeatureKeys.map(feature => [feature, isDeferredFeatureEnabled(feature)])) as Record<DeferredFeatureKey, boolean>;
+}
