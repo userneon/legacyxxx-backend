@@ -31,6 +31,14 @@ The API rejects any queue request whose target server is not a registered server
 
 `map_change` accepts only the current LEGACY-X approved map catalog: `de_ancient`, `de_anubis`, `de_cache`, `de_dust2`, `de_inferno`, `de_mirage`, `de_nuke`, `de_overpass`, `de_train`, and `de_vertigo`. The request must explicitly acknowledge the map-impact warning. The executor must re-read the server’s current match state immediately before it changes a map and must fail rather than force an unsafe or unsupported map transition.
 
+## Owner governance and monitoring boundary
+
+Only an active `OWNER` staff record can read or write the separate `staff` directory, configure role/permissions/status, save the `legacyx.cc` maintenance intent, or read VPS health telemetry. This never writes `users.role`. The last active Owner cannot be demoted, suspended or revoked through the panel.
+
+The maintenance route records an audited configuration intent in `staff_panel_settings`; it does **not** make the public website display maintenance mode until the production website/runtime consumes that setting. VPS health is intentionally `unavailable` until a scoped server-side telemetry reporter writes `server_health_snapshots`. The panel must never invent CPU, memory, disk or health values.
+
+`timeout` requires an explicit duration in seconds and `unpause` is Owner-only. Both remain audited queue actions and require the future CS2 executor acknowledgement before any real match state is claimed.
+
 ## Deferred Rollout Order
 
 1. Apply `supabase/legacy_x_staff_panel.sql` using the authorized production Supabase connection. The current MCP authorization issue means this status is **unknown**; do not assume it applied.

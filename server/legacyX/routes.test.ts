@@ -107,10 +107,14 @@ describe("LEGACY-X REST API", () => {
     expect(response.status).toBe(401);
   });
 
-  it("rejects staffpanel reads, roster access and queued actions without the isolated staff session", async () => {
-    const [accessResponse, rosterResponse, actionResponse] = await Promise.all([
+  it("rejects staffpanel reads, governance configuration and queued actions without the isolated staff session", async () => {
+    const [accessResponse, rosterResponse, penaltyResponse, staffResponse, maintenanceResponse, healthResponse, actionResponse] = await Promise.all([
       fetch(`${baseUrl}/staffpanel/access`),
       fetch(`${baseUrl}/staffpanel/servers/legacyx-match-1/roster`),
+      fetch(`${baseUrl}/staffpanel/players/76561198000000000/penalties`),
+      fetch(`${baseUrl}/staffpanel/staff`),
+      fetch(`${baseUrl}/staffpanel/maintenance`),
+      fetch(`${baseUrl}/staffpanel/health`),
       fetch(`${baseUrl}/staffpanel/actions`, {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -125,6 +129,10 @@ describe("LEGACY-X REST API", () => {
 
     expect(accessResponse.status).toBe(401);
     expect(rosterResponse.status).toBe(401);
+    expect(penaltyResponse.status).toBe(401);
+    expect(staffResponse.status).toBe(401);
+    expect(maintenanceResponse.status).toBe(401);
+    expect(healthResponse.status).toBe(401);
     expect(actionResponse.status).toBe(401);
   });
 

@@ -86,6 +86,12 @@ function staffRoute(handler: (req: ApiRequest, res: Response, user: LegacyUser) 
 
 type StaffPanelRole = "OWNER" | "MANAGER";
 type StaffPrincipal = { staffId: string; userId: string; role: StaffPanelRole; permissions: string[]; username: string };
+const staffDirectoryRoleSchema = z.enum(["OWNER", "MANAGER", "ADMIN", "DEVELOPER", "DESIGNER"]);
+const staffDirectoryStatusSchema = z.enum(["active", "suspended", "revoked"]);
+const staffPermissionListSchema = z.array(z.string().trim().min(1).max(80).regex(/^[a-z0-9_*:-]+$/i)).max(32);
+const staffMemberCreateSchema = z.object({ userId: z.string().uuid(), role: staffDirectoryRoleSchema, permissions: staffPermissionListSchema.default([]), status: staffDirectoryStatusSchema.default("active") }).strict();
+const staffMemberUpdateSchema = z.object({ role: staffDirectoryRoleSchema.optional(), permissions: staffPermissionListSchema.optional(), status: staffDirectoryStatusSchema.optional() }).strict().refine((value) => Object.keys(value).length > 0, "At least one staff field is required");
+const staffMaintenanceSchema = z.object({ website: z.literal("legacyx.cc"), enabled: z.boolean() }).strict();
 
 const managerStaffCapabilities = new Set([
   "overview", "ban", "unban", "kick", "rename", "map_change", "match_announcement", "hud_announcement", "player_hud_alert", "mute", "player_message",
@@ -327,7 +333,7 @@ const staffPanelProductSchema = z.object({
 });
 const staffPanelActionSchema = z.object({
   serverId: staffPanelServerSchema,
-  type: z.enum(["ban", "unban", "kick", "mute", "rename", "map_change", "server_announcement", "match_announcement", "hud_announcement", "player_hud_alert", "player_message", "restart_all", "restart_server", "start_server", "stop_server", "timeout", "round_restart", "round_restore", "player_ip_lookup"]),
+  type: z.enum(["ban", "unban", "kick", "mute", "rename", "map_change", "server_announcement", "match_announcement", "hud_announcement", "player_hud_alert", "player_message", "restart_all", "restart_server", "start_server", "stop_server", "timeout", "unpause", "round_restart", "round_restore", "player_ip_lookup"]),
   playerSteamId: z.string().regex(/^\d{17}$/).optional(),
   playerName: z.string().trim().min(1).max(64).optional(),
   map: z.string().trim().min(1).max(64).regex(/^[A-Za-z0-9_/-]+$/).optional(),
@@ -362,6 +368,9 @@ const staffPanelActionSchema = z.object({
   }
   if (input.type === "rename" && !input.newName) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ["newName"], message: "A new player name is required" });
+  }
+  if (input.type === "timeout" && !input.durationSeconds) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["durationSeconds"], message: "A timeout duration is required" });
   }
 });
 const promoPreviewSchema = z.object({
@@ -1807,7 +1816,7 @@ export function createLegacyXRouter() {
       role: staff.role,
       username: staff.username,
       capabilities: staff.role === "OWNER"
-        ? ["database_overview", "products", "repository_downloads", "restart_all", "restart_server", "start_server", "stop_server", "ban", "unban", "kick", "mute", "timeout", "round_restart", "round_restore", "map_change", "server_announcement", "match_announcement", "hud_announcement", "player_hud_alert", "player_message", "player_ip_lookup", "rename"]
+        ? ["database_overview", "products", "repository_downloads", "restart_all", "restart_server", "start_server", "stop_server", "ban", "unban", "kick", "mute", "timeout", "unpause", "round_restart", "round_restore", "map_change", "server_announcement", "match_announcement", "hud_announcement", "player_hud_alert", "player_message", "player_ip_lookup", "rename", "staff_governance", "maintenance", "health"]
         : ["ban", "unban", "kick", "mute", "map_change", "match_announcement", "hud_announcement", "player_hud_alert", "player_message", "rename"],
     });
   }));
@@ -1847,6 +1856,21 @@ export function createLegacyXRouter() {
     res.json({ server: { id: serverId, name: textValue(serverResult.data.display_name) || serverId, map: textValue(snapshot?.map_name) || textValue(serverResult.data.current_map) || "Unknown", mode: textValue(serverResult.data.current_mode) || "Community", playerCount: numberValue(serverResult.data.player_count), state: hasSnapshot ? textValue(snapshot?.state) : "unavailable", availability: hasSnapshot ? "live_snapshot" : rosterOnly.length > 0 ? "roster_only" : "unavailable", updatedAt: hasSnapshot ? reportedAt : textValue(serverResult.data.last_heartbeat_at) || null }, players });
   }));
 
+  router.get("/staffpanel/players/:steamId/penalties", staffPanelRoute(async (req, res, staff) => {
+    requireStaffCapability(staff, "overview");
+    const steamId = z.string().regex(/^\d{17}$/).parse(req.params.steamId);
+    const { data: player, error: playerError } = await db().from("users").select("id").eq("steam_id", steamId).maybeSingle();
+    legacyXError(playerError, "Unable to resolve player penalties");
+    if (!player) {
+      res.json({ penalties: [] });
+      return;
+    }
+    const { data, error } = await db().from("penalties").select("*,users!penalties_user_id_fkey(id,username,steam_id,avatar)").eq("user_id", player.id).order("created_at", { ascending: false }).limit(50);
+    legacyXError(error, "Unable to load player penalties");
+    const penalties = await mapPenaltiesWithProfileIdentities((data ?? []) as DbRow[], db());
+    res.json({ penalties });
+  }));
+
   router.get("/staffpanel/database", ownerPanelRoute(async (_req, res) => {
     const [users, products, transactions, matches, actions] = await Promise.all([
       db().from("users").select("id", { count: "exact", head: true }),
@@ -1861,6 +1885,60 @@ export function createLegacyXRouter() {
       { name: "wallet_transactions", count: transactions.count ?? 0 }, { name: "matches", count: matches.count ?? 0 },
       { name: "staff_panel_actions", count: actions.count ?? 0 },
     ] });
+  }));
+
+  router.get("/staffpanel/staff", ownerPanelRoute(async (_req, res) => {
+    const { data, error } = await db().from("staff").select("id,user_id,role,permissions,status,created_at,updated_at,users(username,steam_id,avatar)").order("created_at", { ascending: false });
+    legacyXError(error, "Unable to load staff directory");
+    res.json(((data ?? []) as DbRow[]).map((member) => {
+      const user = firstRow(member.users) ?? {};
+      return { id: textValue(member.id), userId: textValue(member.user_id), username: textValue(user.username), steamId: textValue(user.steam_id), avatar: textValue(user.avatar), role: textValue(member.role), permissions: Array.isArray(member.permissions) ? member.permissions.filter((value): value is string => typeof value === "string") : [], status: textValue(member.status), createdAt: timestampValue(member.created_at), updatedAt: timestampValue(member.updated_at) };
+    }));
+  }));
+  router.post("/staffpanel/staff", ownerPanelRoute(async (req, res, staff) => {
+    const input = staffMemberCreateSchema.parse(req.body);
+    const { data, error } = await db().from("staff").insert({ user_id: input.userId, role: input.role, permissions: input.permissions, status: input.status }).select("id,user_id,role,permissions,status,created_at,updated_at").single();
+    legacyXError(error, "Unable to create staff record");
+    const audit = await db().from("staff_audit_logs").insert({ staff_id: staff.staffId, event_type: "staff_member_created", target_type: "staff", target_id: textValue((data as DbRow).id), metadata: { user_id: input.userId, role: input.role, permissions: input.permissions, status: input.status } });
+    legacyXError(audit.error, "Unable to audit staff record creation");
+    res.status(201).json(data);
+  }));
+  router.patch("/staffpanel/staff/:staffId", ownerPanelRoute(async (req, res, staff) => {
+    const staffId = userIdSchema.parse(req.params.staffId);
+    const input = staffMemberUpdateSchema.parse(req.body);
+    const { data: current, error: currentError } = await db().from("staff").select("id,role,status").eq("id", staffId).maybeSingle();
+    legacyXError(currentError, "Unable to resolve staff record");
+    if (!current) apiError(404, "Staff record was not found");
+    const removesActiveOwner = current.role === "OWNER" && current.status === "active" && ((input.role !== undefined && input.role !== "OWNER") || (input.status !== undefined && input.status !== "active"));
+    if (removesActiveOwner) {
+      const { count, error } = await db().from("staff").select("id", { count: "exact", head: true }).eq("role", "OWNER").eq("status", "active");
+      legacyXError(error, "Unable to verify active Owner count");
+      if ((count ?? 0) <= 1) apiError(409, "The last active Owner cannot be changed or deactivated");
+    }
+    const { data, error } = await db().from("staff").update({ ...(input.role === undefined ? {} : { role: input.role }), ...(input.permissions === undefined ? {} : { permissions: input.permissions }), ...(input.status === undefined ? {} : { status: input.status }), updated_at: new Date().toISOString() }).eq("id", staffId).select("id,user_id,role,permissions,status,created_at,updated_at").single();
+    legacyXError(error, "Unable to update staff record");
+    const audit = await db().from("staff_audit_logs").insert({ staff_id: staff.staffId, event_type: "staff_member_updated", target_type: "staff", target_id: staffId, metadata: input });
+    legacyXError(audit.error, "Unable to audit staff record update");
+    res.json(data);
+  }));
+  router.get("/staffpanel/maintenance", ownerPanelRoute(async (_req, res) => {
+    const { data, error } = await db().from("staff_panel_settings").select("value,updated_at").eq("setting_key", "maintenance:legacyx.cc").maybeSingle();
+    legacyXError(error, "Unable to load maintenance configuration");
+    const value = data?.value && typeof data.value === "object" ? data.value as DbRow : {};
+    res.json({ website: "legacyx.cc", enabled: value.enabled === true, updatedAt: data?.updated_at ?? null, availability: data ? "configured" : "not_configured" });
+  }));
+  router.put("/staffpanel/maintenance", ownerPanelRoute(async (req, res, staff) => {
+    const input = staffMaintenanceSchema.parse(req.body);
+    const { data, error } = await db().from("staff_panel_settings").upsert({ setting_key: `maintenance:${input.website}`, value: { enabled: input.enabled }, updated_by_staff_id: staff.staffId, updated_at: new Date().toISOString() }, { onConflict: "setting_key" }).select("value,updated_at").single();
+    legacyXError(error, "Unable to save maintenance configuration");
+    const audit = await db().from("staff_audit_logs").insert({ staff_id: staff.staffId, event_type: "maintenance_configuration_updated", target_type: "website", target_id: input.website, metadata: { enabled: input.enabled } });
+    legacyXError(audit.error, "Unable to audit maintenance configuration");
+    res.json({ website: input.website, enabled: Boolean((data?.value as DbRow | undefined)?.enabled), updatedAt: data?.updated_at ?? null, availability: "configured" });
+  }));
+  router.get("/staffpanel/health", ownerPanelRoute(async (_req, res) => {
+    const { data, error } = await db().from("server_health_snapshots").select("cpu_percent,memory_percent,disk_percent,load_average,healthy,reported_at").order("reported_at", { ascending: false }).limit(1).maybeSingle();
+    legacyXError(error, "Unable to load server health telemetry");
+    res.json(data ? { availability: "telemetry", cpuPercent: data.cpu_percent, memoryPercent: data.memory_percent, diskPercent: data.disk_percent, loadAverage: data.load_average, healthy: data.healthy, updatedAt: data.reported_at } : { availability: "unavailable", cpuPercent: null, memoryPercent: null, diskPercent: null, loadAverage: null, healthy: null, updatedAt: null });
   }));
 
   router.get("/staffpanel/products", ownerPanelRoute(async (_req, res) => {
@@ -1907,7 +1985,7 @@ export function createLegacyXRouter() {
       event_type: "staffpanel_action_queued",
       target_type: "server_action",
       target_id: (data as DbRow).id,
-      metadata: { action_type: input.type, server_id: input.serverId, player_steam_id: input.playerSteamId ?? null, target_map: input.type === "map_change" ? input.map : null, map_impact_acknowledged: input.type === "map_change" ? input.mapImpactAcknowledged === true : null, enforce_after_seconds: input.enforceAfterSeconds ?? null },
+      metadata: { action_type: input.type, server_id: input.serverId, player_steam_id: input.playerSteamId ?? null, target_map: input.type === "map_change" ? input.map : null, map_impact_acknowledged: input.type === "map_change" ? input.mapImpactAcknowledged === true : null, timeout_seconds: input.type === "timeout" ? input.durationSeconds : null, enforce_after_seconds: input.enforceAfterSeconds ?? null },
     });
     legacyXError(audit.error, "Unable to audit server action");
     res.status(202).json({ action: data });
