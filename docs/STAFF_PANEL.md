@@ -29,6 +29,8 @@ Staff can request a server-specific roster only through the isolated staff sessi
 
 The API rejects any queue request whose target server is not a registered server record. The future scoped executor must revalidate the claimed target server, player connection state and supported action fields before it sends a CS2-side notification or enforcement command; an expired roster snapshot or an unavailable player must result in a failed acknowledgement rather than a guessed execution.
 
+`map_change` accepts only the current LEGACY-X approved map catalog: `de_ancient`, `de_anubis`, `de_cache`, `de_dust2`, `de_inferno`, `de_mirage`, `de_nuke`, `de_overpass`, `de_train`, and `de_vertigo`. The request must explicitly acknowledge the map-impact warning. The executor must re-read the server’s current match state immediately before it changes a map and must fail rather than force an unsafe or unsupported map transition.
+
 ## Deferred Rollout Order
 
 1. Apply `supabase/legacy_x_staff_panel.sql` using the authorized production Supabase connection. The current MCP authorization issue means this status is **unknown**; do not assume it applied.

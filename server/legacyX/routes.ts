@@ -317,6 +317,7 @@ const promoBenefitTypeSchema = z.enum(["wallet_credit", "wallet_rate_override", 
 const promoContextSchema = z.enum(["wallet_topup", "wallet_redeem", "store_purchase"]);
 const promoCodeSchema = z.string().trim().min(6).max(48).regex(/^[A-Za-z0-9-]+$/, "Promo code can only contain letters, numbers and hyphens");
 const staffPanelServerSchema = z.string().trim().min(1).max(80).regex(/^[A-Za-z0-9_-]+$/);
+const staffPanelMapSchema = z.enum(["de_ancient", "de_anubis", "de_cache", "de_dust2", "de_inferno", "de_mirage", "de_nuke", "de_overpass", "de_train", "de_vertigo"]);
 const staffPanelProductSchema = z.object({
   name: z.string().trim().min(1).max(120),
   category: z.string().trim().min(1).max(64),
@@ -338,14 +339,17 @@ const staffPanelActionSchema = z.object({
   alertColor: z.enum(["gold", "sky", "red", "green", "neutral"]).optional(),
   countdownSeconds: z.number().int().min(0).max(600).optional(),
   newName: z.string().trim().min(2).max(64).optional(),
+  mapImpactAcknowledged: z.literal(true).optional(),
 }).strict().superRefine((input, context) => {
   const playerActions = new Set(["ban", "unban", "kick", "mute", "rename", "player_hud_alert", "player_message", "player_ip_lookup"]);
   const messageActions = new Set(["ban", "unban", "kick", "mute", "server_announcement", "match_announcement", "hud_announcement", "player_hud_alert", "player_message", "timeout"]);
   if (playerActions.has(input.type) && !input.playerSteamId) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ["playerSteamId"], message: "A 17-digit SteamID is required for this action" });
   }
-  if (input.type === "map_change" && !input.map) {
-    context.addIssue({ code: z.ZodIssueCode.custom, path: ["map"], message: "A map is required for a map change" });
+  if (input.type === "map_change") {
+    if (!input.map) context.addIssue({ code: z.ZodIssueCode.custom, path: ["map"], message: "A map is required for a map change" });
+    else if (!staffPanelMapSchema.safeParse(input.map).success) context.addIssue({ code: z.ZodIssueCode.custom, path: ["map"], message: "The selected map is not approved for staff map control" });
+    if (input.mapImpactAcknowledged !== true) context.addIssue({ code: z.ZodIssueCode.custom, path: ["mapImpactAcknowledged"], message: "Map change impact acknowledgement is required" });
   }
   if (messageActions.has(input.type) && !input.message) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ["message"], message: "A reason or announcement is required for this action" });
@@ -1903,7 +1907,7 @@ export function createLegacyXRouter() {
       event_type: "staffpanel_action_queued",
       target_type: "server_action",
       target_id: (data as DbRow).id,
-      metadata: { action_type: input.type, server_id: input.serverId, player_steam_id: input.playerSteamId ?? null, enforce_after_seconds: input.enforceAfterSeconds ?? null },
+      metadata: { action_type: input.type, server_id: input.serverId, player_steam_id: input.playerSteamId ?? null, target_map: input.type === "map_change" ? input.map : null, map_impact_acknowledged: input.type === "map_change" ? input.mapImpactAcknowledged === true : null, enforce_after_seconds: input.enforceAfterSeconds ?? null },
     });
     legacyXError(audit.error, "Unable to audit server action");
     res.status(202).json({ action: data });
