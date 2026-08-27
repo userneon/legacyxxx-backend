@@ -107,7 +107,7 @@ describe("LEGACY-X REST API", () => {
 		expect(response.status).toBe(401);
 	});
 
-	it("rejects player telemetry writes without a scoped plugin token before any database write", async () => {
+		it("rejects player telemetry writes without a scoped plugin token before any database write", async () => {
 		const response = await fetch(`${baseUrl}/plugin/player-telemetry/events`, {
 			method: "POST",
 			headers: { "content-type": "application/json" },
@@ -128,10 +128,16 @@ describe("LEGACY-X REST API", () => {
 			}),
 		});
 
-		expect(response.status).toBe(401);
-	});
+			expect(response.status).toBe(401);
+		});
 
-	it("rejects staffpanel reads, governance configuration and queued actions without the isolated staff session", async () => {
+		it("rejects website-managed admin policy reads without a scoped plugin token before any database read", async () => {
+			const response = await fetch(`${baseUrl}/plugin/admin-policy`);
+
+			expect(response.status).toBe(401);
+		});
+
+		it("rejects staffpanel reads, governance configuration and queued actions without the isolated staff session", async () => {
     const [accessResponse, rosterResponse, penaltyResponse, staffResponse, maintenanceResponse, healthResponse, actionResponse] = await Promise.all([
       fetch(`${baseUrl}/staffpanel/access`),
       fetch(`${baseUrl}/staffpanel/servers/legacyx-match-1/roster`),
