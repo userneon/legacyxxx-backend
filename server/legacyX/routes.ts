@@ -334,6 +334,20 @@ const phantomEvidenceSchema = z.object({
   evidence_confidence: z.coerce.number().finite().min(0).max(1),
   occurred_at: z.string().datetime({ offset: true }),
 }).strict();
+const phantomSuspensionSignalSchema = z.object({
+  event_id: pluginEventIdSchema,
+  match_reference: z.string().trim().min(1).max(255),
+  server_id: z.string().trim().min(1).max(120),
+  server_mode: z.string().trim().min(1).max(64),
+  steam_id: z.string().regex(/^\d{15,20}$/),
+  event_type: z.enum(["suspended", "suspended_disconnect", "restored"]),
+  round_number: z.coerce.number().int().min(0).max(500),
+  suspicion_score: z.coerce.number().finite().min(0).max(100),
+  evidence_count: z.coerce.number().int().min(1).max(10_000),
+  evidence_summary: z.object({ phantom_ids: z.array(z.string().uuid()).max(64), latest_interaction: z.enum(["aim_correlation", "shot_correlation"]), evidence_confidence: z.coerce.number().finite().min(0).max(1) }).strict(),
+  occurred_at: z.string().datetime({ offset: true }),
+}).strict();
+const phantomCaseReviewSchema = z.object({ decision: z.enum(["clear", "keep", "confirm_ban"]), note: z.string().trim().min(8).max(1000) }).strict();
 const liveMatchPlayerSchema = z.object({
   steam_id: z.string().regex(/^\d{15,20}$/),
   name: z.string().trim().min(1).max(128),
@@ -1978,10 +1992,32 @@ export function createLegacyXRouter() {
       { name: "staff_panel_actions", count: actions.count ?? 0 },
     ] });
   }));
-  router.get("/staffpanel/anti-cheat/phantom-evidence", ownerPanelRoute(async (_req, res) => {
+  router.get("/staffpanel/anti-cheat/phantom-evidence", staffPanelRoute(async (_req, res) => {
     const { data, error } = await db().from("phantom_evidence_events").select("id,event_id,match_reference,server_id,server_mode,steam_id,phantom_id,mapped_steam_id,round_number,tick,interaction_type,interaction_count,suspicion_score,evidence_confidence,occurred_at").order("occurred_at", { ascending: false }).limit(250);
     legacyXError(error, "Unable to load Phantom evidence");
     res.json({ evidence: data ?? [] });
+  }));
+  router.get("/staffpanel/anti-cheat/phantom-cases", staffPanelRoute(async (_req, res) => {
+    const { data, error } = await db().from("phantom_suspension_cases").select("id,match_reference,server_id,server_mode,steam_id,status,suspicion_score,evidence_count,evidence_summary,suspended_at,reviewed_at,review_note,reviewed_by_staff_id,updated_at").order("updated_at", { ascending: false }).limit(250);
+    legacyXError(error, "Unable to load Phantom suspension cases");
+    res.json({ cases: data ?? [] });
+  }));
+  router.patch("/staffpanel/anti-cheat/phantom-cases/:caseId", staffPanelRoute(async (req, res, staff) => {
+    const input = phantomCaseReviewSchema.parse(req.body);
+    const caseId = z.string().uuid().parse(req.params.caseId);
+    const { data: current, error: currentError } = await db().from("phantom_suspension_cases").select("id,server_id,steam_id,status").eq("id", caseId).maybeSingle();
+    legacyXError(currentError, "Unable to load Phantom suspension case");
+    if (!current) apiError(404, "Phantom suspension case was not found");
+    const nextStatus = input.decision === "clear" ? "CLEARED" : input.decision === "confirm_ban" ? "CONFIRMED" : "SUSPENDED";
+    const { data, error } = await db().from("phantom_suspension_cases").update({ status: nextStatus, reviewed_by_staff_id: staff.staffId, reviewed_at: new Date().toISOString(), review_note: input.note, requires_manager_review: input.decision === "keep" }).eq("id", caseId).select("id,status,server_id,steam_id,reviewed_at").single();
+    legacyXError(error, "Unable to review Phantom suspension case");
+    if (input.decision === "confirm_ban") {
+      const queue = await db().from("staff_panel_actions").insert({ server_id: textValue(current.server_id), requested_by: staff.userId, requested_by_staff_id: staff.staffId, action_type: "ban", payload: { type: "ban", serverId: textValue(current.server_id), playerSteamId: textValue(current.steam_id), banTerm: "permanent", enforceAfterSeconds: 10, message: `Phantom suspension confirmed after ${staff.role} review: ${input.note}` }, status: "pending" });
+      legacyXError(queue.error, "Unable to queue reviewed Phantom ban");
+    }
+    const audit = await db().from("staff_audit_logs").insert({ staff_id: staff.staffId, event_type: "phantom_case_reviewed", target_type: "phantom_suspension_case", target_id: caseId, metadata: { decision: input.decision, note: input.note, previous_status: textValue(current.status), next_status: nextStatus } });
+    legacyXError(audit.error, "Unable to audit Phantom case review");
+    res.json({ case: data });
   }));
 
   router.get("/staffpanel/staff", ownerPanelRoute(async (_req, res) => {
@@ -2502,6 +2538,24 @@ export function createLegacyXRouter() {
     legacyXError(error, "Unable to ingest Phantom evidence");
     await writePluginAudit(plugin, `phantom.${input.interaction_type}`, "phantom_evidence_events", input.steam_id, { eventId: input.event_id, matchReference: input.match_reference, serverId: input.server_id, phantomId: input.phantom_id, score: input.suspicion_score, confidence: input.evidence_confidence });
     res.status(202).json({ result: data ?? {} });
+  }));
+  router.post("/plugin/phantom/suspensions", pluginRoute("phantom:write", async (req, res, plugin) => {
+    const input = phantomSuspensionSignalSchema.parse(req.body);
+    const pluginId = req.header("x-plugin-id")?.trim() || plugin.name;
+    if (pluginId !== "legacyx-phantom") apiError(403, "LegacyX Phantom plugin identity is required");
+    const { data, error } = await db().schema("legacy_x").rpc("ingest_phantom_suspension_signal", { p_plugin_id: pluginId, p_event_id: input.event_id, p_payload: input });
+    legacyXError(error, "Unable to ingest Phantom suspension signal");
+    await writePluginAudit(plugin, `phantom.${input.event_type}`, "phantom_suspension_cases", input.steam_id, { eventId: input.event_id, matchReference: input.match_reference, serverId: input.server_id, score: input.suspicion_score, evidenceCount: input.evidence_count });
+    res.status(202).json({ result: data ?? {} });
+  }));
+  router.get("/plugin/phantom/suspensions/:steamId", pluginRoute("phantom:read", async (req, res, plugin) => {
+    const pluginId = req.header("x-plugin-id")?.trim() || plugin.name;
+    if (pluginId !== "legacyx-phantom") apiError(403, "LegacyX Phantom plugin identity is required");
+    const steamId = z.string().regex(/^\d{15,20}$/).parse(req.params.steamId);
+    const serverId = z.string().trim().min(1).max(120).parse(req.query.serverId);
+    const { data, error } = await db().from("phantom_suspension_cases").select("id,status,suspicion_score,evidence_count,evidence_summary,suspended_at").eq("server_id", serverId).eq("steam_id", steamId).eq("status", "SUSPENDED").order("updated_at", { ascending: false }).limit(1).maybeSingle();
+    legacyXError(error, "Unable to load Phantom suspension state");
+    res.json({ suspension: data ?? null });
   }));
   router.get("/plugin/admin-policy", pluginRoute("admin:read", async (req, res, plugin) => {
     const pluginId = req.header("x-plugin-id")?.trim() || plugin.name;
