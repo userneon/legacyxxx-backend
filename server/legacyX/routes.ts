@@ -347,6 +347,22 @@ const phantomSuspensionSignalSchema = z.object({
   evidence_summary: z.object({ phantom_ids: z.array(z.string().uuid()).max(64), latest_interaction: z.enum(["aim_correlation", "shot_correlation"]), evidence_confidence: z.coerce.number().finite().min(0).max(1) }).strict(),
   occurred_at: z.string().datetime({ offset: true }),
 }).strict();
+const phantomHistoryVectorSchema = z.object({ x: z.number().finite().min(-32768).max(32768), y: z.number().finite().min(-32768).max(32768), z: z.number().finite().min(-4096).max(32768) }).strict();
+const phantomHistorySampleSchema = z.object({ sequence: z.coerce.number().int().min(0).max(599), offset_ms: z.coerce.number().int().min(0).max(180_000), position: phantomHistoryVectorSchema, view: z.object({ pitch: z.number().finite().min(-89).max(89), yaw: z.number().finite().min(-180).max(180) }).strict(), velocity: phantomHistoryVectorSchema, crouched: z.boolean() }).strict();
+const phantomHistoryRoundSchema = z.object({
+  source_ref: z.string().uuid(),
+  match_reference: z.string().trim().min(1).max(255),
+  server_id: z.string().trim().min(1).max(120),
+  server_mode: z.string().trim().min(1).max(64),
+  map_name: z.string().trim().min(1).max(128),
+  round_number: z.coerce.number().int().min(1).max(500),
+  completed_at: z.string().datetime({ offset: true }),
+  samples: z.array(phantomHistorySampleSchema).min(3).max(600),
+}).strict().superRefine((input, context) => {
+  for (let index = 1; index < input.samples.length; index += 1) {
+    if (input.samples[index].sequence <= input.samples[index - 1].sequence || input.samples[index].offset_ms <= input.samples[index - 1].offset_ms) context.addIssue({ code: z.ZodIssueCode.custom, path: ["samples", index], message: "History samples must be strictly ordered" });
+  }
+});
 const phantomCaseReviewSchema = z.object({ decision: z.enum(["clear", "keep", "confirm_ban"]), note: z.string().trim().min(8).max(1000) }).strict();
 const liveMatchPlayerSchema = z.object({
   steam_id: z.string().regex(/^\d{15,20}$/),
@@ -2547,6 +2563,25 @@ export function createLegacyXRouter() {
     legacyXError(error, "Unable to ingest Phantom suspension signal");
     await writePluginAudit(plugin, `phantom.${input.event_type}`, "phantom_suspension_cases", input.steam_id, { eventId: input.event_id, matchReference: input.match_reference, serverId: input.server_id, score: input.suspicion_score, evidenceCount: input.evidence_count });
     res.status(202).json({ result: data ?? {} });
+  }));
+  router.post("/plugin/phantom/history/rounds", pluginRoute("phantom:write", async (req, res, plugin) => {
+    const input = phantomHistoryRoundSchema.parse(req.body);
+    const pluginId = req.header("x-plugin-id")?.trim() || plugin.name;
+    if (pluginId !== "legacyx-phantom") apiError(403, "LegacyX Phantom plugin identity is required");
+    const { data, error } = await db().from("phantom_history_rounds").upsert({ plugin_id: pluginId, source_ref: input.source_ref, match_reference: input.match_reference, server_id: input.server_id, server_mode: input.server_mode, map_name: input.map_name, round_number: input.round_number, sample_count: input.samples.length, samples: input.samples, completed_at: input.completed_at }, { onConflict: "server_id,match_reference,round_number,source_ref", ignoreDuplicates: true }).select("id").maybeSingle();
+    legacyXError(error, "Unable to ingest Phantom history round");
+    res.status(202).json({ accepted: Boolean(data), sampleCount: input.samples.length });
+  }));
+  router.get("/plugin/phantom/history/rounds", pluginRoute("phantom:read", async (req, res, plugin) => {
+    const pluginId = req.header("x-plugin-id")?.trim() || plugin.name;
+    if (pluginId !== "legacyx-phantom") apiError(403, "LegacyX Phantom plugin identity is required");
+    const serverId = z.string().trim().min(1).max(120).parse(req.query.serverId);
+    const mapName = z.string().trim().min(1).max(128).parse(req.query.mapName);
+    const excludeMatchReference = z.string().trim().min(1).max(255).parse(req.query.excludeMatchReference);
+    const minimumSamples = z.coerce.number().int().min(3).max(600).default(12).parse(req.query.minimumSamples);
+    const { data, error } = await db().from("phantom_history_rounds").select("source_ref,match_reference,map_name,round_number,sample_count,samples,completed_at").eq("server_id", serverId).eq("map_name", mapName).neq("match_reference", excludeMatchReference).gte("sample_count", minimumSamples).order("completed_at", { ascending: false }).limit(20);
+    legacyXError(error, "Unable to load Phantom history rounds");
+    res.json({ rounds: data ?? [] });
   }));
   router.get("/plugin/phantom/suspensions/:steamId", pluginRoute("phantom:read", async (req, res, plugin) => {
     const pluginId = req.header("x-plugin-id")?.trim() || plugin.name;
