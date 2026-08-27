@@ -2450,6 +2450,13 @@ export function createLegacyXRouter() {
       p_payload: input,
     });
     legacyXError(error, "Unable to ingest player telemetry event");
+    const progressionLookup = input.event_type === "round_snapshot"
+      ? await db().from("competitive_player_profiles").select("current_exp,rank_name").eq("steam_id", input.steam_id).maybeSingle()
+      : { data: null, error: null };
+    if (progressionLookup.error) console.warn("[legacy-x-api] Round progression snapshot unavailable", progressionLookup.error.message);
+    const progression = progressionLookup.data && numberValue((progressionLookup.data as DbRow).current_exp) !== null
+      ? { experience: numberValue((progressionLookup.data as DbRow).current_exp)!, rankName: textValue((progressionLookup.data as DbRow).rank_name) || "Unranked" }
+      : null;
     await writePluginAudit(plugin, `player_telemetry.${input.event_type}`, "player_telemetry_events", input.steam_id, {
       eventId: input.event_id,
       serverId: input.server_id,
@@ -2457,7 +2464,7 @@ export function createLegacyXRouter() {
       roundNumber: input.round_number,
       disconnectMethod: input.disconnect_method ?? null,
     });
-    res.status(202).json({ result: data ?? {} });
+    res.status(202).json({ result: data ?? {}, progression });
   }));
   router.get("/plugin/admin-policy", pluginRoute("admin:read", async (req, res, plugin) => {
     const pluginId = req.header("x-plugin-id")?.trim() || plugin.name;
