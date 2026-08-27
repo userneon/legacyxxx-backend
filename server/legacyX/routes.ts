@@ -96,9 +96,11 @@ const staffDirectoryStatusSchema = z.enum(["active", "suspended", "revoked"]);
 const staffPermissionListSchema = z.array(z.string().trim().min(1).max(80).regex(/^[a-z0-9_*:-]+$/i)).max(32);
 const inGameAdminPermissionSchema = z.enum(["@css/generic", "@css/kick", "@css/ban", "@css/unban", "@css/slay", "@css/changemap", "@css/chat", "@css/vote", "@css/config", "@css/cvar", "@css/rcon", "@css/cheats", "@css/root"]);
 const inGameAdminPermissionsSchema = z.array(inGameAdminPermissionSchema).max(13).transform((values) => values.filter((value, index) => values.indexOf(value) === index));
-const inGameAdminImmunitySchema = z.number().int().min(0).max(100);
-const staffMemberCreateSchema = z.object({ userId: z.string().uuid(), role: staffDirectoryRoleSchema, permissions: staffPermissionListSchema.default([]), gamePermissions: inGameAdminPermissionsSchema.default([]), immunity: inGameAdminImmunitySchema.default(0), status: staffDirectoryStatusSchema.default("active") }).strict();
-const staffMemberUpdateSchema = z.object({ role: staffDirectoryRoleSchema.optional(), permissions: staffPermissionListSchema.optional(), gamePermissions: inGameAdminPermissionsSchema.optional(), immunity: inGameAdminImmunitySchema.optional(), status: staffDirectoryStatusSchema.optional() }).strict().refine((value) => Object.keys(value).length > 0, "At least one staff field is required");
+const inGameAdminImmunitySchema = z.number().int().min(0).max(1000);
+const inGameAdminStaminaSchema = z.number().int().min(0).max(1000);
+const staffRoleNumericDefaults = { OWNER: 1000, MANAGER: 750, ADMIN: 500, DEVELOPER: 0, DESIGNER: 0 } as const;
+const staffMemberCreateSchema = z.object({ userId: z.string().uuid(), role: staffDirectoryRoleSchema, permissions: staffPermissionListSchema.default([]), gamePermissions: inGameAdminPermissionsSchema.default([]), stamina: inGameAdminStaminaSchema.optional(), immunity: inGameAdminImmunitySchema.optional(), status: staffDirectoryStatusSchema.default("active") }).strict();
+const staffMemberUpdateSchema = z.object({ role: staffDirectoryRoleSchema.optional(), permissions: staffPermissionListSchema.optional(), gamePermissions: inGameAdminPermissionsSchema.optional(), stamina: inGameAdminStaminaSchema.optional(), immunity: inGameAdminImmunitySchema.optional(), status: staffDirectoryStatusSchema.optional() }).strict().refine((value) => Object.keys(value).length > 0, "At least one staff field is required");
 const staffMaintenanceSchema = z.object({ website: z.literal("legacyx.cc"), enabled: z.boolean() }).strict();
 
 const managerStaffCapabilities = new Set([
@@ -1955,18 +1957,21 @@ export function createLegacyXRouter() {
   }));
 
   router.get("/staffpanel/staff", ownerPanelRoute(async (_req, res) => {
-    const { data, error } = await db().from("staff").select("id,user_id,role,permissions,game_permissions,immunity,status,created_at,updated_at,users(username,steam_id,avatar)").order("created_at", { ascending: false });
+    const { data, error } = await db().from("staff").select("id,user_id,role,permissions,game_permissions,stamina,immunity,status,created_at,updated_at,users(username,steam_id,avatar)").order("created_at", { ascending: false });
     legacyXError(error, "Unable to load staff directory");
     res.json(((data ?? []) as DbRow[]).map((member) => {
       const user = firstRow(member.users) ?? {};
-      return { id: textValue(member.id), userId: textValue(member.user_id), username: textValue(user.username), steamId: textValue(user.steam_id), avatar: textValue(user.avatar), role: textValue(member.role), permissions: Array.isArray(member.permissions) ? member.permissions.filter((value): value is string => typeof value === "string") : [], gamePermissions: Array.isArray(member.game_permissions) ? member.game_permissions.filter((value): value is string => typeof value === "string") : [], immunity: numberValue(member.immunity) ?? 0, status: textValue(member.status), createdAt: timestampValue(member.created_at), updatedAt: timestampValue(member.updated_at) };
+      return { id: textValue(member.id), userId: textValue(member.user_id), username: textValue(user.username), steamId: textValue(user.steam_id), avatar: textValue(user.avatar), role: textValue(member.role), permissions: Array.isArray(member.permissions) ? member.permissions.filter((value): value is string => typeof value === "string") : [], gamePermissions: Array.isArray(member.game_permissions) ? member.game_permissions.filter((value): value is string => typeof value === "string") : [], stamina: Math.max(0, Math.min(1000, numberValue(member.stamina) ?? staffRoleNumericDefaults[member.role as keyof typeof staffRoleNumericDefaults] ?? 0)), immunity: Math.max(0, Math.min(1000, numberValue(member.immunity) ?? staffRoleNumericDefaults[member.role as keyof typeof staffRoleNumericDefaults] ?? 0)), status: textValue(member.status), createdAt: timestampValue(member.created_at), updatedAt: timestampValue(member.updated_at) };
     }));
   }));
   router.post("/staffpanel/staff", ownerPanelRoute(async (req, res, staff) => {
     const input = staffMemberCreateSchema.parse(req.body);
-    const { data, error } = await db().from("staff").insert({ user_id: input.userId, role: input.role, permissions: input.permissions, game_permissions: input.gamePermissions, immunity: input.immunity, status: input.status }).select("id,user_id,role,permissions,game_permissions,immunity,status,created_at,updated_at").single();
+    const numericDefault = staffRoleNumericDefaults[input.role];
+    const stamina = input.stamina ?? numericDefault;
+    const immunity = input.immunity ?? numericDefault;
+    const { data, error } = await db().from("staff").insert({ user_id: input.userId, role: input.role, permissions: input.permissions, game_permissions: input.gamePermissions, stamina, immunity, status: input.status }).select("id,user_id,role,permissions,game_permissions,stamina,immunity,status,created_at,updated_at").single();
     legacyXError(error, "Unable to create staff record");
-    const audit = await db().from("staff_audit_logs").insert({ staff_id: staff.staffId, event_type: "staff_member_created", target_type: "staff", target_id: textValue((data as DbRow).id), metadata: { user_id: input.userId, role: input.role, permissions: input.permissions, game_permissions: input.gamePermissions, immunity: input.immunity, status: input.status } });
+    const audit = await db().from("staff_audit_logs").insert({ staff_id: staff.staffId, event_type: "staff_member_created", target_type: "staff", target_id: textValue((data as DbRow).id), metadata: { user_id: input.userId, role: input.role, permissions: input.permissions, game_permissions: input.gamePermissions, stamina, immunity, status: input.status } });
     legacyXError(audit.error, "Unable to audit staff record creation");
     res.status(201).json(data);
   }));
@@ -1982,7 +1987,7 @@ export function createLegacyXRouter() {
       legacyXError(error, "Unable to verify active Owner count");
       if ((count ?? 0) <= 1) apiError(409, "The last active Owner cannot be changed or deactivated");
     }
-    const { data, error } = await db().from("staff").update({ ...(input.role === undefined ? {} : { role: input.role }), ...(input.permissions === undefined ? {} : { permissions: input.permissions }), ...(input.gamePermissions === undefined ? {} : { game_permissions: input.gamePermissions }), ...(input.immunity === undefined ? {} : { immunity: input.immunity }), ...(input.status === undefined ? {} : { status: input.status }), updated_at: new Date().toISOString() }).eq("id", staffId).select("id,user_id,role,permissions,game_permissions,immunity,status,created_at,updated_at").single();
+    const { data, error } = await db().from("staff").update({ ...(input.role === undefined ? {} : { role: input.role }), ...(input.permissions === undefined ? {} : { permissions: input.permissions }), ...(input.gamePermissions === undefined ? {} : { game_permissions: input.gamePermissions }), ...(input.stamina === undefined ? {} : { stamina: input.stamina }), ...(input.immunity === undefined ? {} : { immunity: input.immunity }), ...(input.status === undefined ? {} : { status: input.status }), updated_at: new Date().toISOString() }).eq("id", staffId).select("id,user_id,role,permissions,game_permissions,stamina,immunity,status,created_at,updated_at").single();
     legacyXError(error, "Unable to update staff record");
     const audit = await db().from("staff_audit_logs").insert({ staff_id: staff.staffId, event_type: "staff_member_updated", target_type: "staff", target_id: staffId, metadata: input });
     legacyXError(audit.error, "Unable to audit staff record update");
@@ -2460,7 +2465,7 @@ export function createLegacyXRouter() {
 
     const { data, error } = await db()
       .from("staff")
-      .select("id,user_id,role,game_permissions,immunity,status,updated_at,users(username,steam_id)")
+      .select("id,user_id,role,game_permissions,stamina,immunity,status,updated_at,users(username,steam_id)")
       .eq("status", "active")
       .order("updated_at", { ascending: true });
     legacyXError(error, "Unable to load in-game admin policy");
@@ -2476,13 +2481,14 @@ export function createLegacyXRouter() {
         steamId,
         username: textValue(user.username) || "LEGACY-X Staff",
         role: textValue(member.role),
-        immunity: Math.max(0, Math.min(100, numberValue(member.immunity) ?? 0)),
+        stamina: Math.max(0, Math.min(1000, numberValue(member.stamina) ?? staffRoleNumericDefaults[member.role as keyof typeof staffRoleNumericDefaults] ?? 0)),
+        immunity: Math.max(0, Math.min(1000, numberValue(member.immunity) ?? staffRoleNumericDefaults[member.role as keyof typeof staffRoleNumericDefaults] ?? 0)),
         permissions: gamePermissions,
         updatedAt: timestampValue(member.updated_at),
       };
     }).filter((member) => /^7656\d{13,14}$/.test(member.steamId) && member.permissions.length > 0);
 
-    const policyVersion = sha256(JSON.stringify(admins.map((member) => ({ steamId: member.steamId, immunity: member.immunity, permissions: member.permissions, updatedAt: member.updatedAt }))));
+    const policyVersion = sha256(JSON.stringify(admins.map((member) => ({ steamId: member.steamId, stamina: member.stamina, immunity: member.immunity, permissions: member.permissions, updatedAt: member.updatedAt }))));
     res.json({ policyVersion, generatedAt: new Date().toISOString(), admins });
   }));
   router.get("/plugin/community/players/:steamId", pluginRoute("stats:write", async (req, res) => {
