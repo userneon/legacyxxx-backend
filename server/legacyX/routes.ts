@@ -311,6 +311,29 @@ const playerTelemetryEventSchema = z.object({
     damage_taken: z.coerce.number().int().min(0).max(100000),
   }).strict(),
 }).strict();
+const phantomVectorSchema = z.object({ x: z.number().finite().min(-32768).max(32768), y: z.number().finite().min(-32768).max(32768), z: z.number().finite().min(-4096).max(32768) }).strict();
+const phantomEvidenceSchema = z.object({
+  event_id: pluginEventIdSchema,
+  match_reference: z.string().trim().min(1).max(255),
+  server_id: z.string().trim().min(1).max(120),
+  server_mode: z.string().trim().min(1).max(64),
+  steam_id: z.string().regex(/^\d{15,20}$/),
+  phantom_id: z.string().uuid(),
+  mapped_steam_id: z.string().regex(/^\d{15,20}$/),
+  phantom_position: phantomVectorSchema,
+  player_position: phantomVectorSchema,
+  round_number: z.coerce.number().int().min(0).max(500),
+  tick: z.coerce.number().int().min(0).max(9_223_372_036_854_775),
+  interaction_type: z.enum(["aim_correlation", "shot_correlation"]),
+  interaction_count: z.coerce.number().int().min(1).max(1000),
+  aim_correlation: z.coerce.number().finite().min(0).max(1),
+  movement_correlation: z.coerce.number().finite().min(0).max(1),
+  wall_interaction: z.coerce.number().finite().min(0).max(1),
+  shot_interaction: z.coerce.number().finite().min(0).max(1),
+  suspicion_score: z.coerce.number().finite().min(0).max(100),
+  evidence_confidence: z.coerce.number().finite().min(0).max(1),
+  occurred_at: z.string().datetime({ offset: true }),
+}).strict();
 const liveMatchPlayerSchema = z.object({
   steam_id: z.string().regex(/^\d{15,20}$/),
   name: z.string().trim().min(1).max(128),
@@ -1955,6 +1978,11 @@ export function createLegacyXRouter() {
       { name: "staff_panel_actions", count: actions.count ?? 0 },
     ] });
   }));
+  router.get("/staffpanel/anti-cheat/phantom-evidence", ownerPanelRoute(async (_req, res) => {
+    const { data, error } = await db().from("phantom_evidence_events").select("id,event_id,match_reference,server_id,server_mode,steam_id,phantom_id,mapped_steam_id,round_number,tick,interaction_type,interaction_count,suspicion_score,evidence_confidence,occurred_at").order("occurred_at", { ascending: false }).limit(250);
+    legacyXError(error, "Unable to load Phantom evidence");
+    res.json({ evidence: data ?? [] });
+  }));
 
   router.get("/staffpanel/staff", ownerPanelRoute(async (_req, res) => {
     const { data, error } = await db().from("staff").select("id,user_id,role,permissions,game_permissions,stamina,immunity,status,created_at,updated_at,users(username,steam_id,avatar)").order("created_at", { ascending: false });
@@ -2465,6 +2493,15 @@ export function createLegacyXRouter() {
       disconnectMethod: input.disconnect_method ?? null,
     });
     res.status(202).json({ result: data ?? {}, progression });
+  }));
+  router.post("/plugin/phantom/evidence", pluginRoute("phantom:write", async (req, res, plugin) => {
+    const input = phantomEvidenceSchema.parse(req.body);
+    const pluginId = req.header("x-plugin-id")?.trim() || plugin.name;
+    if (pluginId !== "legacyx-phantom") apiError(403, "LegacyX Phantom plugin identity is required");
+    const { data, error } = await db().schema("legacy_x").rpc("ingest_phantom_evidence", { p_plugin_id: pluginId, p_event_id: input.event_id, p_payload: input });
+    legacyXError(error, "Unable to ingest Phantom evidence");
+    await writePluginAudit(plugin, `phantom.${input.interaction_type}`, "phantom_evidence_events", input.steam_id, { eventId: input.event_id, matchReference: input.match_reference, serverId: input.server_id, phantomId: input.phantom_id, score: input.suspicion_score, confidence: input.evidence_confidence });
+    res.status(202).json({ result: data ?? {} });
   }));
   router.get("/plugin/admin-policy", pluginRoute("admin:read", async (req, res, plugin) => {
     const pluginId = req.header("x-plugin-id")?.trim() || plugin.name;
