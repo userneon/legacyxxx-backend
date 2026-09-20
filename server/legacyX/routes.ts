@@ -261,12 +261,32 @@ function sendPage(res: Response, data: unknown, count: number | null, limit: num
   res.json({ data, pagination: { limit, offset, total: count ?? 0 } });
 }
 
+// Every active catalog row still stores the CS2 source artwork URL rather than an API-owned
+// object key, so refusing absolute keys outright left the Skinchanger with no images at all.
+// Only these image hosts may reach the browser; anything else is still dropped. Mirroring the
+// catalog to STATIC_ASSET_BASE_URL (docs/SKINCHANGER_STATIC_ASSET_HOSTING.md) retires this list.
+const CATALOG_IMAGE_HOSTS = new Set([
+  "community.akamai.steamstatic.com",
+  "community.cloudflare.steamstatic.com",
+  "community.fastly.steamstatic.com",
+  "cdn.steamstatic.com",
+  "cdn.akamai.steamstatic.com",
+  "steamcdn-a.akamaihd.net",
+  "raw.githubusercontent.com",
+]);
+
 function staticStorageUrl(req: Request, key: string | null | undefined) {
   if (!key) return null;
-  // Catalog image_key is an API-owned object-storage key, never an external URL.
-  // Rejecting legacy absolute keys prevents third-party origins (including Akamai)
-  // from leaking into browser requests or frontend source inspection.
-  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(key)) return null;
+  // Catalog image_key is normally an API-owned object-storage key. A legacy absolute key is
+  // served only when it is HTTPS and points at an allowlisted source-artwork host.
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(key)) {
+    try {
+      const source = new URL(key);
+      return source.protocol === "https:" && CATALOG_IMAGE_HOSTS.has(source.hostname) ? source.toString() : null;
+    } catch {
+      return null;
+    }
+  }
   const configuredBase = process.env.STATIC_ASSET_BASE_URL?.trim().replace(/\/$/, "");
   const encodedKey = key.split("/").map(encodeURIComponent).join("/");
   if (configuredBase) return `${configuredBase}/${encodedKey}`;

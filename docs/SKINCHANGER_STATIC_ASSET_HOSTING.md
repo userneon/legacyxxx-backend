@@ -14,6 +14,14 @@ skinchanger/catalog/weapon/6f9b7fd6a40b8c5a9d2e2c3f.webp
 
 It never stores a public third-party URL. The operator-only catalog ingest script downloads public source artwork, converts it to WebP, uploads the generated asset to API-owned storage, and persists only this key. Browsers therefore request `static.legacyx.cc`, not Akamai, Steam CDN, GitHub, a catalog source, Supabase or the Root API.
 
+## Current state (interim)
+
+The mirror has not been built yet: every active catalog row still stores a source artwork URL, and
+`static.legacyx.cc` is empty. Because the API refused absolute keys, the Skinchanger showed no images
+at all, so `staticStorageUrl` now serves an absolute key when it is HTTPS and its host is listed in
+`CATALOG_IMAGE_HOSTS` (Steam community/CDN artwork plus the public image tracker). Browsers therefore
+do request Steam image hosts today. Completing the mirror below removes that, and the allowlist with it.
+
 ## Existing external catalog rows
 
 1. Deploy the latest Root API source.
