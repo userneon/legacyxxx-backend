@@ -940,6 +940,8 @@ export function createLegacyXRouter() {
   // Public website reads deliberately bypass AdminPlus. CS2 plugins/admin tools
   // write to Supabase; the website reads these safe projections through root API.
   const readLimit = (value: unknown) => z.coerce.number().int().min(1).max(100).default(50).parse(value);
+  // Leaders shows the whole community, not a top slice, so its ladder is allowed to be long.
+  const readLadderLimit = (value: unknown) => z.coerce.number().int().min(1).max(1000).default(500).parse(value);
   const readSeason = (value: unknown) => {
     const season = String(value || process.env.LEGACYX_DEFAULT_SEASON || "season-1").trim();
     if (!/^[a-z0-9-]{1,64}$/i.test(season)) apiError(400, "season is invalid");
@@ -977,7 +979,7 @@ export function createLegacyXRouter() {
     res.json({ entries: data ?? [] });
   }));
   router.get("/public/competitive/leaderboard", asyncRoute(async (req, res) => {
-    const { data, error } = await db().from("competitive_leaderboard").select("position,user_id,steam_id,username,avatar,current_exp,rank_id,rank_slug,rank_name,rank_image_key,pro_league_unlocked,matches_completed,wins,losses,kills,assists,headshot_kills,deaths,kd_ratio,played_hours,last_match_at").order("position").limit(readLimit(req.query.limit));
+    const { data, error } = await db().from("competitive_leaderboard").select("position,user_id,steam_id,username,avatar,current_exp,rank_id,rank_slug,rank_name,rank_image_key,pro_league_unlocked,matches_completed,wins,losses,kills,assists,headshot_kills,deaths,kd_ratio,played_hours,last_match_at").order("position").limit(readLadderLimit(req.query.limit));
     legacyXError(error, "Unable to load competitive leaderboard");
     res.json({ entries: data ?? [] });
   }));
