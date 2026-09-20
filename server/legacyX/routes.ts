@@ -755,11 +755,12 @@ function mapPromotionCode(row: DbRow) {
   };
 }
 
-function mapPenalty(penalty: DbRow, adminSteamIds: Map<string, string> = new Map(), moderationStatuses: Map<string, ModerationStatus> = new Map()) {
+function mapPenalty(penalty: DbRow, adminProfiles: Map<string, { steamId: string; avatar: string }> = new Map(), moderationStatuses: Map<string, ModerationStatus> = new Map()) {
   const user = firstRow(penalty.users) ?? {};
   const admin = textValue(penalty.admin_name);
+  const issuer = adminProfiles.get(admin);
   const userId = textValue(user.id || penalty.user_id);
-  return { id: textValue(penalty.id), type: textValue(penalty.type), player: textValue(user.username), playerSteamId: textValue(user.steam_id) || undefined, avatar: textValue(user.avatar), moderationStatus: moderationStatuses.get(userId) ?? "Clear", reason: textValue(penalty.reason), term: textValue(penalty.term), isPermanent: Boolean(penalty.is_permanent), isUnbanned: Boolean(penalty.is_unbanned), admin, adminSteamId: adminSteamIds.get(admin) || undefined, date: timestampValue(penalty.created_at) };
+  return { id: textValue(penalty.id), type: textValue(penalty.type), player: textValue(user.username), playerSteamId: textValue(user.steam_id) || undefined, avatar: textValue(user.avatar), moderationStatus: moderationStatuses.get(userId) ?? "Clear", reason: textValue(penalty.reason), term: textValue(penalty.term), isPermanent: Boolean(penalty.is_permanent), isUnbanned: Boolean(penalty.is_unbanned), admin, adminSteamId: issuer?.steamId || undefined, adminAvatar: issuer?.avatar || undefined, expiresAt: timestampValue(penalty.expires_at) || null, date: timestampValue(penalty.created_at) };
 }
 
 function activePenaltyStatus(penalty: DbRow): ModerationStatus | undefined {
@@ -789,14 +790,14 @@ async function resolveModerationStatuses(userIds: string[], database: ReturnType
 
 async function mapPenaltiesWithProfileIdentities(rows: DbRow[], database: ReturnType<typeof legacyXDb>) {
   const adminNames = Array.from(new Set(rows.map(row => textValue(row.admin_name)).filter(Boolean)));
-  const adminSteamIds = new Map<string, string>();
+  const adminProfiles = new Map<string, { steamId: string; avatar: string }>();
   if (adminNames.length) {
-    const { data, error } = await database.from("users").select("username,steam_id").in("username", adminNames);
+    const { data, error } = await database.from("users").select("username,steam_id,avatar").in("username", adminNames);
     legacyXError(error, "Unable to resolve penalty issuer profiles");
-    for (const user of (data ?? []) as DbRow[]) adminSteamIds.set(textValue(user.username), textValue(user.steam_id));
+    for (const user of (data ?? []) as DbRow[]) adminProfiles.set(textValue(user.username), { steamId: textValue(user.steam_id), avatar: textValue(user.avatar) });
   }
   const moderationStatuses = await resolveModerationStatuses(rows.map(row => textValue(row.user_id)), database);
-  return rows.map(row => mapPenalty(row, adminSteamIds, moderationStatuses));
+  return rows.map(row => mapPenalty(row, adminProfiles, moderationStatuses));
 }
 
 function mapFeedback(feedback: DbRow, reviewerProfiles: Map<string, { steamId: string; avatar: string }> = new Map()) {
