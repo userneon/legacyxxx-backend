@@ -21,7 +21,8 @@ import {
 import { apiAuthRateLimitMax, apiRateLimitMax, apiSensitiveRateLimitMax, isDeferredFeatureEnabled, publicDeferredFeatureFlags, type DeferredFeatureKey } from "./config";
 import { getFaceitProfileSnapshot, getFaceitProfileSnapshotForSteamId, resolveFaceitNickname } from "./faceit";
 import { legacyXDb, legacyXError } from "./supabase";
-import { resolvePublicSteamBackground } from "./steamBackground";
+import { resolveSteamProfileMedia } from "./steamBackground";
+import { mapMatchDetail, mapRankedRecentMatch } from "./matchDetails";
 import { syncSteamUserProfile } from "./steamProfile";
 
 type ApiRequest = Request & { legacyUser?: LegacyUser; plugin?: PluginPrincipal };
@@ -72,6 +73,15 @@ async function requireUser(req: ApiRequest) {
 
 function userRoute(handler: (req: ApiRequest, res: Response, user: LegacyUser) => Promise<void>) {
   return asyncRoute(async (req, res) => handler(req, res, await requireUser(req)));
+}
+
+function hasAccessToken(req: Request) {
+  return Boolean(req.header("authorization")?.startsWith("Bearer ") || parseCookieHeader(req.headers.cookie ?? "").legacyx_access_token);
+}
+
+/** Public read routes: guests are served as null, while a present-but-invalid token still 401s so the client can refresh it. */
+function optionalUserRoute(handler: (req: ApiRequest, res: Response, user: LegacyUser | null) => Promise<void>) {
+  return asyncRoute(async (req, res) => handler(req, res, hasAccessToken(req) ? await requireUser(req) : null));
 }
 
 function staffRoute(handler: (req: ApiRequest, res: Response, user: LegacyUser) => Promise<void>) {
@@ -644,8 +654,15 @@ function mapServer(server: DbRow) {
   return { id: textValue(server.id), name: textValue(server.name), map: textValue(server.map), players: numberValue(server.current_players), maxPlayers: numberValue(server.max_players), mode: textValue(server.mode), ping: numberValue(server.ping), status: textValue(server.status) };
 }
 
+function matchConnectAddress(match: DbRow) {
+  const server = firstRow(match.game_servers);
+  const ip = textValue(server?.ip_address);
+  const port = numberValue(server?.port);
+  return ip && port ? `${ip}:${port}` : undefined;
+}
+
 function mapMatch(match: DbRow, favorite = false) {
-  return { id: textValue(match.id), number: numberValue(match.number), map: textValue(match.map), players: numberValue(match.players), maxPlayers: numberValue(match.max_players), status: textValue(match.status), favorite, signal: numberValue(match.signal), scoreT: numberValue(match.score_t), scoreCT: numberValue(match.score_ct) };
+  return { connectAddress: matchConnectAddress(match), id: textValue(match.id), number: numberValue(match.number), map: textValue(match.map), players: numberValue(match.players), maxPlayers: numberValue(match.max_players), status: textValue(match.status), favorite, signal: numberValue(match.signal), scoreT: numberValue(match.score_t), scoreCT: numberValue(match.score_ct) };
 }
 
 type ModerationStatus = "Banned" | "Muted" | "Clear";
@@ -1024,6 +1041,21 @@ export function createLegacyXRouter() {
       next_rank_min_exp: silverTwo.minimum_exp,
     } });
   }));
+  router.get("/public/matches/:matchId/maps/:mapNumber", asyncRoute(async (req, res) => {
+    const matchId = z.string().regex(/^\d{1,64}$/, "matchId must be a MatchZy match id").parse(req.params.matchId);
+    const mapNumber = z.coerce.number().int().min(0).max(99).parse(req.params.mapNumber);
+    const [results, rounds] = await Promise.all([
+      db().from("rank_match_results").select("event_id,team_key,outcome,score_for,map_name,kills,deaths,assists,headshot_kills,rating_delta,stats,created_at,users(id,steam_id,username,avatar)").eq("match_external_id", matchId).eq("map_number", mapNumber),
+      db().from("match_rounds").select("round_number,winner_side,reason,team1_score,team2_score").eq("match_external_id", matchId).eq("map_number", mapNumber).order("round_number"),
+    ]);
+    legacyXError(results.error, "Unable to load match");
+    const rows = (results.data ?? []) as DbRow[];
+    if (rows.length === 0) apiError(404, "Match was not found");
+    // The round timeline is optional (older matches, or match_rounds not migrated yet); never fail the scoreboard over it.
+    if (rounds.error) console.warn("[legacy-x-api] match rounds unavailable", rounds.error.message);
+    const receipt = await db().from("plugin_event_receipts").select("payload").eq("event_id", textValue(rows[0]!.event_id)).maybeSingle();
+    res.json(mapMatchDetail({ matchId, mapNumber, results: rows, rounds: rounds.error ? [] : ((rounds.data ?? []) as DbRow[]), receiptPayload: receipt.data?.payload }));
+  }));
   router.get("/public/servers", asyncRoute(async (_req, res) => {
     res.json({ entries: await readServers() });
   }));
@@ -1157,7 +1189,10 @@ export function createLegacyXRouter() {
   router.get("/profile/:userId", userRoute(async (req, res, user) => {
     const profile = await loadProfile(await resolveUserId(req.params.userId, user));
     const payload = mapUserProfile(profile.user, profile.links);
-    payload.steamBackground = await resolvePublicSteamBackground(textValue(profile.user.steam_id));
+    const steamMedia = await resolveSteamProfileMedia(textValue(profile.user.steam_id));
+    // steamBackground stays a plain image URL for older frontends; steamMedia adds animated background, avatar and frame.
+    payload.steamBackground = steamMedia.background;
+    payload.steamMedia = { backgroundVideo: steamMedia.backgroundVideo, animatedAvatar: steamMedia.animatedAvatar, avatarFrame: steamMedia.avatarFrame };
     res.json(payload);
   }));
   router.put("/profile/me", userRoute(async (req, res, user) => {
@@ -1204,6 +1239,13 @@ export function createLegacyXRouter() {
   }));
   router.get("/profile/:userId/matches", userRoute(async (req, res, user) => {
     const userId = await resolveUserId(req.params.userId, user);
+    // MatchZy results carry the match id/map number needed to open match details; legacy history rows do not.
+    const ranked = await db().from("rank_match_results").select("match_external_id,map_number,map_name,outcome,score_for,score_against,kills,deaths,created_at").eq("user_id", userId).order("created_at", { ascending: false }).limit(30);
+    legacyXError(ranked.error, "Unable to load match history");
+    if ((ranked.data ?? []).length > 0) {
+      res.json(((ranked.data ?? []) as DbRow[]).map(mapRankedRecentMatch));
+      return;
+    }
     const { data, error } = await db().from("player_match_history").select("map,result,score,kd").eq("user_id", userId).order("created_at", { ascending: false });
     legacyXError(error, "Unable to load match history");
     res.json(((data ?? []) as DbRow[]).map(mapRecentMatch));
@@ -1511,39 +1553,41 @@ export function createLegacyXRouter() {
     res.json({ jobs: data ?? [] });
   }));
 
-  const frontendMatches = userRoute(async (req, res, user) => {
+  const frontendMatches = optionalUserRoute(async (req, res, user) => {
     const filters = z.object({ mode: playModeSchema.optional(), status: matchStatusSchema.optional() }).parse(req.query);
-    let query = db().from("matches").select("*").order("number");
+    let query = db().from("matches").select("*,game_servers(ip_address,port)").order("number");
     if (filters.mode) query = query.eq("mode", filters.mode);
     if (filters.status) query = query.eq("status", filters.status);
-    const [matchesResult, favoritesResult] = await Promise.all([query, db().from("match_favorites").select("match_id").eq("user_id", user.id)]);
+    const [matchesResult, favoritesResult] = await Promise.all([query, user ? db().from("match_favorites").select("match_id").eq("user_id", user.id) : Promise.resolve({ data: [], error: null })]);
     legacyXError(matchesResult.error || favoritesResult.error, "Unable to load matches");
     const favorites = new Set(((favoritesResult.data ?? []) as DbRow[]).map(row => textValue(row.match_id)));
     res.json(((matchesResult.data ?? []) as DbRow[]).map(match => mapMatch(match, favorites.has(textValue(match.id)))));
   });
   router.get("/play/matches", frontendMatches);
-  router.get("/play/matches/:matchId", userRoute(async (req, res, user) => {
+  router.get("/play/matches/:matchId", optionalUserRoute(async (req, res, user) => {
     const matchId = userIdSchema.parse(req.params.matchId);
-    const [matchResult, favoriteResult] = await Promise.all([db().from("matches").select("*").eq("id", matchId).maybeSingle(), db().from("match_favorites").select("id").eq("match_id", matchId).eq("user_id", user.id).maybeSingle()]);
+    const [matchResult, favoriteResult] = await Promise.all([db().from("matches").select("*,game_servers(ip_address,port)").eq("id", matchId).maybeSingle(), user ? db().from("match_favorites").select("id").eq("match_id", matchId).eq("user_id", user.id).maybeSingle() : Promise.resolve({ data: null, error: null })]);
     legacyXError(matchResult.error || favoriteResult.error, "Unable to load match");
     if (!matchResult.data) apiError(404, "Match was not found");
     res.json(mapMatch(matchResult.data as DbRow, Boolean(favoriteResult.data)));
   }));
-  router.post("/play/matches/:matchId/join", userRoute(async (req, res, user) => {
+  router.post("/play/matches/:matchId/join", optionalUserRoute(async (req, res, user) => {
     noBody(req);
     const matchId = userIdSchema.parse(req.params.matchId);
     const { data, error } = await db().from("matches").select("status,players,max_players,server_id").eq("id", matchId).maybeSingle();
     legacyXError(error, "Unable to resolve match");
     if (!data) apiError(404, "Match was not found");
     if (data.status === "locked" || data.status === "finished" || data.players >= data.max_players) apiError(409, "Match is not joinable");
-    const { error: auditError } = await db().from("audit_logs").insert({ actor_type: "user", actor_id: user.id, action: "match.join", target_type: "matches", target_id: matchId, metadata: { serverId: data.server_id } });
-    legacyXError(auditError, "Unable to record match join");
+    if (user) {
+      const { error: auditError } = await db().from("audit_logs").insert({ actor_type: "user", actor_id: user.id, action: "match.join", target_type: "matches", target_id: matchId, metadata: { serverId: data.server_id } });
+      legacyXError(auditError, "Unable to record match join");
+    }
     res.status(204).end();
   }));
   router.post("/play/matches/:matchId/favorite", userRoute(async (req, res, user) => {
     const input = z.object({ favorite: z.boolean() }).parse(req.body);
     const matchId = userIdSchema.parse(req.params.matchId);
-    const { data: match, error: matchError } = await db().from("matches").select("*").eq("id", matchId).maybeSingle();
+    const { data: match, error: matchError } = await db().from("matches").select("*,game_servers(ip_address,port)").eq("id", matchId).maybeSingle();
     legacyXError(matchError, "Unable to load match");
     if (!match) apiError(404, "Match was not found");
     if (input.favorite) {
@@ -1653,7 +1697,7 @@ export function createLegacyXRouter() {
     res.json(await loadClanDetail(clanId));
   }));
 
-  router.get("/tournaments/matches", userRoute(async (req, res) => {
+  router.get("/tournaments/matches", asyncRoute(async (req, res) => {
     const filters = z.object({ status: tournamentMatchStatusSchema.optional() }).parse(req.query);
     let query = db().from("tournament_matches").select("*").order("bracket_order");
     if (filters.status) query = query.eq("status", filters.status);
@@ -1661,20 +1705,20 @@ export function createLegacyXRouter() {
     legacyXError(error, "Unable to load tournament matches");
     res.json(((data ?? []) as DbRow[]).map(mapTournamentMatch));
   }));
-  router.get("/tournaments/matches/:matchId", userRoute(async (req, res) => {
+  router.get("/tournaments/matches/:matchId", asyncRoute(async (req, res) => {
     const { data, error } = await db().from("tournament_matches").select("*").eq("id", userIdSchema.parse(req.params.matchId)).maybeSingle();
     legacyXError(error, "Unable to load tournament match");
     if (!data) apiError(404, "Tournament match was not found");
     res.json(mapTournamentMatch(data as DbRow));
   }));
-  router.get("/tournaments/bracket", userRoute(async (_req, res) => {
+  router.get("/tournaments/bracket", asyncRoute(async (_req, res) => {
     const { data, error } = await db().from("tournament_matches").select("*").order("bracket_order");
     legacyXError(error, "Unable to load tournament bracket");
     const rounds = new Map<string, DbRow[]>();
     for (const match of (data ?? []) as DbRow[]) rounds.set(textValue(match.round), [...(rounds.get(textValue(match.round)) ?? []), match]);
     res.json(Array.from(rounds.entries()).map(([round, matches]) => ({ round, matches: matches.map(mapTournamentMatch) })));
   }));
-  router.get("/tournaments/info", userRoute(async (_req, res) => {
+  router.get("/tournaments/info", asyncRoute(async (_req, res) => {
     const tournament = await loadActiveTournament();
     const { count, error } = await db().from("tournament_registrations").select("id", { count: "exact", head: true }).eq("tournament_id", tournament.id);
     legacyXError(error, "Unable to count tournament registrations");
@@ -1777,7 +1821,7 @@ export function createLegacyXRouter() {
     apiError(501, "Wallet charge requires a verified payment-provider integration");
   }));
 
-  router.get("/moderation/penalties", userRoute(async (req, res) => {
+  router.get("/moderation/penalties", asyncRoute(async (req, res) => {
     const filters = z.object({ type: penaltyTypeSchema.optional(), query: z.string().trim().min(1).max(64).optional() }).parse(req.query);
     let query = db().from("penalties").select("*,users!penalties_user_id_fkey(username,steam_id,avatar)").order("created_at", { ascending: false });
     if (filters.type) query = query.eq("type", filters.type);
@@ -1786,13 +1830,13 @@ export function createLegacyXRouter() {
     const penalties = await mapPenaltiesWithProfileIdentities((data ?? []) as DbRow[], db());
     res.json(filters.query ? penalties.filter(penalty => penalty.player.toLowerCase().includes(filters.query!.toLowerCase())) : penalties);
   }));
-  router.get("/moderation/penalties/stats", userRoute(async (_req, res) => {
+  router.get("/moderation/penalties/stats", asyncRoute(async (_req, res) => {
     const { data, error } = await db().from("penalties").select("type,is_permanent,is_unbanned");
     legacyXError(error, "Unable to load penalty statistics");
     const penalties = (data ?? []) as DbRow[];
     res.json({ totalBans: penalties.filter(row => row.type === "ban").length, activeBans: penalties.filter(row => row.type === "ban" && !row.is_unbanned).length, permanentBans: penalties.filter(row => row.type === "ban" && row.is_permanent).length, totalComms: penalties.filter(row => row.type === "comm").length, totalGags: penalties.filter(row => row.type === "gag").length });
   }));
-  router.get("/penalties/:penaltyId", userRoute(async (req, res) => {
+  router.get("/penalties/:penaltyId", asyncRoute(async (req, res) => {
     const { data, error } = await db().from("penalties").select("*,users!penalties_user_id_fkey(username,steam_id,avatar)").eq("id", userIdSchema.parse(req.params.penaltyId)).maybeSingle();
     legacyXError(error, "Unable to load penalty");
     if (!data) apiError(404, "Penalty was not found");
@@ -1824,7 +1868,7 @@ export function createLegacyXRouter() {
     res.status(201).json(mapFeedback(outcome.feedback, new Map([[user.id, { steamId: user.steamId, avatar: "" }]])));
   }));
 
-  router.get("/search/players", userRoute(async (req, res) => {
+  router.get("/search/players", asyncRoute(async (req, res) => {
     const input = z.object({ query: z.string().trim().min(1).max(64) }).parse(req.query);
     const { data, error } = await db().from("users").select("id,steam_id,username,avatar,level,player_stats(*)").ilike("username", `%${input.query}%`).order("username");
     legacyXError(error, "Unable to search players");
@@ -1836,7 +1880,7 @@ export function createLegacyXRouter() {
     legacyXError(error, "Unable to search clans");
     res.json({ clans: ((data ?? []) as DbRow[]).map(mapClanCard) });
   }));
-  router.get("/community/content", userRoute(async (_req, res) => {
+  router.get("/community/content", asyncRoute(async (_req, res) => {
     const [creators, partners] = await Promise.all([
       db().from("community_creators").select("id,name,handle,url").order("created_at"),
       db().from("community_partners").select("id,name,description,type,url").order("created_at"),

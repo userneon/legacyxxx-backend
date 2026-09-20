@@ -1,11 +1,22 @@
 const express = require('express')
-const { normalizeMatchzyResult, ingestMatchzyResult } = require('../rank')
+const { normalizeMatchzyResult, normalizeMatchzyRound, storeMatchzyRound, ingestMatchzyResult } = require('../rank')
 const { getCommunityProfile, ingestCommunityProgression } = require('../community')
 const { getActiveSeason } = require('../seasons')
 
 const router = express.Router()
 
 router.post('/events', async (req, res) => {
+  // Round results only feed the profile match timeline; they never touch ranks.
+  if (req.body?.event === 'round_end') {
+    try {
+      const result = await storeMatchzyRound(normalizeMatchzyRound(req.body))
+      return res.status(202).json({ ok: true, accepted: true, requestId: req.pluginRequestId, roundResult: result })
+    } catch (error) {
+      console.warn(`[RoundIngest] MatchZy round rejected: ${error.message}`)
+      return res.status(400).json({ error: 'Invalid round event', detail: error.message, requestId: req.pluginRequestId })
+    }
+  }
+
   // MatchZy can emit other remote-log events. Only final map result events change ranks.
   if (req.body?.event !== 'map_result') {
     return res.status(202).json({ ok: true, accepted: false, ignored: req.body?.event || 'unknown' })

@@ -27,8 +27,19 @@ function text(value, name, maximum = 120, pattern = null) {
   return parsed
 }
 
+/**
+ * MatchZy PlayerStats fields kept for the profile match scoreboard (ADR, KAST, MVPs, multi-kills, clutches,
+ * opening duels). Only the first six feed the rank formula; the rest are stored in rank_match_results.stats.
+ */
+const DETAIL_STAT_FIELDS = [
+  'damage', 'utility_damage', 'enemies_flashed', 'flash_assists', 'mvp', 'kast', 'trade_kills',
+  'first_kills_t', 'first_kills_ct', 'first_deaths_t', 'first_deaths_ct',
+  '2k', '3k', '4k', '5k', '1v1', '1v2', '1v3', '1v4', '1v5', 'bomb_plants', 'bomb_defuses',
+]
+
 function normalizePlayer(player, teamKey) {
   const stats = player?.stats || {}
+  const detail = Object.fromEntries(DETAIL_STAT_FIELDS.map((field) => [field, integer(stats[field] || 0, `stats.${field}`, 1_000_000)]))
   return {
     steamid: text(player?.steamid, 'player.steamid', 20, /^\d{15,20}$/),
     name: text(player?.name, 'player.name', 64),
@@ -40,8 +51,43 @@ function normalizePlayer(player, teamKey) {
       headshot_kills: integer(stats.headshot_kills || 0, 'stats.headshot_kills'),
       score: integer(stats.score || 0, 'stats.score'),
       rounds_played: integer(stats.rounds_played || 0, 'stats.rounds_played'),
+      ...detail,
     },
   }
+}
+
+/** MatchZy sends winner.side as the CS team number: "2" = Terrorists, "3" = Counter-Terrorists. */
+function roundWinnerSide(value) {
+  const side = String(value ?? '').trim().toLowerCase()
+  if (side === '2' || side === 't' || side === 'terrorist') return 't'
+  if (side === '3' || side === 'ct') return 'ct'
+  return null
+}
+
+function normalizeMatchzyRound(body) {
+  if (body?.event !== 'round_end') throw new Error('Only MatchZy round_end events are accepted')
+  return {
+    match_external_id: text(body?.matchid, 'matchid', 64, /^\d+$/),
+    map_number: integer(body?.map_number, 'map_number', 99),
+    round_number: integer(body?.round_number, 'round_number', 200),
+    winner_side: roundWinnerSide(body?.winner?.side),
+    reason: Number.isInteger(Number(body?.reason)) ? Number(body.reason) : null,
+    team1_score: integer(body?.team1?.score, 'team1.score', 99),
+    team2_score: integer(body?.team2?.score, 'team2.score', 99),
+  }
+}
+
+/** Upserts on (match, map, round), so MatchZy retries or a server restart re-sending a round are harmless. */
+async function storeMatchzyRound(round) {
+  const url = new URL(supabaseUrl('/rest/v1/match_rounds'))
+  url.searchParams.set('on_conflict', 'match_external_id,map_number,round_number')
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { ...serviceHeaders(true), Prefer: 'resolution=merge-duplicates,return=minimal' },
+    body: JSON.stringify(round),
+  })
+  if (!response.ok) throw new Error(`Supabase match_rounds upsert failed (${response.status}): ${(await response.text()).slice(0, 240)}`)
+  return { status: 'stored', round: round.round_number }
 }
 
 function normalizeTeam(team, key) {
@@ -125,4 +171,4 @@ async function getPlayerRank(season, steamId) {
   return rows[0] || null
 }
 
-module.exports = { normalizeMatchzyResult, ingestMatchzyResult, getLeaderboard, getPlayerRank, rpc, readRows }
+module.exports = { normalizeMatchzyResult, normalizeMatchzyRound, storeMatchzyRound, ingestMatchzyResult, getLeaderboard, getPlayerRank, rpc, readRows }

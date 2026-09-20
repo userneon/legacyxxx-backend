@@ -1,5 +1,5 @@
 const assert = require('assert')
-const { normalizeMatchzyResult } = require('../src/rank')
+const { normalizeMatchzyResult, normalizeMatchzyRound } = require('../src/rank')
 
 function player(index, team) {
   return {
@@ -36,5 +36,26 @@ assert.throws(() => normalizeMatchzyResult(duplicateSteamId), /ten unique Steam 
 const invalidRoster = payload()
 invalidRoster.team1.players.pop()
 assert.throws(() => normalizeMatchzyResult(invalidRoster), /exactly five players/)
+
+// Detail stats survive normalisation so the profile scoreboard can show ADR, MVPs and multi-kills.
+const detailed = payload()
+detailed.team1.players[0].stats = { ...detailed.team1.players[0].stats, damage: 2140, mvp: 4, kast: 78, '3k': 2 }
+const detailedPlayer = normalizeMatchzyResult(detailed).team1.players[0]
+assert.equal(detailedPlayer.stats.damage, 2140)
+assert.equal(detailedPlayer.stats.mvp, 4)
+assert.equal(detailedPlayer.stats.kast, 78)
+assert.equal(detailedPlayer.stats['3k'], 2)
+assert.equal(detailedPlayer.stats['5k'], 0)
+
+// round_end: MatchZy reports winner.side as the CS team number and winner.team as the map leader.
+const round = normalizeMatchzyRound({
+  event: 'round_end', matchid: 12345, map_number: 1, round_number: 7, reason: 9,
+  winner: { side: '2', team: 'team1' },
+  team1: { score: 4 }, team2: { score: 3 },
+})
+assert.deepEqual(round, { match_external_id: '12345', map_number: 1, round_number: 7, winner_side: 't', reason: 9, team1_score: 4, team2_score: 3 })
+assert.equal(normalizeMatchzyRound({ event: 'round_end', matchid: 1, map_number: 0, round_number: 1, winner: { side: '3' }, team1: { score: 0 }, team2: { score: 1 } }).winner_side, 'ct')
+assert.throws(() => normalizeMatchzyRound({ event: 'map_result' }), /Only MatchZy round_end/)
+assert.throws(() => normalizeMatchzyRound({ event: 'round_end', matchid: 'abc', map_number: 1, round_number: 1, team1: { score: 0 }, team2: { score: 0 } }), /matchid is invalid/)
 
 console.log('Rank ingestion contract checks passed')

@@ -11,16 +11,16 @@ const frontendEndpoints: Endpoint[] = [
   { method: "GET", path: "/auth/steam", public: true },
   { method: "POST", path: "/auth/logout" }, { method: "POST", path: "/auth/refresh" }, { method: "GET", path: "/auth/me" },
   { method: "GET", path: "/profile/00000000-0000-4000-8000-000000000001" }, { method: "PUT", path: "/profile/me" }, { method: "GET", path: "/profile/me/stats" }, { method: "GET", path: "/profile/me/matches" }, { method: "PUT", path: "/profile/me/links" }, { method: "GET", path: "/profile/me/penalties" },
-  { method: "GET", path: "/play/matches" }, { method: "GET", path: "/play/matches/00000000-0000-4000-8000-000000000002" }, { method: "POST", path: "/play/matches/00000000-0000-4000-8000-000000000002/join" }, { method: "POST", path: "/play/matches/00000000-0000-4000-8000-000000000002/favorite" },
+  { method: "GET", path: "/play/matches", public: true }, { method: "GET", path: "/play/matches/00000000-0000-4000-8000-000000000002", public: true }, { method: "POST", path: "/play/matches/00000000-0000-4000-8000-000000000002/join", public: true }, { method: "POST", path: "/play/matches/00000000-0000-4000-8000-000000000002/favorite" },
   { method: "GET", path: "/servers" }, { method: "GET", path: "/servers/00000000-0000-4000-8000-000000000003" }, { method: "POST", path: "/servers/00000000-0000-4000-8000-000000000003/join" }, { method: "GET", path: "/servers/home-stats" },
   { method: "GET", path: "/leaderboard" }, { method: "GET", path: "/players/00000000-0000-4000-8000-000000000004" }, { method: "GET", path: "/players/leaderboard" },
   { method: "GET", path: "/clans" }, { method: "GET", path: "/clans/00000000-0000-4000-8000-000000000005" }, { method: "GET", path: "/clans/00000000-0000-4000-8000-000000000005/members" }, { method: "POST", path: "/clans" }, { method: "PUT", path: "/clans/00000000-0000-4000-8000-000000000005" }, { method: "POST", path: "/clans/00000000-0000-4000-8000-000000000005/join" }, { method: "POST", path: "/clans/00000000-0000-4000-8000-000000000005/leave" }, { method: "DELETE", path: "/clans/00000000-0000-4000-8000-000000000005" }, { method: "GET", path: "/clans/team" },
-  { method: "GET", path: "/tournaments/matches" }, { method: "GET", path: "/tournaments/matches/00000000-0000-4000-8000-000000000006" }, { method: "GET", path: "/tournaments/bracket" }, { method: "GET", path: "/tournaments/info" }, { method: "POST", path: "/tournaments/register" },
+  { method: "GET", path: "/tournaments/matches", public: true }, { method: "GET", path: "/tournaments/matches/00000000-0000-4000-8000-000000000006", public: true }, { method: "GET", path: "/tournaments/bracket", public: true }, { method: "GET", path: "/tournaments/info", public: true }, { method: "POST", path: "/tournaments/register" },
   { method: "GET", path: "/store/items" }, { method: "GET", path: "/store/items/00000000-0000-4000-8000-000000000007" }, { method: "POST", path: "/store/items/00000000-0000-4000-8000-000000000007/purchase" },
   { method: "GET", path: "/wallet/balance" }, { method: "GET", path: "/wallet/transactions" }, { method: "POST", path: "/wallet/charge" },
   { method: "POST", path: "/wallet/promo/preview" }, { method: "POST", path: "/wallet/promo/redeem" }, { method: "GET", path: "/wallet/promotions" },
-  { method: "GET", path: "/moderation/penalties" }, { method: "GET", path: "/penalties/00000000-0000-4000-8000-000000000008" }, { method: "GET", path: "/moderation/penalties/stats" },
-  { method: "GET", path: "/feedback", public: true }, { method: "POST", path: "/feedback" }, { method: "GET", path: "/search/players?query=test" }, { method: "GET", path: "/search/clans?query=test" }, { method: "GET", path: "/community/content" },
+  { method: "GET", path: "/moderation/penalties", public: true }, { method: "GET", path: "/penalties/00000000-0000-4000-8000-000000000008", public: true }, { method: "GET", path: "/moderation/penalties/stats", public: true },
+  { method: "GET", path: "/feedback", public: true }, { method: "POST", path: "/feedback" }, { method: "GET", path: "/search/players?query=test", public: true }, { method: "GET", path: "/search/clans?query=test" }, { method: "GET", path: "/community/content", public: true }, { method: "GET", path: "/public/matches/42/maps/1", public: true },
 ];
 
 const skinchangerEndpoints: Endpoint[] = [
@@ -92,7 +92,14 @@ describe("frontend API endpoint inventory", () => {
   });
 
   it("contains the frontend endpoint inventory including authenticated wallet promotion routes", () => {
-    expect(frontendEndpoints).toHaveLength(52);
+    expect(frontendEndpoints).toHaveLength(53);
+  });
+
+  it("serves public read pages to guests without demanding authentication", async () => {
+    for (const endpoint of frontendEndpoints.filter(endpoint => endpoint.public && endpoint.path !== "/auth/steam")) {
+      const response = await fetch(`${baseUrl}${endpoint.path}`, { method: endpoint.method });
+      expect(response.status, `${endpoint.method} /api/v1${endpoint.path}`).not.toBe(401);
+    }
   });
 
   it("registers every protected contract endpoint beneath /api/v1 and rejects missing authentication", async () => {
