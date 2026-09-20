@@ -249,7 +249,7 @@ function postLoginRedirect() {
 async function getUserWithStats(id: string) {
   const { data, error } = await legacyXDb()
     .from("users")
-    .select("id,steam_id,username,avatar,level,rank,balance,faceit_username,faceit_elo,faceit_level,created_at,updated_at,player_stats(*)")
+    .select("id,steam_id,username,avatar,level,rank,faceit_username,faceit_elo,faceit_level,created_at,updated_at,player_stats(*)")
     .eq("id", id)
     .maybeSingle();
   legacyXError(error, "Unable to load player");
@@ -434,20 +434,8 @@ const serverStatusSchema = z.enum(["online", "offline", "full"]);
 const tournamentMatchStatusSchema = z.enum(["live", "upcoming", "completed"]);
 const penaltyTypeSchema = z.enum(["ban", "comm", "gag"]);
 const userRoleSchema = z.enum(["Owner", "Founder", "Manager", "Admin", "Player", "Designer", "Developer"]);
-const shopRaritySchema = z.enum(["Common", "Rare", "Epic", "Legendary"]);
-const promoOwnerKindSchema = z.enum(["legacyx", "creator", "partner"]);
-const promoBenefitTypeSchema = z.enum(["wallet_credit", "wallet_rate_override", "wallet_percent", "wallet_fixed", "store_percent", "store_fixed", "admin_role"]);
-const promoContextSchema = z.enum(["wallet_topup", "wallet_redeem", "store_purchase"]);
-const promoCodeSchema = z.string().trim().min(6).max(48).regex(/^[A-Za-z0-9-]+$/, "Promo code can only contain letters, numbers and hyphens");
 const staffPanelServerSchema = z.string().trim().min(1).max(80).regex(/^[A-Za-z0-9_-]+$/);
 const staffPanelMapSchema = z.enum(["de_ancient", "de_anubis", "de_cache", "de_dust2", "de_inferno", "de_mirage", "de_nuke", "de_overpass", "de_train", "de_vertigo"]);
-const staffPanelProductSchema = z.object({
-  name: z.string().trim().min(1).max(120),
-  category: z.string().trim().min(1).max(64),
-  price: z.number().int().min(0).max(1_000_000),
-  image: z.string().trim().url().max(1024).optional().default(""),
-  rarity: shopRaritySchema,
-});
 const staffPanelActionSchema = z.object({
   serverId: staffPanelServerSchema,
   type: z.enum(["ban", "unban", "kick", "mute", "rename", "map_change", "server_announcement", "match_announcement", "hud_announcement", "player_hud_alert", "player_message", "restart_all", "restart_server", "start_server", "stop_server", "timeout", "unpause", "round_restart", "round_restore", "player_ip_lookup"]),
@@ -490,48 +478,6 @@ const staffPanelActionSchema = z.object({
     context.addIssue({ code: z.ZodIssueCode.custom, path: ["durationSeconds"], message: "A timeout duration is required" });
   }
 });
-const promoPreviewSchema = z.object({
-  code: promoCodeSchema,
-  context: promoContextSchema,
-  coinAmount: z.number().int().min(1).max(1_000_000).optional(),
-  itemId: userIdSchema.optional(),
-}).strict();
-const promoRedeemSchema = z.object({
-  code: promoCodeSchema,
-  idempotencyKey: z.string().trim().min(8).max(96).regex(/^[A-Za-z0-9:_-]+$/).optional(),
-}).strict();
-const promoCampaignCreateSchema = z.object({
-  name: z.string().trim().min(3).max(96),
-  ownerKind: promoOwnerKindSchema,
-  ownerUserId: userIdSchema.optional().nullable(),
-  benefitType: promoBenefitTypeSchema,
-  benefitValue: z.number().int().min(0).max(1_000_000),
-  startsAt: z.string().datetime({ offset: true }).optional().nullable(),
-  expiresAt: z.string().datetime({ offset: true }).optional().nullable(),
-  maxRedemptions: z.number().int().min(1).max(10_000_000).optional().nullable(),
-  perUserLimit: z.number().int().min(1).max(100).default(1),
-  metadata: z.record(z.string(), z.union([z.string(), z.number(), z.boolean(), z.null()])).optional().default({}),
-}).strict().superRefine((input, context) => {
-  if ((input.ownerKind === "creator" || input.ownerKind === "partner") && !input.ownerUserId) {
-    context.addIssue({ code: z.ZodIssueCode.custom, path: ["ownerUserId"], message: "Creator and partner campaigns require an owner user" });
-  }
-  if (input.startsAt && input.expiresAt && new Date(input.expiresAt).getTime() <= new Date(input.startsAt).getTime()) {
-    context.addIssue({ code: z.ZodIssueCode.custom, path: ["expiresAt"], message: "Expiry must be after campaign start" });
-  }
-  if ((input.benefitType === "wallet_percent" || input.benefitType === "store_percent") && input.benefitValue > 100) {
-    context.addIssue({ code: z.ZodIssueCode.custom, path: ["benefitValue"], message: "Percentage discount cannot exceed 100" });
-  }
-  if (input.benefitType === "wallet_rate_override" && input.benefitValue < 1) {
-    context.addIssue({ code: z.ZodIssueCode.custom, path: ["benefitValue"], message: "Wallet rate must be at least 1₮ per coin" });
-  }
-});
-const promoCodeCreateSchema = z.object({
-  code: promoCodeSchema.optional(),
-  maxRedemptions: z.number().int().min(1).max(10_000_000).optional().nullable(),
-  perUserLimit: z.number().int().min(1).max(100).optional().nullable(),
-  startsAt: z.string().datetime({ offset: true }).optional().nullable(),
-  expiresAt: z.string().datetime({ offset: true }).optional().nullable(),
-}).strict();
 const skinchangerCategorySchema = z.enum(["weapon", "weapon_skin", "knife", "glove", "agent", "music_kit", "pin", "sticker", "charm"]);
 const skinchangerSlotSchema = z.enum(["weapon", "knife", "glove", "agent", "music_kit", "pin"]);
 const skinchangerTeamScopeSchema = z.enum(["all", "t", "ct"]);
@@ -653,7 +599,6 @@ function mapUserProfile(user: DbRow, links: DbRow[] = []) {
     avatar: textValue(user.avatar),
     level: numberValue(user.level),
     rank: textValue(user.rank),
-    balance: numberValue(user.balance),
   };
   if (user.faceit_username && user.faceit_elo != null && user.faceit_level != null) {
     profile.faceit = { username: textValue(user.faceit_username), elo: numberValue(user.faceit_elo), level: numberValue(user.faceit_level) };
@@ -714,45 +659,6 @@ function mapClanMember(member: DbRow) {
 
 function mapTournamentMatch(match: DbRow) {
   return { id: textValue(match.id), teamA: textValue(match.team_a), teamB: textValue(match.team_b), round: textValue(match.round), map: textValue(match.map), time: textValue(match.scheduled_time), score: match.score == null ? null : textValue(match.score), status: textValue(match.status) };
-}
-
-function mapShopItem(item: DbRow) {
-  return { id: textValue(item.id), name: textValue(item.name), category: textValue(item.category), price: numberValue(item.price), image: textValue(item.image), rarity: textValue(item.rarity) };
-}
-
-function mapWalletTransaction(transaction: DbRow) {
-  const type = textValue(transaction.type);
-  return { id: textValue(transaction.id), type: type === "charge" ? "Charge" : "Purchase", amount: numberValue(transaction.amount), method: textValue(transaction.method), date: timestampValue(transaction.created_at) };
-}
-
-function normalizePromoCode(code: string) {
-  return promoCodeSchema.parse(code).replace(/-/g, "").toUpperCase();
-}
-
-function promoCodeHint(code: string) {
-  return `${code.slice(0, 3)}•••${code.slice(-3)}`;
-}
-
-function generatedPromoCode() {
-  const token = randomBytes(8).toString("hex").toUpperCase();
-  return `LX-${token.slice(0, 4)}-${token.slice(4, 8)}-${token.slice(8, 12)}-${token.slice(12)}`;
-}
-
-function mapPromotionCampaign(row: DbRow) {
-  return {
-    id: textValue(row.id), name: textValue(row.name), ownerKind: textValue(row.owner_kind), ownerUserId: row.owner_user_id == null ? null : textValue(row.owner_user_id),
-    benefitType: textValue(row.benefit_type), benefitValue: numberValue(row.benefit_value), startsAt: row.starts_at == null ? null : timestampValue(row.starts_at),
-    expiresAt: row.expires_at == null ? null : timestampValue(row.expires_at), maxRedemptions: row.max_redemptions == null ? null : numberValue(row.max_redemptions),
-    redemptionCount: numberValue(row.redemption_count), perUserLimit: numberValue(row.per_user_limit), isActive: Boolean(row.is_active), createdAt: timestampValue(row.created_at),
-  };
-}
-
-function mapPromotionCode(row: DbRow) {
-  return {
-    id: textValue(row.id), campaignId: textValue(row.campaign_id), hint: textValue(row.code_hint), maxRedemptions: row.max_redemptions == null ? null : numberValue(row.max_redemptions),
-    redemptionCount: numberValue(row.redemption_count), perUserLimit: row.per_user_limit == null ? null : numberValue(row.per_user_limit), startsAt: row.starts_at == null ? null : timestampValue(row.starts_at),
-    expiresAt: row.expires_at == null ? null : timestampValue(row.expires_at), isActive: Boolean(row.is_active), createdAt: timestampValue(row.created_at),
-  };
 }
 
 function mapPenalty(penalty: DbRow, adminProfiles: Map<string, { steamId: string; avatar: string }> = new Map(), moderationStatuses: Map<string, ModerationStatus> = new Map()) {
@@ -826,11 +732,6 @@ function deferredFeatureForRequest(req: Request): DeferredFeatureKey | null {
   const path = req.path;
   if (path.startsWith("/staffpanel")) return "staffPanel";
   if (path.startsWith("/auth/steam") && String(req.query.staffpanel ?? "") === "1") return "staffPanel";
-  if (path.startsWith("/staff/promotions")) return "promoCodes";
-  if (path.startsWith("/wallet/promo") || path.startsWith("/wallet/promotions")) return "promoCodes";
-  if (path.startsWith("/wallet")) return "wallet";
-  if (path.startsWith("/credits")) return "credits";
-  if (path.startsWith("/store") || path.startsWith("/shop")) return "shop";
   if (path.startsWith("/clans") || path.startsWith("/clan")) return "clan";
   if (path === "/search/clans") return "clan";
   return null;
@@ -913,7 +814,7 @@ export function createLegacyXRouter() {
   };
   const loadProfile = async (id: string) => {
     const [userResult, linksResult] = await Promise.all([
-      db().from("users").select("id,steam_id,username,avatar,level,rank,balance,faceit_username,faceit_elo,faceit_level,player_stats(*)").eq("id", id).maybeSingle(),
+      db().from("users").select("id,steam_id,username,avatar,level,rank,faceit_username,faceit_elo,faceit_level,player_stats(*)").eq("id", id).maybeSingle(),
       db().from("user_links").select("url").eq("user_id", id).order("created_at"),
     ]);
     legacyXError(userResult.error || linksResult.error, "Unable to load profile");
@@ -1796,93 +1697,6 @@ export function createLegacyXRouter() {
     res.status(204).end();
   }));
 
-  router.get("/store/items", userRoute(async (req, res) => {
-    const filters = z.object({ category: z.string().trim().min(1).max(64).optional(), rarity: shopRaritySchema.optional() }).parse(req.query);
-    let query = db().from("store_items").select("*").order("created_at", { ascending: false });
-    if (filters.category) query = query.eq("category", filters.category);
-    if (filters.rarity) query = query.eq("rarity", filters.rarity);
-    const { data, error } = await query;
-    legacyXError(error, "Unable to load store items");
-    res.json(((data ?? []) as DbRow[]).map(mapShopItem));
-  }));
-  router.get("/store/items/:itemId", userRoute(async (req, res) => {
-    const { data, error } = await db().from("store_items").select("*").eq("id", userIdSchema.parse(req.params.itemId)).maybeSingle();
-    legacyXError(error, "Unable to load store item");
-    if (!data) apiError(404, "Store item was not found");
-    res.json(mapShopItem(data as DbRow));
-  }));
-  router.post("/store/items/:itemId/purchase", userRoute(async (req, res, user) => {
-    const input = z.object({ promoCode: promoCodeSchema.optional(), idempotencyKey: z.string().trim().min(8).max(96).regex(/^[A-Za-z0-9:_-]+$/).optional() }).strict().optional().parse(req.body ?? undefined);
-    const { error } = await db().rpc(input?.promoCode ? "purchase_store_item_with_promotion" : "purchase_store_item", input?.promoCode
-      ? { p_user_id: user.id, p_item_id: userIdSchema.parse(req.params.itemId), p_code_hash: sha256(normalizePromoCode(input.promoCode)), p_idempotency_key: input.idempotencyKey ?? null }
-      : { p_user_id: user.id, p_item_id: userIdSchema.parse(req.params.itemId) });
-    legacyXError(error, "Unable to complete purchase");
-    res.status(204).end();
-  }));
-  router.get("/wallet/balance", userRoute(async (_req, res, user) => {
-    const { data, error } = await db().from("users").select("balance").eq("id", user.id).maybeSingle();
-    legacyXError(error, "Unable to load wallet");
-    if (!data) apiError(404, "Wallet owner was not found");
-    res.json({ balance: numberValue(data.balance), currency: "coins" });
-  }));
-  router.get("/wallet/transactions", userRoute(async (_req, res, user) => {
-    const { data, error } = await db().from("wallet_transactions").select("id,type,amount,method,created_at").eq("user_id", user.id).order("created_at", { ascending: false });
-    legacyXError(error, "Unable to load wallet transactions");
-    res.json(((data ?? []) as DbRow[]).map(mapWalletTransaction));
-  }));
-  const promoRateLimit = rateLimit({ windowMs: 60_000, limit: 12, standardHeaders: "draft-7", legacyHeaders: false, message: { error: "Too many promotion requests. Please try again shortly." } });
-  router.post("/wallet/promo/preview", promoRateLimit, userRoute(async (req, res, user) => {
-    const input = promoPreviewSchema.parse(req.body);
-    const { data, error } = await db().rpc("quote_promotion_code", { p_user_id: user.id, p_code_hash: sha256(normalizePromoCode(input.code)), p_context: input.context, p_coin_amount: input.coinAmount ?? null, p_item_id: input.itemId ?? null });
-    legacyXError(error, "Unable to validate promotion code");
-    res.json(data);
-  }));
-  router.post("/wallet/promo/redeem", promoRateLimit, userRoute(async (req, res, user) => {
-    const input = promoRedeemSchema.parse(req.body);
-    const { data, error } = await db().rpc("redeem_promotion_code", { p_user_id: user.id, p_code_hash: sha256(normalizePromoCode(input.code)), p_idempotency_key: input.idempotencyKey ?? null });
-    legacyXError(error, "Unable to redeem promotion code");
-    res.status(201).json(data);
-  }));
-  router.get("/wallet/promotions", userRoute(async (_req, res, user) => {
-    const { data, error } = await db().from("promotion_redemptions").select("id,context,status,benefit_type,benefit_value,code_hint,created_at,promotion_campaigns(name,owner_kind)").eq("user_id", user.id).order("created_at", { ascending: false }).limit(50);
-    legacyXError(error, "Unable to load promotion history");
-    res.json((data ?? []).map((row: DbRow) => ({ id: textValue(row.id), context: textValue(row.context), status: textValue(row.status), benefitType: textValue(row.benefit_type), benefitValue: numberValue(row.benefit_value), codeHint: textValue(row.code_hint), createdAt: timestampValue(row.created_at), campaignName: textValue(firstRow(row.promotion_campaigns)?.name), ownerKind: textValue(firstRow(row.promotion_campaigns)?.owner_kind) })));
-  }));
-  router.get("/staff/promotions/campaigns", staffRoute(async (_req, res) => {
-    const { data, error } = await db().from("promotion_campaigns").select("*").order("created_at", { ascending: false }).limit(100);
-    legacyXError(error, "Unable to load promotion campaigns");
-    res.json((data ?? []).map((row: DbRow) => mapPromotionCampaign(row)));
-  }));
-  router.post("/staff/promotions/campaigns", staffRoute(async (req, res, user) => {
-    const input = promoCampaignCreateSchema.parse(req.body);
-    if (input.benefitType === "admin_role") {
-      if (input.ownerKind !== "legacyx") apiError(403, "Admin entitlements are reserved for LEGACY-X campaigns");
-      await requireOwnerStaffRole(user.id);
-    }
-    const { data, error } = await db().from("promotion_campaigns").insert({ name: input.name, owner_kind: input.ownerKind, owner_user_id: input.ownerUserId ?? null, benefit_type: input.benefitType, benefit_value: input.benefitValue, starts_at: input.startsAt ?? null, expires_at: input.expiresAt ?? null, max_redemptions: input.maxRedemptions ?? null, per_user_limit: input.perUserLimit, metadata: input.metadata, created_by_user_id: user.id }).select("*").single();
-    legacyXError(error, "Unable to create promotion campaign");
-    await db().from("audit_logs").insert({ actor_type: "user", actor_id: user.id, action: "promotion.campaign.create", target_type: "promotion_campaign", target_id: data.id, metadata: { ownerKind: input.ownerKind, benefitType: input.benefitType } });
-    res.status(201).json(mapPromotionCampaign(data as DbRow));
-  }));
-  router.post("/staff/promotions/campaigns/:campaignId/codes", staffRoute(async (req, res, user) => {
-    const input = promoCodeCreateSchema.parse(req.body);
-    const campaignId = userIdSchema.parse(req.params.campaignId);
-    const { data: campaign, error: campaignError } = await db().from("promotion_campaigns").select("id,benefit_type").eq("id", campaignId).maybeSingle();
-    legacyXError(campaignError, "Unable to validate promotion campaign");
-    if (!campaign) apiError(404, "Promotion campaign was not found");
-    if (textValue(campaign.benefit_type) === "admin_role") await requireOwnerStaffRole(user.id);
-    const rawCode = input.code ? input.code.toUpperCase() : generatedPromoCode();
-    const normalizedCode = normalizePromoCode(rawCode);
-    const { data, error } = await db().from("promotion_codes").insert({ campaign_id: campaignId, code_hash: sha256(normalizedCode), code_hint: promoCodeHint(normalizedCode), max_redemptions: input.maxRedemptions ?? null, per_user_limit: input.perUserLimit ?? null, starts_at: input.startsAt ?? null, expires_at: input.expiresAt ?? null, created_by_user_id: user.id }).select("*").single();
-    legacyXError(error, "Unable to issue promotion code");
-    await db().from("audit_logs").insert({ actor_type: "user", actor_id: user.id, action: "promotion.code.issue", target_type: "promotion_code", target_id: data.id, metadata: { campaignId, codeHint: promoCodeHint(normalizedCode) } });
-    res.status(201).json({ code: rawCode, promotion: mapPromotionCode(data as DbRow) });
-  }));
-  router.post("/wallet/charge", userRoute(async (req, _res, _user) => {
-    z.object({ amount: z.number().positive(), method: z.enum(["qpay", "card"]) }).parse(req.body);
-    apiError(501, "Wallet charge requires a verified payment-provider integration");
-  }));
-
   router.get("/moderation/penalties", asyncRoute(async (req, res) => {
     const filters = z.object({ type: penaltyTypeSchema.optional(), query: z.string().trim().min(1).max(64).optional() }).parse(req.query);
     let query = db().from("penalties").select("*,users!penalties_user_id_fkey(username,steam_id,avatar)").order("created_at", { ascending: false });
@@ -2100,17 +1914,16 @@ export function createLegacyXRouter() {
   }));
 
   router.get("/staffpanel/database", ownerPanelRoute(async (_req, res) => {
-    const [users, products, transactions, matches, actions] = await Promise.all([
+    const [users, penalties, matches, actions] = await Promise.all([
       db().from("users").select("id", { count: "exact", head: true }),
-      db().from("store_items").select("id", { count: "exact", head: true }),
-      db().from("wallet_transactions").select("id", { count: "exact", head: true }),
+      db().from("penalties").select("id", { count: "exact", head: true }),
       db().from("matches").select("id", { count: "exact", head: true }),
       db().from("staff_panel_actions").select("id", { count: "exact", head: true }),
     ]);
-    legacyXError(users.error || products.error || transactions.error || matches.error || actions.error, "Unable to load database overview");
+    legacyXError(users.error || penalties.error || matches.error || actions.error, "Unable to load database overview");
     res.json({ tables: [
-      { name: "users", count: users.count ?? 0 }, { name: "store_items", count: products.count ?? 0 },
-      { name: "wallet_transactions", count: transactions.count ?? 0 }, { name: "matches", count: matches.count ?? 0 },
+      { name: "users", count: users.count ?? 0 }, { name: "penalties", count: penalties.count ?? 0 },
+      { name: "matches", count: matches.count ?? 0 },
       { name: "staff_panel_actions", count: actions.count ?? 0 },
     ] });
   }));
@@ -2199,30 +2012,6 @@ export function createLegacyXRouter() {
     res.json(data ? { availability: "telemetry", cpuPercent: data.cpu_percent, memoryPercent: data.memory_percent, diskPercent: data.disk_percent, loadAverage: data.load_average, healthy: data.healthy, updatedAt: data.reported_at } : { availability: "unavailable", cpuPercent: null, memoryPercent: null, diskPercent: null, loadAverage: null, healthy: null, updatedAt: null });
   }));
 
-  router.get("/staffpanel/products", ownerPanelRoute(async (_req, res) => {
-    const { data, error } = await db().from("store_items").select("*").order("created_at", { ascending: false });
-    legacyXError(error, "Unable to load products");
-    res.json(((data ?? []) as DbRow[]).map((item) => ({ ...mapShopItem(item), active: Boolean(item.is_active) })));
-  }));
-  router.post("/staffpanel/products", ownerPanelRoute(async (req, res) => {
-    const input = staffPanelProductSchema.parse(req.body);
-    const { data, error } = await db().from("store_items").insert({ ...input, is_active: true }).select("*").single();
-    legacyXError(error, "Unable to create product");
-    res.status(201).json({ ...mapShopItem(data as DbRow), active: true });
-  }));
-  router.patch("/staffpanel/products/:itemId", ownerPanelRoute(async (req, res) => {
-    const input = staffPanelProductSchema.partial().extend({ active: z.boolean().optional() }).parse(req.body);
-    const { active, ...product } = input;
-    const { data, error } = await db().from("store_items").update({ ...product, ...(active === undefined ? {} : { is_active: active }) }).eq("id", userIdSchema.parse(req.params.itemId)).select("*").single();
-    legacyXError(error, "Unable to update product");
-    res.json({ ...mapShopItem(data as DbRow), active: Boolean((data as DbRow).is_active) });
-  }));
-  router.delete("/staffpanel/products/:itemId", ownerPanelRoute(async (req, res) => {
-    const { error } = await db().from("store_items").update({ is_active: false }).eq("id", userIdSchema.parse(req.params.itemId));
-    legacyXError(error, "Unable to archive product");
-    res.status(204).end();
-  }));
-
   router.post("/staffpanel/actions", staffPanelRoute(async (req, res, staff) => {
     const input = staffPanelActionSchema.parse(req.body);
     requireStaffCapability(staff, input.type);
@@ -2271,7 +2060,7 @@ export function createLegacyXRouter() {
   }));
   router.put("/profile/me", userRoute(async (req, res, user) => {
     const updates = profileUpdateSchema.parse(req.body);
-    const { data, error } = await db().from("users").update(updates).eq("id", user.id).select("id,steam_id,username,avatar,level,rank,balance,faceit_username,faceit_elo,faceit_level").single();
+    const { data, error } = await db().from("users").update(updates).eq("id", user.id).select("id,steam_id,username,avatar,level,rank,faceit_username,faceit_elo,faceit_level").single();
     legacyXError(error, "Unable to update profile");
     res.json({ profile: data });
   }));
@@ -2464,44 +2253,6 @@ export function createLegacyXRouter() {
     const { error } = await db().from("tournament_registrations").insert({ tournament_id: input.tournamentId, clan_id: input.clanId });
     legacyXError(error, "Unable to register clan for tournament");
     res.status(201).end();
-  }));
-
-  router.get("/store/items", asyncRoute(async (req, res) => {
-    let query = db().from("store_items").select("*").order("created_at", { ascending: false });
-    if (typeof req.query.category === "string") query = query.eq("category", req.query.category);
-    if (typeof req.query.rarity === "string") query = query.eq("rarity", req.query.rarity);
-    const { data, error } = await query;
-    legacyXError(error, "Unable to load store items");
-    res.json({ items: data ?? [] });
-  }));
-  router.get("/store/items/:itemId", asyncRoute(async (req, res) => {
-    const { data, error } = await db().from("store_items").select("*").eq("id", req.params.itemId).maybeSingle();
-    legacyXError(error, "Unable to load store item");
-    if (!data) apiError(404, "Store item was not found");
-    res.json({ item: data });
-  }));
-  router.post("/store/items/:itemId/purchase", userRoute(async (req, res, user) => {
-    const { data, error } = await db().rpc("purchase_store_item", { p_user_id: user.id, p_item_id: req.params.itemId });
-    legacyXError(error, "Unable to complete purchase");
-    res.status(201).json({ purchase: data });
-  }));
-  router.get("/wallet", userRoute(async (_req, res, user) => {
-    const { data, error } = await db().from("users").select("balance").eq("id", user.id).single();
-    legacyXError(error, "Unable to load wallet");
-    if (!data) apiError(404, "Wallet owner was not found");
-    res.json({ balance: data.balance, currency: "coins" });
-  }));
-  router.get("/wallet/transactions", userRoute(async (req, res, user) => {
-    const { limit, offset } = pageSchema.parse(req.query);
-    const { data, error, count } = await db().from("wallet_transactions").select("*", { count: "exact" }).eq("user_id", user.id).order("created_at", { ascending: false }).range(offset, offset + limit - 1);
-    legacyXError(error, "Unable to load wallet transactions");
-    sendPage(res, data, count, limit, offset);
-  }));
-  router.post("/wallet/charge", staffRoute(async (req, res, _user) => {
-    const input = z.object({ userId: z.string().uuid(), amount: z.number().int().positive(), method: z.string().trim().min(1).max(64) }).parse(req.body);
-    const { data, error } = await db().rpc("credit_wallet", { p_user_id: input.userId, p_amount: input.amount, p_method: input.method });
-    legacyXError(error, "Unable to credit wallet");
-    res.status(201).json({ transaction: data });
   }));
 
   router.get("/penalties", asyncRoute(async (req, res) => {

@@ -16,9 +16,6 @@ const frontendEndpoints: Endpoint[] = [
   { method: "GET", path: "/leaderboard" }, { method: "GET", path: "/players/00000000-0000-4000-8000-000000000004" }, { method: "GET", path: "/players/leaderboard" },
   { method: "GET", path: "/clans" }, { method: "GET", path: "/clans/00000000-0000-4000-8000-000000000005" }, { method: "GET", path: "/clans/00000000-0000-4000-8000-000000000005/members" }, { method: "POST", path: "/clans" }, { method: "PUT", path: "/clans/00000000-0000-4000-8000-000000000005" }, { method: "POST", path: "/clans/00000000-0000-4000-8000-000000000005/join" }, { method: "POST", path: "/clans/00000000-0000-4000-8000-000000000005/leave" }, { method: "DELETE", path: "/clans/00000000-0000-4000-8000-000000000005" }, { method: "GET", path: "/clans/team" },
   { method: "GET", path: "/tournaments/matches", public: true }, { method: "GET", path: "/tournaments/matches/00000000-0000-4000-8000-000000000006", public: true }, { method: "GET", path: "/tournaments/bracket", public: true }, { method: "GET", path: "/tournaments/info", public: true }, { method: "POST", path: "/tournaments/register" },
-  { method: "GET", path: "/store/items" }, { method: "GET", path: "/store/items/00000000-0000-4000-8000-000000000007" }, { method: "POST", path: "/store/items/00000000-0000-4000-8000-000000000007/purchase" },
-  { method: "GET", path: "/wallet/balance" }, { method: "GET", path: "/wallet/transactions" }, { method: "POST", path: "/wallet/charge" },
-  { method: "POST", path: "/wallet/promo/preview" }, { method: "POST", path: "/wallet/promo/redeem" }, { method: "GET", path: "/wallet/promotions" },
   { method: "GET", path: "/moderation/penalties", public: true }, { method: "GET", path: "/penalties/00000000-0000-4000-8000-000000000008", public: true }, { method: "GET", path: "/moderation/penalties/stats", public: true },
   { method: "GET", path: "/notifications" }, { method: "POST", path: "/notifications/read" }, { method: "DELETE", path: "/notifications" },
   { method: "GET", path: "/feedback", public: true }, { method: "POST", path: "/feedback" }, { method: "GET", path: "/search/players?query=test", public: true }, { method: "GET", path: "/search/clans?query=test" }, { method: "GET", path: "/community/content", public: true }, { method: "GET", path: "/public/matches/42/maps/1", public: true },
@@ -48,8 +45,6 @@ const staffPanelEndpoints: Endpoint[] = [
   { method: "GET", path: "/staffpanel/access" },
   { method: "GET", path: "/staffpanel/overview" },
   { method: "GET", path: "/staffpanel/database" },
-  { method: "GET", path: "/staffpanel/products" },
-  { method: "POST", path: "/staffpanel/products" },
   { method: "POST", path: "/staffpanel/actions" },
 ];
 
@@ -74,15 +69,15 @@ afterAll(async () => { await new Promise<void>((resolve, reject) => server.close
 
 describe("frontend API endpoint inventory", () => {
   it("fails closed for deferred public feature APIs and exposes only launch booleans", async () => {
-    const previous = Object.fromEntries(["SHOP_ENABLED", "WALLET_ENABLED", "CREDITS_ENABLED", "PROMO_CODES_ENABLED", "CLAN_ENABLED", "STAFF_PANEL_ENABLED"].map(name => [name, process.env[name]]));
+    const previous = Object.fromEntries(["CLAN_ENABLED", "STAFF_PANEL_ENABLED"].map(name => [name, process.env[name]]));
     Object.assign(process.env, {
-      SHOP_ENABLED: "false", WALLET_ENABLED: "false", CREDITS_ENABLED: "false", PROMO_CODES_ENABLED: "false", CLAN_ENABLED: "false", STAFF_PANEL_ENABLED: "false",
+      CLAN_ENABLED: "false", STAFF_PANEL_ENABLED: "false",
     });
     try {
       const featureResponse = await fetch(`${baseUrl}/public/features`);
-      await expect(featureResponse.json()).resolves.toEqual({ features: { shop: false, wallet: false, credits: false, promoCodes: false, clan: false, staffPanel: false } });
-      for (const path of ["/store/items", "/wallet", "/wallet/promo/preview", "/clans", "/staffpanel/access"]) {
-        const response = await fetch(`${baseUrl}${path}`, { method: path === "/wallet/promo/preview" ? "POST" : "GET", headers: path === "/wallet/promo/preview" ? { "content-type": "application/json" } : undefined, body: path === "/wallet/promo/preview" ? "{}" : undefined });
+      await expect(featureResponse.json()).resolves.toEqual({ features: { clan: false, staffPanel: false } });
+      for (const path of ["/clans", "/staffpanel/access"]) {
+        const response = await fetch(`${baseUrl}${path}`);
         expect(response.status, path).toBe(404);
       }
     } finally {
@@ -92,8 +87,8 @@ describe("frontend API endpoint inventory", () => {
     }
   });
 
-  it("contains the frontend endpoint inventory including authenticated wallet promotion routes", () => {
-    expect(frontendEndpoints).toHaveLength(56);
+  it("contains the frontend endpoint inventory", () => {
+    expect(frontendEndpoints).toHaveLength(47);
   });
 
   it("serves public read pages to guests without demanding authentication", async () => {
