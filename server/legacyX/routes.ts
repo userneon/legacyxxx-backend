@@ -788,6 +788,18 @@ async function resolveModerationStatuses(userIds: string[], database: ReturnType
   return statuses;
 }
 
+function mapNotification(notification: DbRow) {
+  return {
+    id: textValue(notification.id),
+    kind: textValue(notification.kind),
+    title: textValue(notification.title),
+    body: notification.body == null ? null : textValue(notification.body),
+    metadata: recordValue(notification.metadata),
+    readAt: timestampValue(notification.read_at) || null,
+    createdAt: timestampValue(notification.created_at),
+  };
+}
+
 async function mapPenaltiesWithProfileIdentities(rows: DbRow[], database: ReturnType<typeof legacyXDb>) {
   const adminNames = Array.from(new Set(rows.map(row => textValue(row.admin_name)).filter(Boolean)));
   const adminProfiles = new Map<string, { steamId: string; avatar: string }>();
@@ -1283,6 +1295,33 @@ export function createLegacyXRouter() {
     const { data, error } = await db().from("penalties").select("*,users!penalties_user_id_fkey(username,steam_id,avatar)").eq("user_id", userId).order("created_at", { ascending: false });
     legacyXError(error, "Unable to load penalties");
     res.json(await mapPenaltiesWithProfileIdentities((data ?? []) as DbRow[], db()));
+  }));
+
+  router.get("/notifications", userRoute(async (_req, res, user) => {
+    const { data, error } = await db().from("notifications")
+      .select("id,kind,title,body,metadata,read_at,created_at")
+      .eq("user_id", user.id)
+      .order("created_at", { ascending: false })
+      .limit(50);
+    legacyXError(error, "Unable to load notifications");
+    const entries = ((data ?? []) as DbRow[]).map(mapNotification);
+    res.json({ entries, unreadCount: entries.filter(entry => entry.readAt === null).length });
+  }));
+
+  router.post("/notifications/read", userRoute(async (req, res, user) => {
+    const input = z.object({ ids: z.array(userIdSchema).max(100).optional() }).parse(req.body ?? {});
+    let query = db().from("notifications").update({ read_at: new Date().toISOString() }).eq("user_id", user.id).is("read_at", null);
+    if (input.ids?.length) query = query.in("id", input.ids);
+    const { error } = await query;
+    legacyXError(error, "Unable to mark notifications as read");
+    res.status(204).end();
+  }));
+
+  router.delete("/notifications", userRoute(async (req, res, user) => {
+    noBody(req);
+    const { error } = await db().from("notifications").delete().eq("user_id", user.id);
+    legacyXError(error, "Unable to clear notifications");
+    res.status(204).end();
   }));
 
   router.get("/skinchanger/catalog", userRoute(async (req, res) => {

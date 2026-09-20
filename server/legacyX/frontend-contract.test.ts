@@ -20,6 +20,7 @@ const frontendEndpoints: Endpoint[] = [
   { method: "GET", path: "/wallet/balance" }, { method: "GET", path: "/wallet/transactions" }, { method: "POST", path: "/wallet/charge" },
   { method: "POST", path: "/wallet/promo/preview" }, { method: "POST", path: "/wallet/promo/redeem" }, { method: "GET", path: "/wallet/promotions" },
   { method: "GET", path: "/moderation/penalties", public: true }, { method: "GET", path: "/penalties/00000000-0000-4000-8000-000000000008", public: true }, { method: "GET", path: "/moderation/penalties/stats", public: true },
+  { method: "GET", path: "/notifications" }, { method: "POST", path: "/notifications/read" }, { method: "DELETE", path: "/notifications" },
   { method: "GET", path: "/feedback", public: true }, { method: "POST", path: "/feedback" }, { method: "GET", path: "/search/players?query=test", public: true }, { method: "GET", path: "/search/clans?query=test" }, { method: "GET", path: "/community/content", public: true }, { method: "GET", path: "/public/matches/42/maps/1", public: true },
 ];
 
@@ -92,7 +93,7 @@ describe("frontend API endpoint inventory", () => {
   });
 
   it("contains the frontend endpoint inventory including authenticated wallet promotion routes", () => {
-    expect(frontendEndpoints).toHaveLength(53);
+    expect(frontendEndpoints).toHaveLength(56);
   });
 
   it("serves public read pages to guests without demanding authentication", async () => {
