@@ -6,9 +6,9 @@ Branch: `feature/admin-system` (backend, frontend and plugins repos).
 |---|---|---|
 | 1. DB | done | `supabase/legacy_x_admin_system.sql`, validated locally on PGlite. **Not applied anywhere.** |
 | 2. Backend | done | `server/legacyX/admin/*`, mounted inside the LEGACY-X router. tsc, 172 tests and the build pass. |
-| 3. CS2 plugin | pending | |
-| 4. Web panel | pending | |
-| 5. Header button | pending | |
+| 3. CS2 plugin | skipped | Skipped on request ("plugin taliig orhi"). The backend `/game/*` contract is ready for it. |
+| 4. Web panel | done | Frontend `feature/admin-system`: `/panel/*` and `/u/:steamId`, lazy-loaded. tsc and vite build pass. |
+| 5. Header button | done | ShieldCheck left of the bell (desktop); first sidebar item on mobile. |
 
 ## Phase 1 — DB
 
@@ -68,6 +68,59 @@ Module `server/legacyX/admin/`:
 
 The shared `apiError`/`asyncRoute`/`requireUser`/`userRoute` helpers moved to `server/legacyX/http.ts`, which `routes.ts` now imports. Their behaviour is unchanged. `tsconfig` gained `target: ES2022`, which affects typecheck only; esbuild does the build.
 
+## Phase 3 — CS2 plugin (skipped)
+
+You asked mid-task to leave the plugin out.
+
+- A partial draft of `LegacyX-Staff` (menu engine, API client, main plugin) was moved out of the plugins repo into the session scratchpad. It is not committed.
+- The plugins repo is back on `main`, unchanged. Its `feature/admin-system` branch is empty.
+- Everything the plugin needs already exists in the backend `/game/*` endpoints.
+
+## Phase 4 — Web panel (frontend repo)
+
+- `src/api/admin.ts`: typed service for every admin endpoint.
+- `src/hooks/use-staff.tsx`: `StaffProvider`.
+  - Reads `/users/me` and exposes `can(key)`.
+  - Polls the badge every 60 seconds.
+  - This only controls what is shown; the API re-checks every action.
+- `src/panel/*`: its own shell (a separate 87 kB chunk, so players never download it).
+  - Sidebar: Dashboard, Live, Players, Moderation (Reports, Bans, Mutes, Appeals, Review queue) and Audit log.
+  - "Management" group: Staff & Roles, Servers, Products, Announcements, Website and Name filter.
+  - Each item is hidden unless the user has one of its permissions.
+- Ctrl+K search covers SteamID, name and match ID.
+- `/panel/live` redirects to your current match (from `player_sessions`). If you are not connected, it shows the server list.
+- `/panel/servers/:id` has tabs: Live, Last 5 hours (rows link to the profile), Chat log, Reports and Actions.
+  - Row flags: prior ban, VAC/game ban, new, many names, first visit.
+  - Map change and round restart each have a confirm step.
+- `/panel/match/:id`: one column below the xl breakpoint. Checked at 1024px.
+- `/u/:steamId`: moderation header, action bar, and the seven tabs (Name history only with `players.name_history.view`).
+  - "View as player" shows only what the public `/players/:steamId` returns.
+  - "Above your rank" is shown for higher-immunity targets.
+  - Players who open `/u/:id` are redirected to `/profile/:id`.
+- Risk levels:
+  - Kick and mute are one click, sent after 5 seconds unless Undo is pressed.
+  - Ban opens a preset modal (reasons and durations).
+  - Role changes, server deletion and product deletion require typing the name.
+  - Role changes also need a fresh Steam re-auth; the API answers 428 and the page shows a banner.
+- `src/api/client.ts` gains `detail` (the backend's reason text, shown only by the panel) and `apiUrl()`. Existing pages are unchanged.
+
+Checked in the browser against a fixture API (not the real backend):
+
+- dashboard
+- server page and kick with undo toast
+- staff profile and ban modal
+- match page at 1024px
+- Staff & Roles with the re-auth banner
+- header button on desktop and the sidebar item on mobile
+
+## Phase 5 — Header button
+
+- `src/components/staff-panel-button.tsx`: same `glass-strong size-10 rounded-lg` style as the bell, sitting immediately left of it.
+  - Tooltip and aria-label: "Staff Panel".
+  - Badge: pending reports plus review queue, hidden at 0.
+  - Renders nothing until `/users/me` has answered.
+- On phones (<768px) the header copy is hidden and "Staff Panel" is the first item in the sidebar menu.
+
 ## Decisions
 
 1. **No CLAUDE.md exists** in any of the three repos. I followed the existing code patterns and `MASTER_CONTEXT.md` instead.
@@ -89,3 +142,15 @@ The shared `apiError`/`asyncRoute`/`requireUser`/`userRoute` helpers moved to `s
 15. **Report without a match id:** "once per match" falls back to "once per target per server per 2 hours".
 16. **Server deletion is a soft delete** (`deleted_at`, key cleared), so historical sessions and chat keep their server.
 17. **Role assignment** cannot grant a role at or above the actor's immunity, so a second Owner cannot be created from the panel. This is the safe reading of "nobody can act on equal or higher".
+18. **The fetch client is kept instead of axios.** It already sends `credentials: "include"` (httpOnly cookies) and the Bearer token. Adding axios would duplicate it.
+19. **The panel is a separate shell** at `/panel/*` and `/u/*`, rendered outside the site sidebar, so it can have its own navigation and work at ≤1024px. The Vite port is unchanged (5173).
+20. **Undo** delays the request by 5 seconds rather than sending it and reverting afterwards, so an undone kick never reaches the server. The timer is not tied to the page, so leaving the page does not cancel an action you chose.
+21. **Website config** is edited as versioned JSON. No site page reads `/site-config` yet; wiring it up is follow-up work.
+
+## Not done / follow-ups
+
+- **Apply the migration to a Supabase dev branch first.** It is validated on PGlite only. Creating a branch is a paid action, so it needs your OK. Then deploy the backend and frontend.
+- **CS2 plugin** (skipped). The draft is in the scratchpad if you want it later.
+- **Web announcements are stored and served** at `/announcements`, but no site banner reads them yet. The same applies to `/site-config`.
+- **Retire the old `/staffpanel` and `staff` table** once the new panel is live. Its cookie path `/api/v1/staff` does not match `/staffpanel` routes.
+- **Register servers in the panel after deploy** to get API keys.

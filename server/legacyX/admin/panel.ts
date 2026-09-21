@@ -376,6 +376,30 @@ export function createPanelRouter() {
     res.status(202).json({ ok: true, actionId });
   }));
 
+  router.get("/admin/matches/:matchId", adminRoute(["servers.view", "players.sessions.view"], async (req, res, actor) => {
+    const matchId = z.string().trim().min(1).max(80).parse(req.params.matchId);
+    const { data, error } = await db().from("player_sessions").select("*").eq("match_id", matchId).order("connected_at").limit(200);
+    legacyXError(error, "Unable to load the match");
+    const rows = (data ?? []) as DbRow[];
+    if (rows.length === 0) apiError(404, "Match was not found");
+    const serverId = rows[0]!.server_id as string;
+    const [server, chat, reports] = await Promise.all([
+      db().from("game_servers").select("id,name,map").eq("id", serverId).maybeSingle(),
+      can(actor, "players.chat.view") ? db().from("chat_logs").select("*").eq("match_id", matchId).order("sent_at", { ascending: false }).limit(200) : Promise.resolve({ data: [], error: null }),
+      can(actor, "reports.view") ? db().from("reports").select("*").eq("match_id", matchId).order("created_at", { ascending: false }).limit(100) : Promise.resolve({ data: [], error: null }),
+    ]);
+    legacyXError(server.error || chat.error || reports.error, "Unable to load the match");
+    res.setHeader("Cache-Control", "no-store");
+    res.json({
+      matchId,
+      server: server.data ? { id: server.data.id, name: server.data.name, map: server.data.map } : null,
+      live: rows.some(row => !row.disconnected_at),
+      players: await sessionRows(rows, serverId),
+      chat: ((chat.data ?? []) as DbRow[]).map(mapChat),
+      reports: await mapReports((reports.data ?? []) as DbRow[], actor),
+    });
+  }));
+
   /* -------------------------------------------------------------------------
    * Players
    * ---------------------------------------------------------------------- */

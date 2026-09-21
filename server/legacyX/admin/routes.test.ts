@@ -25,6 +25,7 @@ const staffEndpoints: Endpoint[] = [
   { method: "GET", path: `/admin/servers/${id}/chat` },
   { method: "GET", path: `/admin/servers/${id}/actions` },
   { method: "POST", path: `/admin/servers/${id}/commands` },
+  { method: "GET", path: "/admin/matches/LX-1" },
   { method: "GET", path: `/players/${steam}/moderation` },
   { method: "GET", path: `/players/${steam}/moderation/punishments` },
   { method: "POST", path: `/players/${steam}/notes` },
