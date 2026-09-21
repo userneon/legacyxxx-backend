@@ -24,33 +24,14 @@ import { legacyXDb, legacyXError } from "./supabase";
 import { resolveSteamProfileMedia } from "./steamBackground";
 import { mapMatchDetail, mapRankedRecentMatch } from "./matchDetails";
 import { syncSteamUserProfile } from "./steamProfile";
-
-type ApiRequest = Request & { legacyUser?: LegacyUser; plugin?: PluginPrincipal };
-type AsyncHandler = (req: ApiRequest, res: Response, next: NextFunction) => Promise<void>;
+import { apiError, asyncRoute, hasAccessToken, requireUser, userRoute, type ApiRequest } from "./http";
+import { createAdminRouter } from "./admin";
 
 const pageSchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(25),
   offset: z.coerce.number().int().min(0).default(0),
 });
 const leaderboardSchema = pageSchema.extend({ sort: z.enum(["rating", "kd_ratio", "experience"]).default("rating") });
-
-function apiError(statusCode: number, message: string): never {
-  const error = new Error(message) as Error & { statusCode?: number };
-  error.statusCode = statusCode;
-  throw error;
-}
-
-function asyncRoute(handler: AsyncHandler) {
-  return (req: ApiRequest, res: Response, next: NextFunction) => void handler(req, res, next).catch(next);
-}
-
-function bearer(req: Request) {
-  const value = req.header("authorization");
-  if (value?.startsWith("Bearer ")) return value.slice(7).trim();
-  const cookieToken = parseCookieHeader(req.headers.cookie ?? "").legacyx_access_token;
-  if (cookieToken) return cookieToken;
-  apiError(401, "Bearer token is required");
-}
 
 function pluginCredential(req: Request) {
   const value = req.header("authorization");
@@ -63,20 +44,6 @@ function pluginCredential(req: Request) {
 function refreshTokenFromRequest(req: Request) {
   const input = z.object({ refreshToken: z.string().min(20).optional() }).parse(req.body ?? {});
   return input.refreshToken ?? parseCookieHeader(req.headers.cookie ?? "").legacyx_refresh_token ?? apiError(401, "Refresh token is required");
-}
-
-async function requireUser(req: ApiRequest) {
-  const user = await verifyAccessToken(bearer(req));
-  req.legacyUser = user;
-  return user;
-}
-
-function userRoute(handler: (req: ApiRequest, res: Response, user: LegacyUser) => Promise<void>) {
-  return asyncRoute(async (req, res) => handler(req, res, await requireUser(req)));
-}
-
-function hasAccessToken(req: Request) {
-  return Boolean(req.header("authorization")?.startsWith("Bearer ") || parseCookieHeader(req.headers.cookie ?? "").legacyx_access_token);
 }
 
 /** Public read routes: guests are served as null, while a present-but-invalid token still 401s so the client can refresh it. */
@@ -801,6 +768,7 @@ export function createLegacyXRouter() {
     }
     next();
   });
+  router.use(createAdminRouter());
 
   const resolveUserId = async (rawIdentity: string, caller: LegacyUser) => {
     if (rawIdentity === "me") return caller.id;
