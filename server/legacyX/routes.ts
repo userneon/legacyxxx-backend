@@ -2466,7 +2466,24 @@ export function createLegacyXRouter() {
       return;
     }
     const result = await loadSkinchangerLoadout(req, textValue(user.id));
-    res.json({ entries: result?.entries ?? [] });
+    // Same entry shape the SkinBridge plugin applied from queued jobs; inactive catalog items are skipped.
+    const entries = (result?.entries ?? []).flatMap((entry) => {
+      const row = entry as DbRow;
+      const item = entry.skinchanger_catalog_items as DbRow | null;
+      if (!item) return [];
+      return [{
+        slot: row.slot,
+        slotKey: row.slot_key,
+        teamScope: row.team_scope,
+        catalogItemId: item.id,
+        category: item.category,
+        weaponDefindex: item.weapon_defindex ?? null,
+        paintId: item.paint_id ?? null,
+        model: item.model ?? null,
+        options: recordValue(row.options),
+      }];
+    });
+    res.json({ entries });
   }));
   router.post("/plugin/live-match/snapshots", pluginRoute("servers:write", async (req, res, plugin) => {
     const input = z.object({ event_id: pluginEventIdSchema, server_id: z.string().trim().min(1).max(120), live_match: liveMatchSnapshotV1Schema }).strict().parse(req.body);
