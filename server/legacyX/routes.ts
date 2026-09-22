@@ -311,7 +311,23 @@ async function writePluginAudit(plugin: PluginPrincipal, action: string, targetT
   legacyXError(error, "Unable to record plugin audit entry");
 }
 
-const profileUpdateSchema = z.object({ username: z.string().trim().min(2).max(64).optional(), avatar: z.string().max(2048).optional() });
+/** Profile boxes a player may hide from others. Penalty history, SteamID, Steam link and rank always stay public. */
+const PROFILE_HIDEABLE_SECTIONS = ["kd", "matches", "kills", "faceit", "recent_matches"] as const;
+type ProfileHideableSection = typeof PROFILE_HIDEABLE_SECTIONS[number];
+const profileUpdateSchema = z.object({
+  username: z.string().trim().min(2).max(64).optional(),
+  avatar: z.string().max(2048).optional(),
+  hiddenSections: z.array(z.enum(PROFILE_HIDEABLE_SECTIONS)).max(PROFILE_HIDEABLE_SECTIONS.length).optional(),
+});
+function hiddenSectionsValue(value: unknown): ProfileHideableSection[] {
+  if (!Array.isArray(value)) return [];
+  return PROFILE_HIDEABLE_SECTIONS.filter((section) => value.includes(section));
+}
+/** Postgres "undefined column": the privacy migration has not been applied yet. */
+function isMissingColumnError(error: unknown) {
+  return Boolean(error && typeof error === "object" && (error as { code?: unknown }).code === "42703");
+}
+const STAFF_PROFILE_ROLES: Record<string, string> = { OWNER: "Owner", MANAGER: "Manager", ADMIN: "Admin", DEVELOPER: "Developer", DESIGNER: "Designer" };
 const faceitLinkSchema = z.object({ nickname: z.string().trim().min(1).max(64).regex(/^[A-Za-z0-9_.-]+$/, "FACEIT nickname contains unsupported characters") });
 const linksSchema = z.object({ links: z.array(z.string().url().max(2048)).max(20) });
 const clanSchema = z.object({ name: z.string().trim().min(2).max(64), tag: z.string().trim().min(1).max(6), logo: z.string().max(2048).optional(), thumbnail: z.string().url().max(2048).optional(), description: z.string().max(2000).optional(), region: z.string().trim().min(2).max(64).optional(), maxPlayers: z.number().int().min(1).max(100).optional() });
@@ -589,6 +605,7 @@ function mapUserProfile(user: DbRow, links: DbRow[] = []) {
     profile.faceit = { username: textValue(user.faceit_username), elo: numberValue(user.faceit_elo), level: numberValue(user.faceit_level) };
   }
   profile.links = links.map(link => ({ url: textValue(link.url) }));
+  profile.hiddenSections = hiddenSectionsValue(user.hidden_profile_sections);
   return profile;
 }
 
@@ -797,14 +814,33 @@ export function createLegacyXRouter() {
     }
     return userIdSchema.parse(rawIdentity);
   };
+  const profileColumns = "id,steam_id,username,avatar,level,rank,faceit_username,faceit_elo,faceit_level,player_stats(*)";
   const loadProfile = async (id: string) => {
-    const [userResult, linksResult] = await Promise.all([
-      db().from("users").select("id,steam_id,username,avatar,level,rank,faceit_username,faceit_elo,faceit_level,player_stats(*)").eq("id", id).maybeSingle(),
+    const [firstUserResult, linksResult] = await Promise.all([
+      db().from("users").select(`${profileColumns},hidden_profile_sections`).eq("id", id).maybeSingle(),
       db().from("user_links").select("url").eq("user_id", id).order("created_at"),
     ]);
+    // Until legacy_x_profile_privacy.sql is applied the column is missing; profiles then have nothing hidden.
+    const userResult = isMissingColumnError(firstUserResult.error)
+      ? await db().from("users").select(profileColumns).eq("id", id).maybeSingle()
+      : firstUserResult;
     legacyXError(userResult.error || linksResult.error, "Unable to load profile");
     if (!userResult.data) apiError(404, "Player was not found");
     return { user: userResult.data as DbRow, links: (linksResult.data ?? []) as DbRow[] };
+  };
+  /** Sections the player hid; the owner always sees everything on their own profile. */
+  const hiddenSectionsFor = async (userId: string, viewerId: string) => {
+    if (userId === viewerId) return [] as ProfileHideableSection[];
+    const { data, error } = await db().from("users").select("hidden_profile_sections").eq("id", userId).maybeSingle();
+    if (isMissingColumnError(error)) return [] as ProfileHideableSection[];
+    legacyXError(error, "Unable to load profile privacy");
+    return hiddenSectionsValue((data as DbRow | null)?.hidden_profile_sections);
+  };
+  /** Website role shown on the profile, from the active staff directory entry. */
+  const profileRoleFor = async (userId: string) => {
+    const { data, error } = await db().from("staff").select("role").eq("user_id", userId).eq("status", "active").maybeSingle();
+    if (error) return "Player";
+    return STAFF_PROFILE_ROLES[textValue((data as DbRow | null)?.role)] ?? "Player";
   };
   const loadClanDetail = async (clanId: string) => {
     const [clanResult, membersResult] = await Promise.all([
@@ -1110,6 +1146,7 @@ export function createLegacyXRouter() {
   router.get("/profile/:userId", userRoute(async (req, res, user) => {
     const profile = await loadProfile(await resolveUserId(req.params.userId, user));
     const payload = mapUserProfile(profile.user, profile.links);
+    payload.role = await profileRoleFor(textValue(profile.user.id));
     const steamMedia = await resolveSteamProfileMedia(textValue(profile.user.steam_id));
     // steamBackground stays a plain image URL for older frontends; steamMedia adds animated background, avatar and frame.
     payload.steamBackground = steamMedia.background;
@@ -1117,12 +1154,17 @@ export function createLegacyXRouter() {
     res.json(payload);
   }));
   router.put("/profile/me", userRoute(async (req, res, user) => {
-    const updates = profileUpdateSchema.parse(req.body);
+    const { hiddenSections, ...fields } = profileUpdateSchema.parse(req.body);
+    const updates: Record<string, unknown> = { ...fields };
+    if (hiddenSections) updates.hidden_profile_sections = PROFILE_HIDEABLE_SECTIONS.filter((section) => hiddenSections.includes(section));
     if (Object.keys(updates).length === 0) apiError(400, "At least one profile field is required");
     const { error } = await db().from("users").update(updates).eq("id", user.id);
+    if (isMissingColumnError(error)) apiError(503, "Profile privacy is not available yet");
     legacyXError(error, "Unable to update profile");
     const profile = await loadProfile(user.id);
-    res.json(mapUserProfile(profile.user, profile.links));
+    const payload = mapUserProfile(profile.user, profile.links);
+    payload.role = await profileRoleFor(user.id);
+    res.json(payload);
   }));
   router.put("/profile/me/faceit", userRoute(async (req, res, user) => {
     const { nickname } = faceitLinkSchema.parse(req.body);
@@ -1136,6 +1178,10 @@ export function createLegacyXRouter() {
   }));
   router.get("/profile/:userId/faceit", userRoute(async (req, res, user) => {
     const profile = await loadProfile(await resolveUserId(req.params.userId, user));
+    if ((await hiddenSectionsFor(textValue(profile.user.id), user.id)).includes("faceit")) {
+      res.json({ linked: false, hidden: true });
+      return;
+    }
     const steamId = textValue(profile.user.steam_id);
     try {
       res.json(await getFaceitProfileSnapshotForSteamId(steamId));
@@ -1160,6 +1206,10 @@ export function createLegacyXRouter() {
   }));
   router.get("/profile/:userId/matches", userRoute(async (req, res, user) => {
     const userId = await resolveUserId(req.params.userId, user);
+    if ((await hiddenSectionsFor(userId, user.id)).includes("recent_matches")) {
+      res.json([]);
+      return;
+    }
     // MatchZy results carry the match id/map number needed to open match details; legacy history rows do not.
     const ranked = await db().from("rank_match_results").select("match_external_id,map_number,map_name,outcome,score_for,score_against,kills,deaths,created_at").eq("user_id", userId).order("created_at", { ascending: false }).limit(30);
     legacyXError(ranked.error, "Unable to load match history");
