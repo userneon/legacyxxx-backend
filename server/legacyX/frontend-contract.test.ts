@@ -25,12 +25,9 @@ const skinchangerEndpoints: Endpoint[] = [
   { method: "GET", path: "/skinchanger/catalog" },
   { method: "GET", path: "/skinchanger/catalog/facets" },
   { method: "GET", path: "/skinchanger/loadout" },
-  { method: "GET", path: "/skinchanger/active-server" },
   { method: "PUT", path: "/skinchanger/loadout" },
   { method: "PUT", path: "/skinchanger/loadout/entry" },
   { method: "DELETE", path: "/skinchanger/loadout/entry" },
-  { method: "POST", path: "/skinchanger/apply" },
-  { method: "GET", path: "/skinchanger/status" },
 ];
 
 const competitiveEndpoints: Endpoint[] = [

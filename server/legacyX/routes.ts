@@ -535,21 +535,6 @@ const skinchangerEntryRemovalSchema = z.object({
   slotKey: z.string().regex(/^[a-z0-9:_-]{1,96}$/),
   teamScope: skinchangerTeamScopeSchema,
 });
-const skinchangerApplySchema = z.object({ serverId: z.string().trim().min(1).max(120) });
-const skinchangerPluginSessionSchema = z.object({
-  eventId: z.string().min(8).max(180),
-  event: z.enum(["session_connected", "session_heartbeat", "session_disconnected"]),
-  serverId: z.string().trim().min(1).max(120),
-  steamId: z.string().regex(/^\d{15,20}$/),
-  playerName: z.string().trim().max(128).optional().default(""),
-});
-const skinchangerPluginAckSchema = z.object({
-  leaseToken: z.string().uuid(),
-  status: z.enum(["applied", "failed"]),
-  failureCode: z.string().trim().min(1).max(64).optional(),
-  failureDetail: z.string().trim().max(256).optional(),
-});
-
 type DbRow = Record<string, any>;
 
 function numberValue(value: unknown) {
@@ -1261,20 +1246,18 @@ export function createLegacyXRouter() {
     res.json(data ?? { categories: [], weaponClasses: [] });
   }));
 
-  router.get("/skinchanger/loadout", userRoute(async (_req, res, user) => {
+  /** The saved loadout with each entry's catalog item and accessories resolved; the same join serves the web and the plugin. */
+  const loadSkinchangerLoadout = async (req: Request, userId: string) => {
     const { data, error } = await db().from("skinchanger_loadouts")
       .select("version,updated_at")
-      .eq("user_id", user.id)
+      .eq("user_id", userId)
       .maybeSingle();
     legacyXError(error, "Unable to load skinchanger loadout");
-    if (!data) {
-      res.json({ loadout: { version: 0, updated_at: null, skinchanger_loadout_entries: [] } });
-      return;
-    }
+    if (!data) return null;
     const loadout = data as DbRow;
     const { data: entryData, error: entryError } = await db().from("skinchanger_loadout_entries")
       .select("catalog_item_id,slot,slot_key,team_scope,options")
-      .eq("user_id", user.id)
+      .eq("user_id", userId)
       .order("slot_key")
       .order("team_scope");
     legacyXError(entryError, "Unable to load skinchanger loadout entries");
@@ -1289,7 +1272,7 @@ export function createLegacyXRouter() {
     const catalogItemIds = Array.from(new Set(entries.map((entry) => textValue(entry.catalog_item_id)).filter(Boolean)));
     const catalogItemForResponse = (item: DbRow | null) => {
       if (!item) return null;
-      return { ...item, image_url: staticStorageUrl(_req, textValue(item.image_key) || null) };
+      return { ...item, image_url: staticStorageUrl(req, textValue(item.image_key) || null) };
     };
     const requestedCatalogIds = Array.from(new Set([...catalogItemIds, ...accessoryIds]));
     let catalogById = new Map<string, DbRow>();
@@ -1313,20 +1296,16 @@ export function createLegacyXRouter() {
         resolved_accessories: ids.map((id: string) => catalogById.get(id)).filter(Boolean),
       };
     });
-    res.json({ loadout: { ...loadout, skinchanger_loadout_entries: enrichedEntries } });
-  }));
+    return { loadout, entries: enrichedEntries };
+  };
 
-  router.get("/skinchanger/active-server", userRoute(async (_req, res, user) => {
-    const { data, error } = await db().from("skinchanger_server_sessions")
-      .select("server_id,player_name,connected_at,last_seen_at")
-      .eq("user_id", user.id)
-      .is("disconnected_at", null)
-      .gte("last_seen_at", new Date(Date.now() - 90_000).toISOString())
-      .order("last_seen_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-    legacyXError(error, "Unable to load active skinchanger server");
-    res.json({ session: data ?? null });
+  router.get("/skinchanger/loadout", userRoute(async (req, res, user) => {
+    const result = await loadSkinchangerLoadout(req, user.id);
+    if (!result) {
+      res.json({ loadout: { version: 0, updated_at: null, skinchanger_loadout_entries: [] } });
+      return;
+    }
+    res.json({ loadout: { ...result.loadout, skinchanger_loadout_entries: result.entries } });
   }));
 
   router.put("/skinchanger/loadout/entry", userRoute(async (req, res, user) => {
@@ -1488,32 +1467,6 @@ export function createLegacyXRouter() {
     // never make the player believe their saved look failed or roll UI state back.
     if (auditError) console.error("Unable to audit skinchanger loadout", auditError);
     res.json({ version, entryCount: entries.length });
-  }));
-
-  router.post("/skinchanger/apply", userRoute(async (req, res, user) => {
-    const input = skinchangerApplySchema.parse(req.body);
-    const { data: jobId, error } = await db().rpc("queue_skinchanger_apply", { p_user_id: user.id, p_server_id: input.serverId });
-    legacyXError(error, "Unable to queue skinchanger apply");
-    const { error: auditError } = await db().from("audit_logs").insert({
-      actor_type: "user",
-      actor_id: user.id,
-      action: "skinchanger.apply.queue",
-      target_type: "skinchanger_apply_jobs",
-      target_id: textValue(jobId),
-      metadata: { serverId: input.serverId },
-    });
-    legacyXError(auditError, "Unable to audit skinchanger apply");
-    res.status(202).json({ jobId, status: "queued" });
-  }));
-
-  router.get("/skinchanger/status", userRoute(async (_req, res, user) => {
-    const { data, error } = await db().from("skinchanger_apply_jobs")
-      .select("id,server_id,loadout_version,status,attempts,failure_code,created_at,applied_at,updated_at")
-      .eq("user_id", user.id)
-      .order("created_at", { ascending: false })
-      .limit(20);
-    legacyXError(error, "Unable to load skinchanger job status");
-    res.json({ jobs: data ?? [] });
   }));
 
   const frontendMatches = optionalUserRoute(async (req, res, user) => {
@@ -2490,49 +2443,30 @@ export function createLegacyXRouter() {
     res.json({ profile: data });
   }));
 
-  router.post("/plugin/skinchanger/sessions", pluginRoute("skinchanger:write", async (req, res, plugin) => {
-    const input = skinchangerPluginSessionSchema.parse(req.body);
-    const pluginId = req.header("x-plugin-id")?.trim() || plugin.name;
-    if (pluginId !== "legacyx-skinbridge") apiError(403, "LegacyX SkinBridge plugin identity is required");
-    const { data, error } = await db().rpc("ingest_skinchanger_session", {
-      p_event_id: input.eventId,
-      p_plugin_id: pluginId,
-      p_event_type: input.event,
-      p_server_id: input.serverId,
-      p_steam_id: input.steamId,
-      p_player_name: input.playerName,
-    });
-    legacyXError(error, "Unable to ingest skinchanger session");
-    await writePluginAudit(plugin, `skinchanger.${input.event}`, "skinchanger_server_sessions", input.steamId, { serverId: input.serverId, eventId: input.eventId });
-    res.status(200).json({ result: data ?? {} });
-  }));
+  // One request per player per second: a player spamming !rs cannot turn into database load.
+  const skinchangerPluginLoadoutRateLimit = rateLimit({
+    windowMs: 1_000,
+    limit: process.env.NODE_ENV === "test" ? 1_000 : 1,
+    standardHeaders: "draft-8",
+    legacyHeaders: false,
+    keyGenerator: (req) => `skinchanger-loadout:${typeof req.query.steam_id === "string" ? req.query.steam_id : "invalid"}`,
+    message: { error_code: "rate_limited" },
+  });
 
-  router.get("/plugin/skinchanger/jobs", pluginRoute("skinchanger:read", async (req, res, plugin) => {
-    const serverId = z.string().trim().min(1).max(120).parse(req.query.server_id);
-    const limit = z.coerce.number().int().min(1).max(100).default(20).parse(req.query.limit);
+  /** Read on demand when a player types !rs. No queue and no session: the plugin applies what this returns. */
+  router.get("/plugin/skinchanger/loadout", skinchangerPluginLoadoutRateLimit, pluginRoute("skinchanger:read", async (req, res, plugin) => {
+    const steamId = z.string().regex(/^\d{15,20}$/).parse(req.query.steam_id);
     const pluginId = req.header("x-plugin-id")?.trim() || plugin.name;
     if (pluginId !== "legacyx-skinbridge") apiError(403, "LegacyX SkinBridge plugin identity is required");
-    const { data, error } = await db().rpc("claim_skinchanger_apply_jobs", { p_server_id: serverId, p_limit: limit });
-    legacyXError(error, "Unable to claim skinchanger apply jobs");
-    await writePluginAudit(plugin, "skinchanger.jobs.claim", "skinchanger_apply_jobs", null, { serverId, count: (data ?? []).length });
-    res.json({ jobs: data ?? [] });
-  }));
-
-  router.post("/plugin/skinchanger/jobs/:jobId/ack", pluginRoute("skinchanger:write", async (req, res, plugin) => {
-    const input = skinchangerPluginAckSchema.parse(req.body);
-    const jobId = z.string().uuid().parse(req.params.jobId);
-    const pluginId = req.header("x-plugin-id")?.trim() || plugin.name;
-    if (pluginId !== "legacyx-skinbridge") apiError(403, "LegacyX SkinBridge plugin identity is required");
-    const { data, error } = await db().rpc("ack_skinchanger_apply", {
-      p_job_id: jobId,
-      p_lease_token: input.leaseToken,
-      p_status: input.status,
-      p_failure_code: input.failureCode ?? null,
-      p_failure_detail: input.failureDetail ?? null,
-    });
-    legacyXError(error, "Unable to acknowledge skinchanger apply job");
-    await writePluginAudit(plugin, `skinchanger.job.${input.status}`, "skinchanger_apply_jobs", jobId, { failureCode: input.failureCode ?? null });
-    res.status(200).json({ result: data ?? {} });
+    const { data: user, error } = await db().from("users").select("id").eq("steam_id", steamId).maybeSingle();
+    legacyXError(error, "Unable to resolve player");
+    // The plugin owns every player-facing string, so only a machine-readable code is returned.
+    if (!user) {
+      res.status(404).json({ error_code: "not_linked" });
+      return;
+    }
+    const result = await loadSkinchangerLoadout(req, textValue(user.id));
+    res.json({ entries: result?.entries ?? [] });
   }));
   router.post("/plugin/live-match/snapshots", pluginRoute("servers:write", async (req, res, plugin) => {
     const input = z.object({ event_id: pluginEventIdSchema, server_id: z.string().trim().min(1).max(120), live_match: liveMatchSnapshotV1Schema }).strict().parse(req.body);
