@@ -1,5 +1,5 @@
 const { list, value } = require('./config')
-const { rpc, readRows } = require('./supabase')
+const { rpc, readRows } = require('./rank')
 
 function registry() {
   const entries = list('RECONNECT_SERVER_REGISTRY')

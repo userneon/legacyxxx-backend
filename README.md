@@ -1,73 +1,81 @@
 # LEGACY-X Backend
 
-`legacyxxx-backend` нь **frontend-гүй**, зөвхөн API, database migration, Steam identity, CS2 plugin ingestion болон AdminPlus RCON command bridge агуулсан repository юм.
+`legacyxxx-backend` нь **frontend-гүй**, зөвхөн API, database migration, Steam identity, CS2 plugin ingestion болон AdminPlus RCON command bridge агуулсан repository юм. UI болон static asset энэ repository-д байхгүй; API нь ирээдүйн frontend, Discord automation эсвэл internal staff tooling-д зориулсан contract л гаргана.
 
 | Repository | Хариуцлага |
 |---|---|
-| `legacyxxx-backend` | Root API (`/api/v1`), auth, Supabase migrations, ranked EXP, AdminPlus RCON bridge |
-| `legacyxxx-plugins` | CounterStrikeSharp source: MatchZy + Match Core, Reconnect, Community, AdminPlus, AFK Manager, SkinBridge |
-| `legacyxxx-frontend` | React website; reads only the public/user routes of the root API |
+| `legacyxxx-backend` | API, auth, Supabase migrations, rank/EXP/clan ingestion, AdminPlus API/RCON bridge |
+| `legacyxxx-plugins` | CounterStrikeSharp source, MatchZy, AdminPlus, AFK Manager, Community plugin, server-only config |
+| `legacyxxx-frontend` | Одоогоор intentionally empty; UI хэрэгтэй болсон үед тусдаа хөгжүүлнэ |
 
 ## Runtime layout
 
 ```text
-CS2 server (MatchZy + LegacyX Match Core)
-  → POST /api/v1/plugin/match-core/events   (plugin token, x-plugin-id: legacyx-match-core)
-  → legacy_x.ingest_core_match_event          (match lifecycle, idempotent by event_id)
-  → on result_final: server/legacyX/rank      (pure TypeScript EXP calculation, RANK-SYSTEM v1.0)
-  → legacy_x.apply_competitive_match_exp      (one atomic, idempotent apply per match)
-  → competitive_player_progression / competitive_match_exp
-  → website: /api/v1/public/competitive/*
+MatchZy map_result
+  → x-plugin-secret
+  → AdminPlus API /api/plugin/matchzy/events
+  → Supabase RPC legacy_x.ingest_rank_map_result + ingest_community_map_result
+  → rating + XP/level + clan season score
 ```
 
-The plugin sends raw telemetry only; the API never trusts client-provided EXP or rank. Fun Mode never changes EXP.
-See [`docs/RANK_SYSTEM.md`](docs/RANK_SYSTEM.md) and [`docs/PLUGIN_RANKED_TELEMETRY_V2.md`](docs/PLUGIN_RANKED_TELEMETRY_V2.md).
-
-AdminPlus (`adminplus/backend`) is a separate, operator-only RCON/lookup service. It does not calculate ranks.
+AdminPlus API нь static dashboard serve хийдэггүй. Operator endpoint-ууд `x-api-secret` ашиглана; MatchZy ingestion endpoint нь тусдаа `x-plugin-secret` ашигладаг. Энэ хоёр secret заавал өөр байна.
 
 ## Local setup
 
 ```bash
-npm ci
-npm run check
-npm test
-npm run build
+pnpm install --frozen-lockfile
+pnpm check
+pnpm build
 
-npm run adminplus:install
+pnpm adminplus:install
 cp adminplus/backend/.env.example adminplus/backend/.env
-npm run adminplus:check
+pnpm adminplus:check
+pnpm adminplus:start
 ```
 
-## Database
+## Database migrations
 
-Schema `legacy_x` on Supabase. SQL files live in `supabase/`; the ranked system is defined by
-`legacy_x_competitive_rank_exp.sql` (tables, ladder, EXP → rank lookup) and `legacy_x_rank_system_v1.sql`
-(per-match history + apply function). `legacy_x_v1_cleanup.sql` removes the seasonal rank, clan, community-level
-and unused match tables — run it only after the API that no longer reads them is deployed.
-See [`docs/V1_CLEANUP_AUDIT.md`](docs/V1_CLEANUP_AUDIT.md).
+Supabase дээр дараах migration-уудыг дарааллаар apply хийнэ:
 
-## Main API contracts (`/api/v1`)
+```text
+supabase/legacy_x_adminplus.sql
+supabase/legacy_x_rank.sql
+supabase/legacy_x_progression_clans.sql
+supabase/legacy_x_monthly_rank_reset.sql
+supabase/legacy_x_reconnect.sql
+```
 
-| Endpoint | Auth | Purpose |
+`legacy_x_rank.sql` нь `season-1` season, idempotent plugin event receipt, rank state, per-map result history, rank leaderboard view болон service-role-only RPC үүсгэнэ.
+
+## API contracts
+
+| Endpoint | Auth | Зориулалт |
 |---|---|---|
-| `GET /public/competitive/leaderboard?sort=exp\|kd\|win&q=` | Optional | Ladder; K/D and win rate need 10+ matches; includes the viewer's row |
-| `GET /public/competitive/players/:userId` | None | Rank, EXP, next threshold, leaderboard position |
-| `GET /public/competitive/players/:userId/matches` | Optional | Ranked history with EXP delta and breakdown |
-| `GET /public/ranked-matches/:matchId` | None | One ranked match: score, rosters, EXP per player |
-| `GET /competitive/me/access` | User | Pro League access (unlock 1400, kept down to 1350) |
-| `GET /public/servers`, `GET /play/:mode/quick-join` | None | Live servers from reconnect heartbeats; quick join pick |
-| `GET /public/killfeed?after=` | None | In-memory live kill feed (last 50, never stored) |
-| `GET /tournaments`, `GET /tournaments/:id` | None | Current and past tournaments, teams, bracket |
-| `POST /tournaments/:id/register`, `/check-in`, `/teams/:teamId/join`, `DELETE /tournaments/:id/registration` | User | Player-based registration |
-| `POST /plugin/match-core/events` | Plugin | Match Core lifecycle; `result_final` applies EXP |
-| `POST /plugin/killfeed/events` | Plugin | Kill feed entries |
-| `POST /plugin/reconnect/events` | Plugin | Heartbeats (with `max_players`, `gotv_address`) and sessions |
-| `GET /plugin/community/players/:steamId` | Plugin | In-game `!profile`: rank and EXP |
+| `GET /health` | None | API-only runtime health |
+| `POST /api/plugin/matchzy/events` | `x-plugin-secret` | MatchZy remote event; зөвхөн final `map_result` rank update хийнэ |
+| `GET /api/rank/leaderboard` | `x-api-secret` | Season leaderboard API |
+| `GET /api/rank/players/:steamId` | `x-api-secret` | Player rank/profile API |
+| `GET /api/community/experience` | `x-api-secret` | EXP/level leaderboard |
+| `GET /api/community/clans` | `x-api-secret` | Clan season leaderboard |
+| `GET /api/community/players/:steamId` | `x-api-secret` | Staff community profile |
+| `GET /api/plugin/matchzy/community/players/:steamId` | `x-plugin-secret` | CS2 Community plugin profile lookup |
+| `GET /api/seasons/current` | `x-api-secret` | Active UTC monthly rank season |
+| `POST /api/seasons/rollover` | `x-api-secret` | Emergency manual rollover; disabled by default |
+| `GET /api/reconnect/players/:steamId` | `x-api-secret` | Private Last Played sessions for staff/backend features |
+| `POST /api/plugin/reconnect/events` | `x-plugin-secret` | Reconnect plugin server heartbeat and session events |
+| `GET /api/plugin/reconnect/players/:steamId` | `x-plugin-secret` | Reconnect plugin's private Last Played lookup |
+| `/api/players`, `/api/server`, `/api/rcon` | `x-api-secret` | AdminPlus staff/RCON actions |
+
+Rank API болон MatchZy deployment-ийн дэлгэрэнгүйг [`docs/LEADERBOARD_RANK_INTEGRATION.md`](docs/LEADERBOARD_RANK_INTEGRATION.md), EXP/Clan policy-г [`docs/COMMUNITY_PROGRESSION_CLANS.md`](docs/COMMUNITY_PROGRESSION_CLANS.md), AdminPlus API-only hardening-ийг [`docs/ADMINPLUS_API_ONLY.md`](docs/ADMINPLUS_API_ONLY.md) файлаас үзнэ үү.
+
+## Monthly rank reset
+
+Competitive rank and clan season points roll over automatically on the UTC month boundary. The API process checks once at boot and hourly thereafter; the database function is idempotent so restart, missed midnight uptime or duplicate process checks cannot create a second season. XP and level are not reset. See [`docs/MONTHLY_RANK_RESET.md`](docs/MONTHLY_RANK_RESET.md).
 
 ## Reconnect and Last Played
 
-The Reconnect plugin records private connect/disconnect sessions and server heartbeat state. A game server is accepted only when its `server_id=host:port` mapping exactly matches `RECONNECT_SERVER_REGISTRY`. See [`docs/RECONNECT_LAST_PLAYED.md`](docs/RECONNECT_LAST_PLAYED.md).
+The Reconnect plugin records private connect/disconnect sessions and server heartbeat state. A game server is accepted only when its `server_id=host:port` mapping exactly matches `RECONNECT_SERVER_REGISTRY`; the player command asks the authenticated backend for a recent, online, different server and validates the returned target before issuing a reconnect command. See [`docs/RECONNECT_LAST_PLAYED.md`](docs/RECONNECT_LAST_PLAYED.md).
 
 ## Production safety
 
-RCON port-ийг public internet-д хэзээ ч нээхгүй. `API_SECRET`, `PLUGIN_INGEST_SECRET`, `MATCH_CORE_PLUGIN_SECRET`, Supabase service role key, Discord webhook бүгд server-only `.env`/private cfg-д байна; Git commit-д оруулахгүй.
+RCON port-ийг public internet-д хэзээ ч нээхгүй. `API_SECRET`, `PLUGIN_INGEST_SECRET`, Supabase service role key, Discord webhook бүгд server-only `.env`/private cfg-д байна; Git commit-д оруулахгүй. MatchZy rank private cfg-г `legacyxxx-plugins` repository доторх `.example`-оос server дээр хуулж ашиглана.

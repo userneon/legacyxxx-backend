@@ -91,10 +91,11 @@ export function apiBodyLimit() {
   return `${boundedEnvInt("API_BODY_LIMIT_KB", 1024, 16, 5_120)}kb`;
 }
 
-export const deferredFeatureKeys = ["staffPanel"] as const;
+export const deferredFeatureKeys = ["clan", "staffPanel"] as const;
 export type DeferredFeatureKey = typeof deferredFeatureKeys[number];
 
 const deferredFeatureEnvironment: Record<DeferredFeatureKey, string> = {
+  clan: "CLAN_ENABLED",
   staffPanel: "STAFF_PANEL_ENABLED",
 };
 

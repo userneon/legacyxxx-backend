@@ -1,17 +1,34 @@
 const express = require('express')
 const { ingestCoreMatchEvent, getMatchState, getMatchParticipants, getMatchHistory } = require('../match-core')
+const { normalizeMatchzyResult, ingestMatchzyResult } = require('../rank')
+const { ingestCommunityProgression } = require('../community')
 
 const router = express.Router()
 
+async function processFinalRewards(body) {
+  const candidate = body?.result?.rank_result
+  if (!candidate || candidate.match_core_final !== true) return { status: 'skipped', reason: 'No eligible final reward payload was supplied' }
+  try {
+    const payload = normalizeMatchzyResult(candidate)
+    const [rank, progression] = await Promise.all([
+      ingestMatchzyResult('matchzy', payload),
+      ingestCommunityProgression('legacyx-community', payload),
+    ])
+    return { status: 'processed', rank, progression }
+  } catch (error) {
+    // The authoritative final result is already committed. A later idempotent final-event retry can repair rewards.
+    return { status: 'deferred', reason: error.message }
+  }
+}
 
 router.post('/events', async (req, res) => {
   const requestId = req.pluginRequestId || req.adminplusRequestId
   if (req.pluginId !== 'legacyx-match-core') return res.status(403).json({ error: 'This endpoint only accepts the legacyx-match-core plugin', requestId })
   try {
     const result = await ingestCoreMatchEvent(req.pluginId, req.body)
-    // Competitive EXP is calculated and applied only by the root API (/api/v1/plugin/match-core/events).
+    const rewards = req.body?.event_type === 'result_final' ? await processFinalRewards(req.body) : null
     const duplicate = result?.status === 'duplicate'
-    res.status(duplicate ? 200 : 202).json({ ok: true, requestId, result })
+    res.status(duplicate ? 200 : 202).json({ ok: true, requestId, result, ...(rewards ? { rewards } : {}) })
   } catch (error) {
     res.status(400).json({ error: error.message, requestId })
   }

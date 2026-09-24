@@ -4,12 +4,17 @@ const express = require('express')
 const { createRconClient, executeCommand } = require('./rcon')
 const playerRoutes = require('./routes/players')
 const serverRoutes = require('./routes/server')
+const rankRoutes = require('./routes/rank')
+const communityRoutes = require('./routes/community')
+const seasonRoutes = require('./routes/seasons')
 const reconnectRoutes = require('./routes/reconnect')
+const pluginEventRoutes = require('./routes/plugin-events')
 const matchCoreRoutes = require('./routes/match-core')
 const publicRoutes = require('./routes/public')
 const authMiddleware = require('./middleware/auth')
 const pluginAuthMiddleware = require('./middleware/plugin-auth')
 const { value, validate } = require('./config')
+const { startMonthlySeasonScheduler } = require('./seasons')
 
 const app = express()
 const { port } = validate()
@@ -24,7 +29,10 @@ app.get('/health', (_req, res) => res.json({
   service: 'legacy-x-adminplus-api',
   mode: 'api-only',
   rcon: Boolean(process.env.RCON_HOST),
+  rankIngestion: true,
+  communityProgression: true,
   matchCore: true,
+  monthlySeasonScheduler: value('LEGACYX_SEASON_SCHEDULER_ENABLED', 'true') === 'true',
   audit: value('LEGACYX_AUDIT_ENABLED', 'true') === 'true',
 }))
 
@@ -35,6 +43,7 @@ createRconClient().then(() => {
 })
 
 // Server-to-server ingestion is isolated from the operator secret. A leaked operator token cannot impersonate a game server.
+app.use('/api/plugin/matchzy', pluginAuthMiddleware, pluginEventRoutes)
 app.use('/api/plugin/reconnect', pluginAuthMiddleware, reconnectRoutes)
 app.use('/api/plugin/match-core', pluginAuthMiddleware, matchCoreRoutes)
 
@@ -42,6 +51,9 @@ app.use('/api/plugin/match-core', pluginAuthMiddleware, matchCoreRoutes)
 app.use('/api', authMiddleware)
 app.use('/api/players', playerRoutes)
 app.use('/api/server', serverRoutes)
+app.use('/api/rank', rankRoutes)
+app.use('/api/community', communityRoutes)
+app.use('/api/seasons', seasonRoutes)
 app.use('/api/reconnect', (req, res, next) => { req.pluginId = 'operator'; next() }, reconnectRoutes)
 app.use('/api/match-core', matchCoreRoutes)
 
@@ -60,9 +72,14 @@ app.post('/api/rcon', async (req, res) => {
 const server = app.listen(port, value('HOST', '127.0.0.1'), () => {
   console.log(`[AdminPlus] API-only service listening on ${value('HOST', '127.0.0.1')}:${port}`)
 })
+const stopSeasonScheduler = startMonthlySeasonScheduler({
+  onSuccess: (result) => console.log(`[AdminPlus] Monthly rank season check: ${result.status} (${result.season || 'unknown'})`),
+  onError: (error) => console.error(`[AdminPlus] Monthly rank season check failed: ${error.message}`),
+})
 
 function shutdown(signal) {
   console.log(`[AdminPlus] ${signal} received; closing HTTP server`)
+  stopSeasonScheduler()
   server.close(() => process.exit(0))
   setTimeout(() => process.exit(1), 10_000).unref()
 }

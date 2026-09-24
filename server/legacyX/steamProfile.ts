@@ -37,6 +37,22 @@ export async function fetchSteamProfile(steamId: string): Promise<SteamProfile> 
   return { username: player.personaname, avatar };
 }
 
+/**
+ * When the Steam account was created (GetPlayerSummaries.timecreated). Steam only returns it for
+ * public profiles, so null means "private or unknown" — the profile then hides the row.
+ */
+export async function fetchSteamAccountCreatedAt(steamId: string): Promise<string | null> {
+  if (!/^\d{17}$/.test(steamId)) return null;
+  try {
+    const payload = await steamRequest("ISteamUser/GetPlayerSummaries/v0002/", { steamids: steamId });
+    const player = (payload.response as { players?: Array<Record<string, unknown>> } | undefined)?.players?.[0];
+    const created = typeof player?.timecreated === "number" ? player.timecreated : null;
+    return created && created > 0 ? new Date(created * 1000).toISOString() : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function syncSteamUserProfile(steamId: string) {
   const profile = await fetchSteamProfile(steamId);
   const { data, error } = await legacyXDb()

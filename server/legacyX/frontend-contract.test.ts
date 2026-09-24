@@ -10,14 +10,15 @@ type Endpoint = { method: "GET" | "POST" | "PUT" | "DELETE"; path: string; publi
 const frontendEndpoints: Endpoint[] = [
   { method: "GET", path: "/auth/steam", public: true },
   { method: "POST", path: "/auth/logout" }, { method: "POST", path: "/auth/refresh" }, { method: "GET", path: "/auth/me" },
-  { method: "GET", path: "/profile/00000000-0000-4000-8000-000000000001", public: true }, { method: "GET", path: "/profile/00000000-0000-4000-8000-000000000001/loadout", public: true }, { method: "PUT", path: "/profile/me" }, { method: "GET", path: "/profile/me/stats" }, { method: "GET", path: "/profile/me/matches" }, { method: "PUT", path: "/profile/me/links" }, { method: "GET", path: "/profile/me/penalties" },
-  { method: "GET", path: "/public/servers", public: true }, { method: "POST", path: "/public/servers/legacyx-match-1/join", public: true }, { method: "GET", path: "/play/5v5/quick-join", public: true }, { method: "GET", path: "/public/killfeed", public: true },
-  { method: "GET", path: "/tournaments", public: true }, { method: "GET", path: "/tournaments/00000000-0000-4000-8000-000000000006", public: true },
-  { method: "POST", path: "/tournaments/00000000-0000-4000-8000-000000000006/register" }, { method: "POST", path: "/tournaments/00000000-0000-4000-8000-000000000006/check-in" }, { method: "POST", path: "/tournaments/00000000-0000-4000-8000-000000000006/teams/00000000-0000-4000-8000-000000000007/join" }, { method: "DELETE", path: "/tournaments/00000000-0000-4000-8000-000000000006/registration" },
+  { method: "GET", path: "/profile/00000000-0000-4000-8000-000000000001" }, { method: "PUT", path: "/profile/me" }, { method: "GET", path: "/profile/me/stats" }, { method: "GET", path: "/profile/me/matches" }, { method: "PUT", path: "/profile/me/links" }, { method: "GET", path: "/profile/me/penalties" },
+  { method: "GET", path: "/play/5x5/servers", public: true }, { method: "GET", path: "/play/fun/quick-join", public: true },
+  { method: "GET", path: "/servers" }, { method: "GET", path: "/servers/00000000-0000-4000-8000-000000000003" }, { method: "POST", path: "/servers/00000000-0000-4000-8000-000000000003/join" }, 
+  { method: "GET", path: "/leaderboard" }, { method: "GET", path: "/players/00000000-0000-4000-8000-000000000004" }, { method: "GET", path: "/players/leaderboard" },
+  { method: "GET", path: "/clans" }, { method: "GET", path: "/clans/00000000-0000-4000-8000-000000000005" }, { method: "GET", path: "/clans/00000000-0000-4000-8000-000000000005/members" }, { method: "POST", path: "/clans" }, { method: "PUT", path: "/clans/00000000-0000-4000-8000-000000000005" }, { method: "POST", path: "/clans/00000000-0000-4000-8000-000000000005/join" }, { method: "POST", path: "/clans/00000000-0000-4000-8000-000000000005/leave" }, { method: "DELETE", path: "/clans/00000000-0000-4000-8000-000000000005" }, { method: "GET", path: "/clans/team" },
+  { method: "GET", path: "/settings/notifications" }, { method: "PUT", path: "/settings/notifications" }, { method: "GET", path: "/profile/00000000-0000-4000-8000-000000000001/overview", public: true }, { method: "GET", path: "/tournaments", public: true }, { method: "GET", path: "/tournaments/00000000-0000-4000-8000-000000000006", public: true }, { method: "POST", path: "/tournaments/00000000-0000-4000-8000-000000000006/register" }, { method: "DELETE", path: "/tournaments/00000000-0000-4000-8000-000000000006/register" }, { method: "POST", path: "/tournaments/00000000-0000-4000-8000-000000000006/check-in" },
   { method: "GET", path: "/moderation/penalties", public: true }, { method: "GET", path: "/penalties/00000000-0000-4000-8000-000000000008", public: true }, { method: "GET", path: "/moderation/penalties/stats", public: true },
   { method: "GET", path: "/notifications" }, { method: "POST", path: "/notifications/read" }, { method: "DELETE", path: "/notifications" },
-  { method: "GET", path: "/feedback", public: true }, { method: "POST", path: "/feedback" }, { method: "GET", path: "/search/players?query=test", public: true }, { method: "GET", path: "/community/content", public: true },
-  { method: "GET", path: "/public/ranked-matches/00000000-0000-4000-8000-000000000009", public: true }, { method: "GET", path: "/public/competitive/players/00000000-0000-4000-8000-000000000001/matches", public: true },
+  { method: "GET", path: "/feedback", public: true }, { method: "POST", path: "/feedback" }, { method: "GET", path: "/search/players?query=test", public: true }, { method: "GET", path: "/search/clans?query=test" }, { method: "GET", path: "/community/content", public: true }, { method: "GET", path: "/public/matches/42/maps/1", public: true },
 ];
 
 const skinchangerEndpoints: Endpoint[] = [
@@ -48,6 +49,11 @@ let server: Server;
 let baseUrl: string;
 
 beforeAll(async () => {
+  process.env.SHOP_ENABLED = "true";
+  process.env.WALLET_ENABLED = "true";
+  process.env.CREDITS_ENABLED = "true";
+  process.env.PROMO_CODES_ENABLED = "true";
+  process.env.CLAN_ENABLED = "true";
   process.env.STAFF_PANEL_ENABLED = "true";
   const app = express();
   app.use(express.json());
@@ -60,12 +66,14 @@ afterAll(async () => { await new Promise<void>((resolve, reject) => server.close
 
 describe("frontend API endpoint inventory", () => {
   it("fails closed for deferred public feature APIs and exposes only launch booleans", async () => {
-    const previous = Object.fromEntries(["STAFF_PANEL_ENABLED"].map(name => [name, process.env[name]]));
-    Object.assign(process.env, { STAFF_PANEL_ENABLED: "false" });
+    const previous = Object.fromEntries(["CLAN_ENABLED", "STAFF_PANEL_ENABLED"].map(name => [name, process.env[name]]));
+    Object.assign(process.env, {
+      CLAN_ENABLED: "false", STAFF_PANEL_ENABLED: "false",
+    });
     try {
       const featureResponse = await fetch(`${baseUrl}/public/features`);
-      await expect(featureResponse.json()).resolves.toEqual({ features: { staffPanel: false } });
-      for (const path of ["/staffpanel/access"]) {
+      await expect(featureResponse.json()).resolves.toEqual({ features: { clan: false, staffPanel: false } });
+      for (const path of ["/clans", "/staffpanel/access"]) {
         const response = await fetch(`${baseUrl}${path}`);
         expect(response.status, path).toBe(404);
       }
@@ -77,14 +85,7 @@ describe("frontend API endpoint inventory", () => {
   });
 
   it("contains the frontend endpoint inventory", () => {
-    expect(frontendEndpoints).toHaveLength(33);
-  });
-
-  it("no longer serves the removed clan and seasonal rank APIs", async () => {
-    for (const path of ["/clans", "/search/clans?query=test", "/public/rank/leaderboard", "/public/community/experience", "/play/matches", "/servers/home-stats", "/leaderboard"]) {
-      const response = await fetch(`${baseUrl}${path}`);
-      expect(response.status, path).toBe(404);
-    }
+    expect(frontendEndpoints).toHaveLength(47);
   });
 
   it("serves public read pages to guests without demanding authentication", async () => {

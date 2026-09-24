@@ -24,7 +24,6 @@ beforeAll(async () => {
   process.env.STEAM_OPENID_ORIGIN ??= "https://legacyx.cc";
   process.env.FRONTEND_ORIGIN ??= "https://legacyx.cc";
   process.env.STAFF_PANEL_ENABLED = "true";
-  process.env.JWT_SECRET ??= "test-only-jwt-secret-with-enough-entropy-000000";
   const app = express();
   app.use(express.json());
   app.use("/api/v1", createLegacyXRouter());
@@ -48,8 +47,8 @@ describe("LEGACY-X REST API", () => {
     expect(Array.isArray(payload)).toBe(true);
   });
 
-  it("rejects unsupported leaderboard sorts", async () => {
-    const response = await fetch(`${baseUrl}/public/competitive/leaderboard?sort=rating`, { headers: await frontendAuthHeaders() });
+  it("rejects unsupported frontend leaderboard modes after authentication", async () => {
+    const response = await fetch(`${baseUrl}/leaderboard?mode=unsupported`, { headers: await frontendAuthHeaders() });
 
     expect(response.status).toBe(400);
   });

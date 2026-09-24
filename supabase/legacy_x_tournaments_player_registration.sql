@@ -1,5 +1,23 @@
--- Tournaments without clans: players register solo (auto-balanced into teams by EXP when registration closes)
--- or as a team with a captain. Applied to production as migration 20260924074146; kept here verbatim.
+-- LEGACY-X tournaments: player-based registration (clans no longer gate who can play).
+--
+-- Before: tournament_registrations(tournament_id, clan_id) and tournament_matches(clan_a_id,
+-- clan_b_id, scheduled_time text). All three tournament tables held 0 rows when this was
+-- written (verified 2026-09-24), so the old columns are dropped instead of migrated.
+--
+-- After:
+--   tournaments               + name, description, starts_at, registration_closes_at,
+--                               check_in_opens_at, max_players, team_size, winner_team_id;
+--                               next_match_time text -> timestamptz; season optional.
+--   tournament_teams          (id, tournament_id, name, captain_user_id, seed)
+--   tournament_registrations  (tournament_id, user_id, team_id?, mode solo|team, checked_in_at)
+--   tournament_matches        team_a_id / team_b_id -> tournament_teams, server_id,
+--                               scheduled_time timestamptz, score_a / score_b.
+--   balance_tournament_solo_players(tournament_id): once registration has closed, solo players
+--   are put into teams of team_size, balanced by current EXP (snake draft). Idempotent.
+
+BEGIN;
+
+-- ---------------------------------------------------------------- tournaments
 ALTER TABLE legacy_x.tournaments
   ADD COLUMN IF NOT EXISTS name text,
   ADD COLUMN IF NOT EXISTS description text,
@@ -27,11 +45,13 @@ ALTER TABLE legacy_x.tournaments
     AND (check_in_opens_at IS NULL OR starts_at IS NULL OR check_in_opens_at <= starts_at)
   );
 
+-- ---------------------------------------------------------------- teams
 CREATE TABLE IF NOT EXISTS legacy_x.tournament_teams (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   tournament_id uuid NOT NULL REFERENCES legacy_x.tournaments(id) ON DELETE CASCADE,
   name text NOT NULL CHECK (char_length(btrim(name)) BETWEEN 2 AND 32),
   captain_user_id uuid REFERENCES legacy_x.users(id) ON DELETE SET NULL,
+  -- true for teams built by balance_tournament_solo_players
   auto_balanced boolean NOT NULL DEFAULT false,
   seed integer,
   created_at timestamptz NOT NULL DEFAULT now()
@@ -42,6 +62,7 @@ CREATE INDEX IF NOT EXISTS tournament_teams_tournament_idx ON legacy_x.tournamen
 ALTER TABLE legacy_x.tournaments
   ADD COLUMN IF NOT EXISTS winner_team_id uuid REFERENCES legacy_x.tournament_teams(id) ON DELETE SET NULL;
 
+-- ---------------------------------------------------------------- registrations
 ALTER TABLE legacy_x.tournament_registrations DROP CONSTRAINT IF EXISTS tournament_reg_clan_key;
 ALTER TABLE legacy_x.tournament_registrations DROP CONSTRAINT IF EXISTS tournament_registrations_clan_id_fkey;
 ALTER TABLE legacy_x.tournament_registrations DROP COLUMN IF EXISTS clan_id;
@@ -55,16 +76,19 @@ ALTER TABLE legacy_x.tournament_registrations
 ALTER TABLE legacy_x.tournament_registrations
   DROP CONSTRAINT IF EXISTS tournament_registrations_mode_check,
   ADD CONSTRAINT tournament_registrations_mode_check CHECK (mode IN ('solo', 'team')),
+  -- a team registration always belongs to a team; a solo one gets a team only when balanced
   DROP CONSTRAINT IF EXISTS tournament_registrations_team_mode_check,
   ADD CONSTRAINT tournament_registrations_team_mode_check CHECK (mode = 'solo' OR team_id IS NOT NULL);
 
 CREATE UNIQUE INDEX IF NOT EXISTS tournament_registrations_user_key ON legacy_x.tournament_registrations (tournament_id, user_id);
 CREATE INDEX IF NOT EXISTS tournament_registrations_team_idx ON legacy_x.tournament_registrations (team_id);
 
+-- ---------------------------------------------------------------- matches
 ALTER TABLE legacy_x.tournament_matches DROP CONSTRAINT IF EXISTS tournament_matches_clan_a_id_fkey;
 ALTER TABLE legacy_x.tournament_matches DROP CONSTRAINT IF EXISTS tournament_matches_clan_b_id_fkey;
 ALTER TABLE legacy_x.tournament_matches DROP COLUMN IF EXISTS clan_a_id;
 ALTER TABLE legacy_x.tournament_matches DROP COLUMN IF EXISTS clan_b_id;
+-- team names now come from tournament_teams; a match can exist before its teams are known (TBD)
 ALTER TABLE legacy_x.tournament_matches DROP COLUMN IF EXISTS team_a;
 ALTER TABLE legacy_x.tournament_matches DROP COLUMN IF EXISTS team_b;
 ALTER TABLE legacy_x.tournament_matches DROP COLUMN IF EXISTS score;
@@ -74,7 +98,8 @@ ALTER TABLE legacy_x.tournament_matches
   ADD COLUMN IF NOT EXISTS team_b_id uuid REFERENCES legacy_x.tournament_teams(id) ON DELETE SET NULL,
   ADD COLUMN IF NOT EXISTS score_a integer,
   ADD COLUMN IF NOT EXISTS score_b integer,
-  ADD COLUMN IF NOT EXISTS server_id uuid REFERENCES legacy_x.game_servers(id) ON DELETE SET NULL;
+  -- the live server (reconnect plugin heartbeat id), not the retired game_servers table
+  ADD COLUMN IF NOT EXISTS server_id text REFERENCES legacy_x.reconnect_servers(server_id) ON DELETE SET NULL;
 
 ALTER TABLE legacy_x.tournament_matches
   ALTER COLUMN scheduled_time DROP NOT NULL,
@@ -88,6 +113,7 @@ ALTER TABLE legacy_x.tournament_matches
 
 CREATE INDEX IF NOT EXISTS tournament_matches_tournament_idx ON legacy_x.tournament_matches (tournament_id, bracket_order);
 
+-- ---------------------------------------------------------------- solo balancing
 CREATE OR REPLACE FUNCTION legacy_x.balance_tournament_solo_players(p_tournament_id uuid)
 RETURNS integer
 LANGUAGE plpgsql
@@ -110,7 +136,7 @@ BEGIN
     RAISE EXCEPTION 'tournament % not found', p_tournament_id USING ERRCODE = 'P0002';
   END IF;
   IF v_tournament.registration_closes_at IS NULL OR v_tournament.registration_closes_at > now() THEN
-    RETURN 0;
+    RETURN 0; -- registration still open: nothing to balance yet
   END IF;
 
   SELECT count(*) INTO v_solo_count
@@ -118,7 +144,7 @@ BEGIN
   WHERE tournament_id = p_tournament_id AND mode = 'solo' AND team_id IS NULL;
   v_team_count := v_solo_count / v_tournament.team_size;
   IF v_team_count = 0 THEN
-    RETURN 0;
+    RETURN 0; -- fewer solos than one team: they stay unassigned (shown as "Waiting for a team")
   END IF;
 
   SELECT count(*) INTO v_existing FROM legacy_x.tournament_teams WHERE tournament_id = p_tournament_id AND auto_balanced;
@@ -129,6 +155,7 @@ BEGIN
     v_team_ids := v_team_ids || v_team_id;
   END LOOP;
 
+  -- Snake draft by EXP (highest first) so every team gets a similar total.
   FOR r IN
     SELECT reg.id, coalesce(p.current_exp, 1000) AS exp
     FROM legacy_x.tournament_registrations reg
@@ -143,6 +170,7 @@ BEGIN
     v_index := v_index + 1;
   END LOOP;
 
+  -- The highest-EXP player of each balanced team captains it.
   UPDATE legacy_x.tournament_teams t
   SET captain_user_id = (
     SELECT reg.user_id FROM legacy_x.tournament_registrations reg
@@ -154,8 +182,12 @@ BEGIN
 END;
 $$;
 
+-- ---------------------------------------------------------------- access
+-- Browsers only reach these tables through the Root API (service_role), like the rest of legacy_x.
 ALTER TABLE legacy_x.tournament_teams ENABLE ROW LEVEL SECURITY;
 REVOKE ALL ON TABLE legacy_x.tournament_teams FROM anon, authenticated;
 GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE legacy_x.tournament_teams TO service_role;
 REVOKE ALL ON FUNCTION legacy_x.balance_tournament_solo_players(uuid) FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION legacy_x.balance_tournament_solo_players(uuid) TO service_role;
+
+COMMIT;

@@ -1,12 +1,26 @@
--- Legacy-X rank system v1.0 (docs/design RANK-SYSTEM.md): 18 skill-based ranks, everyone starts at 1000 EXP,
--- one atomic, idempotent apply function per match. The EXP arithmetic lives in the API
--- (server/legacyX/rank/exp.ts); this function only applies the calculated deltas.
--- Applied to production as migration 20260924070438 (legacy_x_rank_system_v1); kept here verbatim.
+-- Legacy-X rank system v1.0 (docs/design/RANK-SYSTEM.md).
+--
+-- One number per player — EXP — that goes up and down after each ranked match.
+-- The formula lives in TypeScript (server/legacyX/ranking.ts); this migration gives it:
+--   * the new 18-rank ladder (Recruit I … Legacy, 0 … 2300),
+--   * a per-player, per-match EXP snapshot (exp_before / exp_delta / exp_after / exp_breakdown),
+--   * one SQL function that applies every delta of a match atomically and idempotently,
+--   * everyone starting at 1000 EXP (Operator I).
+-- It retires the old "+500 per win, never lose EXP" ingestion and its action ledger.
+
+BEGIN;
+
+-- ── 1. Rank ladder ────────────────────────────────────────────────────────────
+-- Two passes because slug, display_name and minimum_exp are each UNIQUE.
 UPDATE legacy_x.competitive_rank_definitions
 SET slug = 'tmp-' || rank_id, display_name = 'tmp ' || rank_id, minimum_exp = 100000 + rank_id;
 
 UPDATE legacy_x.competitive_rank_definitions d
-SET slug = v.slug, display_name = v.display_name, minimum_exp = v.minimum_exp, image_key = v.image_key, pro_league_eligible = v.rank_id >= 11
+SET slug = v.slug,
+    display_name = v.display_name,
+    minimum_exp = v.minimum_exp,
+    image_key = v.image_key,
+    pro_league_eligible = v.rank_id >= 11
 FROM (VALUES
   (1,  'recruit-i',    'Recruit I',    0,    'rank-01'),
   (2,  'recruit-ii',   'Recruit II',   600,  'rank-02'),
@@ -29,12 +43,14 @@ FROM (VALUES
 ) AS v(rank_id, slug, display_name, minimum_exp, image_key)
 WHERE d.rank_id = v.rank_id;
 
+-- ── 2. Progression: start at 1000, keep deaths for K/D ranking ───────────────
 ALTER TABLE legacy_x.competitive_player_progression
   ALTER COLUMN current_exp SET DEFAULT 1000,
   ALTER COLUMN current_rank_id SET DEFAULT 7,
   ADD COLUMN IF NOT EXISTS deaths INTEGER NOT NULL DEFAULT 0 CHECK (deaths >= 0),
   ADD COLUMN IF NOT EXISTS draws INTEGER NOT NULL DEFAULT 0 CHECK (draws >= 0);
 
+-- Launch: every player starts at 1000 EXP / Operator I (progression was empty, nothing is lost).
 UPDATE legacy_x.competitive_player_progression
 SET current_exp = 1000, current_rank_id = 7, pro_league_unlocked = false, updated_at = now();
 INSERT INTO legacy_x.competitive_player_progression (user_id, current_exp, current_rank_id)
@@ -42,6 +58,7 @@ SELECT u.id, 1000, 7 FROM legacy_x.users u
 ON CONFLICT (user_id) DO NOTHING;
 UPDATE legacy_x.users SET rank = 'Operator I', updated_at = now();
 
+-- ── 3. Per-player EXP snapshot of each ranked match ──────────────────────────
 CREATE TABLE IF NOT EXISTS legacy_x.competitive_match_exp (
   event_id TEXT NOT NULL REFERENCES legacy_x.competitive_event_receipts(event_id) ON DELETE CASCADE,
   match_id UUID NOT NULL REFERENCES legacy_x.core_matches(id) ON DELETE RESTRICT,
@@ -71,17 +88,38 @@ ALTER TABLE legacy_x.competitive_event_receipts
   ADD COLUMN IF NOT EXISTS calculation_version TEXT,
   ADD COLUMN IF NOT EXISTS summary JSONB;
 
+-- ── 4. Apply one match: receipt + every player's delta, atomically, once ─────
+-- p_players: [{ user_id, team_key, outcome, exp_before, exp_delta, exp_breakdown, counts_as_ranked,
+--              pro_league_unlocked, kills, deaths, assists, headshot_kills, stats }]
+-- The EXP was computed from exp_before; if any player's EXP moved since, the call fails with
+-- 40001 so the caller recalculates instead of applying a stale delta.
 CREATE OR REPLACE FUNCTION legacy_x.apply_competitive_match_exp(
-  p_plugin_id TEXT, p_event_id TEXT, p_match_id UUID, p_calculation_version TEXT, p_summary JSONB, p_players JSONB
+  p_plugin_id TEXT,
+  p_event_id TEXT,
+  p_match_id UUID,
+  p_calculation_version TEXT,
+  p_summary JSONB,
+  p_players JSONB
 ) RETURNS JSONB
 LANGUAGE plpgsql
 SECURITY DEFINER
 SET search_path TO 'legacy_x', 'public'
 AS $$
 DECLARE
-  v_player JSONB; v_user_id UUID; v_before INTEGER; v_delta INTEGER; v_after INTEGER; v_current INTEGER;
-  v_prev_unlocked BOOLEAN; v_rank_before SMALLINT; v_rank_after SMALLINT; v_rank_name TEXT;
-  v_counts BOOLEAN; v_outcome TEXT; v_unlocked BOOLEAN; v_applied INTEGER := 0;
+  v_player JSONB;
+  v_user_id UUID;
+  v_before INTEGER;
+  v_delta INTEGER;
+  v_after INTEGER;
+  v_current INTEGER;
+  v_prev_unlocked BOOLEAN;
+  v_rank_before SMALLINT;
+  v_rank_after SMALLINT;
+  v_rank_name TEXT;
+  v_counts BOOLEAN;
+  v_outcome TEXT;
+  v_unlocked BOOLEAN;
+  v_applied INTEGER := 0;
 BEGIN
   IF p_plugin_id <> 'legacyx-match-core' THEN
     RAISE EXCEPTION 'Only legacyx-match-core may apply competitive EXP' USING ERRCODE = '22023';
@@ -119,6 +157,7 @@ BEGIN
     v_after := GREATEST(0, v_before + v_delta);
     SELECT rank_id INTO v_rank_before FROM legacy_x.competitive_rank_for_exp(v_before);
     SELECT rank_id, display_name INTO v_rank_after, v_rank_name FROM legacy_x.competitive_rank_for_exp(v_after);
+    -- Pro League opens at 1400 and is only taken away below 1350.
     v_unlocked := v_after >= 1400 OR (v_prev_unlocked AND v_after >= 1350);
 
     INSERT INTO legacy_x.competitive_match_exp (
@@ -146,6 +185,7 @@ BEGIN
       updated_at = now()
     WHERE user_id = v_user_id;
 
+    -- Display-only copy of the rank name on the user row.
     UPDATE legacy_x.users SET rank = v_rank_name, updated_at = now() WHERE id = v_user_id;
     v_applied := v_applied + 1;
   END LOOP;
@@ -160,6 +200,7 @@ $$;
 REVOKE ALL ON FUNCTION legacy_x.apply_competitive_match_exp(TEXT, TEXT, UUID, TEXT, JSONB, JSONB) FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION legacy_x.apply_competitive_match_exp(TEXT, TEXT, UUID, TEXT, JSONB, JSONB) TO service_role;
 
+-- ── 5. Read models: players without a row still show as 1000 / Operator I ────
 DROP VIEW IF EXISTS legacy_x.competitive_leaderboard;
 CREATE VIEW legacy_x.competitive_leaderboard WITH (security_invoker = true) AS
 WITH base AS (
@@ -217,6 +258,9 @@ LEFT JOIN legacy_x.competitive_rank_definitions next_d ON next_d.rank_id = d.ran
 
 GRANT SELECT ON legacy_x.competitive_leaderboard, legacy_x.competitive_player_profiles TO service_role;
 
+-- ── 6. Retire the old ingestion ──────────────────────────────────────────────
 DROP FUNCTION IF EXISTS legacy_x.ingest_competitive_match_result(TEXT, TEXT, JSONB);
 DROP FUNCTION IF EXISTS legacy_x.competitive_metric(JSONB, TEXT, INTEGER);
 DROP TABLE IF EXISTS legacy_x.competitive_exp_ledger;
+
+COMMIT;
