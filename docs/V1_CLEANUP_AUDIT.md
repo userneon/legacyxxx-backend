@@ -15,7 +15,8 @@ transaction, not applied).
 | `matches`, `match_favorites`, `player_match_history`, enums `match_status`, `play_mode`, `match_result`, fn `ingest_player_match_result` | 0 | `/play/matches*`, `/plugin/matches*`, `/plugin/player-match-history`; no plugin calls them | Play page now reads live reconnect heartbeats; routes removed; objects dropped |
 | enums `payment_method`, `shop_rarity`, `wallet_tx_type` | — | none (tables were dropped on 2026-09-20) | dropped |
 
-Added: `users.notification_prefs jsonb` (Settings → Notifications).
+Added: `users.notification_prefs jsonb` (Settings → Notifications). Changed: `users_hidden_profile_sections_known` also
+accepts `loadout` (Profile → "What others can see" → Loadout).
 
 Kept on purpose: `player_stats` (played hours in the ladder, profile stats), `match_rounds` (round timeline; no
 writer yet), `game_servers` (staff panel, tournament matches), `community_partners/creators` (community content),
