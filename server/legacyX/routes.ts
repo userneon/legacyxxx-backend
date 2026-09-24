@@ -1185,12 +1185,19 @@ export function createLegacyXRouter() {
     }
     const loadout = await loadSkinchangerLoadout(req, userId);
     const entries = ((loadout?.entries ?? []) as DbRow[]).filter(entry => entry.skinchanger_catalog_items);
-    const showcase = [["knife", (key: string) => key === "knife"], ["gloves", (key: string) => key === "gloves"], ["ak47", (key: string) => /ak-?47$/.test(key)], ["awp", (key: string) => /awp$/.test(key)]] as const;
+    // Slot keys carry the weapon defindex (weapon:7, knife:507), so match on slot and the catalog weapon class.
+    const weaponClass = (entry: DbRow) => textValue(recordValue(entry.skinchanger_catalog_items).weapon_class);
+    const showcase = [
+      ["knife", (entry: DbRow) => textValue(entry.slot) === "knife"],
+      ["gloves", (entry: DbRow) => textValue(entry.slot) === "glove"],
+      ["ak47", (entry: DbRow) => textValue(entry.slot) === "weapon" && weaponClass(entry) === "AK-47"],
+      ["awp", (entry: DbRow) => textValue(entry.slot) === "weapon" && weaponClass(entry) === "AWP"],
+    ] as const;
     const onSide = (side: "t" | "ct") => entries.filter(entry => textValue(entry.team_scope) === "all" || textValue(entry.team_scope) === side);
     const side = onSide("ct").length > onSide("t").length ? "ct" : "t";
     const sideEntries = onSide(side);
     const items = showcase.flatMap(([slot, matches]) => {
-      const pick = sideEntries.filter(entry => matches(textValue(entry.slot_key))).sort((a, b) => Number(textValue(b.team_scope) === side) - Number(textValue(a.team_scope) === side))[0];
+      const pick = sideEntries.filter(entry => matches(entry)).sort((a, b) => Number(textValue(b.team_scope) === side) - Number(textValue(a.team_scope) === side))[0];
       const item = pick ? recordValue(pick.skinchanger_catalog_items) : null;
       return item ? [{ slot, name: textValue(item.display_name), imageUrl: textValue(item.image_url) || null }] : [];
     });
