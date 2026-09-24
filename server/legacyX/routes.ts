@@ -372,6 +372,9 @@ const liveMatchPlayerSchema = z.object({
   rank_image_key: z.string().trim().regex(/^rank-(0[1-9]|1[0-8])$/).nullable().optional(),
   adr: z.coerce.number().finite().min(0).max(999).nullable().optional(),
   ping: z.coerce.number().int().min(0).max(1_000).nullable().optional(),
+  kills: z.coerce.number().int().min(0).max(999).nullable().optional(),
+  deaths: z.coerce.number().int().min(0).max(999).nullable().optional(),
+  assists: z.coerce.number().int().min(0).max(999).nullable().optional(),
 }).strict();
 export const liveMatchSnapshotV1Schema = z.object({
   schema_version: z.literal(1),
@@ -536,10 +539,6 @@ function firstRow(value: unknown): DbRow | null {
   return value && typeof value === "object" ? value as DbRow : null;
 }
 
-function statsRow(user: DbRow) {
-  return firstRow(user.player_stats) ?? {};
-}
-
 function mapUserProfile(user: DbRow, links: DbRow[] = []) {
   const profile: Record<string, unknown> = {
     id: textValue(user.id),
@@ -563,15 +562,6 @@ function mapProfileStats(stats: DbRow) {
 }
 
 type ModerationStatus = "Banned" | "Muted" | "Clear";
-
-function mapLeaderFromUser(user: DbRow, index: number) {
-  const stats = statsRow(user);
-  return { id: textValue(user.id), steamId: textValue(user.steam_id), rank: index + 1, name: textValue(user.username), level: numberValue(user.level), experience: numberValue(stats.experience), kills: numberValue(stats.kills), deaths: numberValue(stats.deaths), kd: numberValue(stats.kd_ratio), headshots: numberValue(stats.headshots), playedHours: numberValue(stats.played_hours), lastPlayed: timestampValue(stats.last_played_at), avatar: textValue(user.avatar) };
-}
-
-
-
-
 
 function mapPenalty(penalty: DbRow, adminProfiles: Map<string, { steamId: string; avatar: string }> = new Map(), moderationStatuses: Map<string, ModerationStatus> = new Map()) {
   const user = firstRow(penalty.users) ?? {};
@@ -773,13 +763,23 @@ export function createLegacyXRouter() {
       ? await db().from("reconnect_servers").select("server_id,connect_address,display_name,current_map,current_mode,player_count,last_heartbeat_at").order("display_name").limit(100)
       : full;
     legacyXError(result.error, "Unable to load public servers");
+    // Fresh live snapshots (same 90s window as the live-match route) give the cards their state, score and round.
+    const snapshots = await db().schema("legacy_x").from("server_live_match_snapshots").select("server_id,state,round_number,score_t,score_ct,reported_at");
+    const liveByServer = new Map<string, { state: string; round: number | null; score: { t: number; ct: number } | null }>();
+    for (const row of (snapshots.error ? [] : snapshots.data ?? []) as DbRow[]) {
+      const reportedAt = Date.parse(textValue(row.reported_at));
+      if (!Number.isFinite(reportedAt) || Date.now() - reportedAt > 90_000) continue;
+      const t = typeof row.score_t === "number" ? row.score_t : null;
+      const ct = typeof row.score_ct === "number" ? row.score_ct : null;
+      liveByServer.set(textValue(row.server_id), { state: textValue(row.state), round: typeof row.round_number === "number" ? row.round_number : null, score: t !== null && ct !== null ? { t, ct } : null });
+    }
     return ((result.data ?? []) as DbRow[]).map(server => {
       const heartbeat = new Date(String(server.last_heartbeat_at ?? "")).getTime();
       const players = numberValue(server.player_count);
       const mode = serverModeKind(textValue(server.current_mode));
       const maxPlayers = numberValue(server.max_players) || (mode === "fun" ? 16 : 10);
       const online = Number.isFinite(heartbeat) && Date.now() - heartbeat <= 90_000;
-      return { id: textValue(server.server_id), name: textValue(server.display_name) || textValue(server.server_id), map: textValue(server.current_map) || "Unknown", players, maxPlayers, mode, rawMode: textValue(server.current_mode) || null, ping: 0, status: online ? (players >= maxPlayers ? "full" : "online") : "offline", connectAddress: textValue(server.connect_address), gotvAddress: textValue(server.gotv_address) || null, lastHeartbeatAt: textValue(server.last_heartbeat_at) || null };
+      return { id: textValue(server.server_id), name: textValue(server.display_name) || textValue(server.server_id), map: textValue(server.current_map) || "Unknown", players, maxPlayers, mode, rawMode: textValue(server.current_mode) || null, ping: 0, status: online ? (players >= maxPlayers ? "full" : "online") : "offline", connectAddress: textValue(server.connect_address), gotvAddress: textValue(server.gotv_address) || null, lastHeartbeatAt: textValue(server.last_heartbeat_at) || null, live: online ? liveByServer.get(textValue(server.server_id)) ?? null : null };
     });
   };
   const ingestLiveMatchSnapshot = async (pluginId: string, eventId: string, serverId: string, snapshot: z.infer<typeof liveMatchSnapshotV1Schema>) => {
@@ -845,6 +845,9 @@ export function createLegacyXRouter() {
         rankImageKey: player.rank_image_key ?? null,
         adr: player.adr ?? null,
         ping: player.ping ?? null,
+        kills: player.kills ?? null,
+        deaths: player.deaths ?? null,
+        assists: player.assists ?? null,
       }))
       : [];
     const nullableNumber = (value: unknown) => typeof value === "number" && Number.isFinite(value) ? value : null;
@@ -1522,13 +1525,27 @@ export function createLegacyXRouter() {
 
 
   router.get("/moderation/penalties", asyncRoute(async (req, res) => {
-    const filters = z.object({ type: penaltyTypeSchema.optional(), query: z.string().trim().min(1).max(64).optional() }).parse(req.query);
+    const filters = z.object({
+      type: penaltyTypeSchema.optional(),
+      /** Player name, or a SteamID64 (the website extracts it from a pasted profile link). */
+      query: z.string().trim().min(1).max(64).optional(),
+      /** Issuing admin (name or SteamID64): the staff profile's "Penalties issued" link. */
+      admin: z.string().trim().min(1).max(64).optional(),
+    }).parse(req.query);
     let query = db().from("penalties").select("*,users!penalties_user_id_fkey(username,steam_id,avatar)").order("created_at", { ascending: false });
     if (filters.type) query = query.eq("type", filters.type);
     const { data, error } = await query;
     legacyXError(error, "Unable to load penalties");
-    const penalties = await mapPenaltiesWithProfileIdentities((data ?? []) as DbRow[], db());
-    res.json(filters.query ? penalties.filter(penalty => penalty.player.toLowerCase().includes(filters.query!.toLowerCase())) : penalties);
+    let penalties = await mapPenaltiesWithProfileIdentities((data ?? []) as DbRow[], db());
+    if (filters.query) {
+      const needle = filters.query.toLowerCase();
+      penalties = penalties.filter(penalty => penalty.player.toLowerCase().includes(needle) || penalty.playerSteamId === filters.query);
+    }
+    if (filters.admin) {
+      const needle = filters.admin.toLowerCase();
+      penalties = penalties.filter(penalty => penalty.admin.toLowerCase() === needle || penalty.adminSteamId === filters.admin);
+    }
+    res.json(penalties);
   }));
   router.get("/moderation/penalties/stats", asyncRoute(async (_req, res) => {
     const { data, error } = await db().from("penalties").select("type,is_permanent,is_unbanned");
@@ -1570,9 +1587,31 @@ export function createLegacyXRouter() {
 
   router.get("/search/players", asyncRoute(async (req, res) => {
     const input = z.object({ query: z.string().trim().min(1).max(64) }).parse(req.query);
-    const { data, error } = await db().from("users").select("id,steam_id,username,avatar,level,player_stats(*)").ilike("username", `%${input.query}%`).order("username");
+    // A SteamID64 (the website extracts it from pasted profile links) matches exactly; anything else is a name search.
+    const isSteamId = /^\d{15,20}$/.test(input.query);
+    const pattern = input.query.replace(/[\\%_]/g, (char) => `\\${char}`);
+    let query = db().from("competitive_leaderboard").select("user_id,steam_id,username,avatar,rank_id,matches_completed,wins,kills,deaths,kd_ratio,win_rate,played_hours,last_match_at");
+    query = isSteamId ? query.eq("steam_id", input.query) : query.ilike("username", `%${pattern}%`);
+    const { data, error } = await query.order("username").limit(60);
     legacyXError(error, "Unable to search players");
-    res.json({ players: ((data ?? []) as DbRow[]).map(mapLeaderFromUser) });
+    const rows = (data ?? []) as DbRow[];
+    const statuses = await resolveModerationStatuses(rows.map(row => textValue(row.user_id)), db());
+    res.json({ players: rows.map(row => ({
+      id: textValue(row.user_id),
+      steamId: textValue(row.steam_id),
+      name: textValue(row.username),
+      avatar: textValue(row.avatar),
+      rankId: numberValue(row.rank_id),
+      kills: numberValue(row.kills) ?? 0,
+      deaths: numberValue(row.deaths) ?? 0,
+      kd: numberValue(row.kd_ratio) ?? 0,
+      matches: numberValue(row.matches_completed) ?? 0,
+      wins: numberValue(row.wins) ?? 0,
+      winRate: numberValue(row.win_rate) ?? 0,
+      playedHours: numberValue(row.played_hours) ?? 0,
+      lastPlayed: textValue(row.last_match_at) || null,
+      moderationStatus: statuses.get(textValue(row.user_id)) ?? "Clear",
+    })) });
   }));
   router.get("/community/content", asyncRoute(async (_req, res) => {
     const [creators, partners] = await Promise.all([

@@ -86,7 +86,7 @@ export function createTournamentRouter() {
     const [teamsResult, registrationsResult, matchesResult] = await Promise.all([
       db().from("tournament_teams").select("id,name,captain_user_id,auto_balanced,seed").eq("tournament_id", tournamentId).order("seed", { nullsFirst: false }).order("created_at"),
       db().from("tournament_registrations").select("user_id,team_id,mode,checked_in_at,created_at,users(id,steam_id,username,avatar,competitive_player_progression(current_exp))").eq("tournament_id", tournamentId).order("created_at"),
-      db().from("tournament_matches").select("id,round,bracket_order,status,map,scheduled_time,team_a_id,team_b_id,score_a,score_b,server_id").eq("tournament_id", tournamentId).order("bracket_order"),
+      db().from("tournament_matches").select("id,round,bracket_order,status,map,scheduled_time,team_a_id,team_b_id,score_a,score_b,server_id,game_servers(name,ip_address,port)").eq("tournament_id", tournamentId).order("bracket_order"),
     ]);
     legacyXError(teamsResult.error || registrationsResult.error || matchesResult.error, "Unable to load tournament");
     const registrations = (registrationsResult.data ?? []) as Row[];
@@ -105,7 +105,10 @@ export function createTournamentRouter() {
     }));
     const teamName = new Map(teams.map(team => [team.id, team.name]));
     const side = (id: unknown) => (text(id) ? { id: text(id), name: teamName.get(text(id)) ?? "TBD" } : null);
-    const matches = ((matchesResult.data ?? []) as Row[]).map(match => ({
+    const matches = ((matchesResult.data ?? []) as Row[]).map(match => {
+      const server = one(match.game_servers);
+      const address = text(server.ip_address) && numberOrNull(server.port) ? `${text(server.ip_address)}:${numberOrNull(server.port)}` : null;
+      return {
       id: text(match.id),
       round: text(match.round),
       order: numberOrNull(match.bracket_order) ?? 0,
@@ -117,7 +120,10 @@ export function createTournamentRouter() {
       scoreA: numberOrNull(match.score_a),
       scoreB: numberOrNull(match.score_b),
       serverId: text(match.server_id) || null,
-    }));
+      serverName: text(server.name) || null,
+      connectAddress: address,
+    };
+    });
     const own = viewer ? registrations.find(row => text(row.user_id) === viewer.id) : undefined;
     res.json({
       tournament: mapTournament(tournament, registrations.length, tournament.winner_team_id ? { id: text(tournament.winner_team_id), name: teamName.get(text(tournament.winner_team_id)) ?? "" } : null),
