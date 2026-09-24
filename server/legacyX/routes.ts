@@ -234,14 +234,8 @@ function staticStorageUrl(req: Request, key: string | null | undefined) {
   }
   const configuredBase = process.env.STATIC_ASSET_BASE_URL?.trim().replace(/\/$/, "");
   const encodedKey = key.split("/").map(encodeURIComponent).join("/");
-  if (configuredBase) return `${configuredBase}/${encodedKey}`;
-
-  // Development-only fallback. Production runtime validation requires
-  // STATIC_ASSET_BASE_URL so catalog images remain direct static/CDN requests.
-  const protocol = req.header("x-forwarded-proto")?.split(",")[0]?.trim() || req.protocol;
-  const host = req.get("host");
-  if (!host) return null;
-  return `${protocol}://${host}/manus-storage/${encodedKey}`;
+  // Production runtime validation requires STATIC_ASSET_BASE_URL; without it there is no image host.
+  return configuredBase ? `${configuredBase}/${encodedKey}` : null;
 }
 
 async function writePluginAudit(plugin: PluginPrincipal, action: string, targetType: string, targetId: string | null, metadata: Record<string, unknown>) {
