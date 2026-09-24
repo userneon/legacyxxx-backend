@@ -38,6 +38,17 @@ references `core_matches` and is not deferrable, so **every `match_created` even
   the monthly season scheduler; shared Supabase helpers moved to `supabase.js`.
 - A stray `@@` diff marker in `adminplus/backend/.env.example`.
 
+## Applied to production on 2026-09-24
+
+`supabase/legacy_x_v1_safe_fixes.sql` (migration `legacy_x_v1_safe_fixes`), safe for both the previous and the new API:
+- `ingest_core_match_event` stores the match row before its event row. Before this, every `match_created` failed
+  `core_match_events_match_id_fkey`, so production had 0 Match Core matches. Checked with a rolled-back dry run
+  (created, duplicate, event linked, season still filled for the previous API).
+- `users.notification_prefs` and the `loadout` privacy value.
+
+`legacy_x_v1_cleanup.sql` (the drops) is **not** applied: on 2026-09-24 the live API still read `matches` and
+`community_clan_leaderboard`. Run it only after the new API is live and those reads have stopped.
+
 ## Deploy order
 
 1. Deploy the API (and AdminPlus) from this change.
