@@ -60,32 +60,42 @@ lobby-relative `score` for everyone and recorded in `exp_breakdown.omittedTerms`
 Validity (`finished_normally`, `human_players_at_end`, `total_rounds`) and `rounds_played` / `left_early` are
 required: without them a match cannot be judged, so the payload is rejected.
 
-## What the current plugin build sends (gap list)
+## What the plugins send (legacyxxx-plugins, branch `claude/sharp-bohr-or0xkm`)
 
-The `LegacyXMatchCore.cs` build in `legacyxxx-plugins` at the time of this change sends only the old
-`rank_result` (MatchZy `map_result` shape) and **no `competitive_result`**, so no match changes EXP until the
-plugin is updated. Field availability from CS2 `ActionTrackingServices.MatchStats`:
+`LegacyX-MatchZy/LegacyXRankTelemetry.cs` builds `competitive_result` v2 for `result_final`. Team keys are the
+Match Core keys (team1 = the side that started CT); MatchZy's own team order is mapped onto them.
 
-| Field | Source available in CS2 | Status in current build |
+| Field | Source | Status |
 |---|---|---|
-| kills / deaths / assists / headshot_kills | `MatchStats` | sent (in `rank_result`) |
-| entry_kills | `MatchStats.EntryWins` | collected but hardcoded `0` (`first_kills_*`) |
+| kills / deaths / assists / headshot_kills | `MatchStats` (kept when a player disconnects) | sent |
+| entry_kills | `MatchStats.EntryWins` | sent |
 | rounds_3k / 4k / 5k | `MatchStats.Enemy3Ks/4Ks/5Ks` | sent |
-| clutches_won | `MatchStats.I1v1Wins + I1v2Wins` | only 1v1/1v2; 1v3+ hardcoded `0` |
-| clutches_won_1v3_plus | needs own round-end tracking | **missing** |
-| bomb_plants / bomb_defuses | `EventBombPlanted` / `EventBombDefused` | hardcoded `0` → **missing** |
-| rounds_played (per player) | round-start roster tracking | sends match total for everyone → **missing** |
-| left_early / left_at_round | Match Core disconnect + rejoin window | tracked in Match Core, **not sent** |
-| human_players_at_end, finished_normally, mode | server state / `LEGACYX_SERVER_MODE` | **not sent** |
-| fill (per player) | Match Core slots | fills are excluded from the payload instead of flagged |
+| clutches_won / clutches_won_1v3_plus | last player alive per side at death time, won round | sent |
+| bomb_plants / bomb_defuses | `EventBombPlanted` / `EventBombDefused` | sent |
+| rounds_played (per player) | +1 per round end while on T/CT | sent |
+| left_early / left_at_round | disconnect round; cleared on return | sent |
+| fill | not an original Match Core participant | sent |
+| mvps | `player.MVPs` | sent |
+| human_players_at_end, total_rounds, mode | connected humans, map rounds, `LEGACYX_SERVER_MODE` | sent |
+| finished_normally | `true` from the normal series end | sent (forfeits/cancellations don't reach `result_final`) |
+| short_handed_rounds | not sent; the API derives it from `left_at_round` | derived |
+
+`unavailable_fields` is empty: every optional counter is reported.
 
 ## Kill feed
 
 `POST /api/v1/plugin/killfeed/events` (same token): one object or an array of up to 50:
 `{ event_id, server_id, attacker_steam_id?, attacker_name, victim_steam_id?, victim_name, weapon, headshot, timestamp }`.
-Kills are held in memory only (last 50) and are never stored. The current plugin build does not send kills yet.
+Kills are held in memory only (last 50) and are never stored. `LegacyX-Reconnect` sends them in batches every
+2 seconds (`LEGACYX_RECONNECT_KILLFEED_ENABLED`, default on).
 
 ## Server capacity
 
 `server_heartbeat` on `/api/v1/plugin/reconnect/events` may add `max_players` (`Server.MaxPlayers`) and
-`gotv_address` (`LEGACYX_GOTV_ADDRESS`). Without them the Play page assumes 10 slots (16 for Fun servers) and hides Spectate.
+`gotv_address` (`LEGACYX_GOTV_ADDRESS`); `LegacyX-Reconnect` sends both. Without them the Play page assumes 10 slots
+(16 for Fun servers) and hides Spectate.
+
+## Live match snapshot
+
+Players in `live_match` (heartbeat or `/plugin/live-match/snapshots`) may carry optional `kills`, `deaths` and
+`assists`; the Play page's server details sheet shows them as K / D / A and a dash when absent.
