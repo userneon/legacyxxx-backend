@@ -234,4 +234,11 @@ DROP TYPE IF EXISTS legacy_x.wallet_tx_type;
 ALTER TABLE legacy_x.users
   ADD COLUMN IF NOT EXISTS notification_prefs jsonb NOT NULL DEFAULT '{"tournaments": true, "rank_changes": true}'::jsonb;
 
+-- 7. Profile privacy gains the Loadout showcase ("What others can see" → Loadout).
+ALTER TABLE legacy_x.users
+  DROP CONSTRAINT IF EXISTS users_hidden_profile_sections_known;
+ALTER TABLE legacy_x.users
+  ADD CONSTRAINT users_hidden_profile_sections_known
+  CHECK (hidden_profile_sections <@ ARRAY['kd', 'matches', 'kills', 'faceit', 'recent_matches', 'loadout']::TEXT[]);
+
 COMMIT;

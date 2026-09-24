@@ -10,7 +10,7 @@ type Endpoint = { method: "GET" | "POST" | "PUT" | "DELETE"; path: string; publi
 const frontendEndpoints: Endpoint[] = [
   { method: "GET", path: "/auth/steam", public: true },
   { method: "POST", path: "/auth/logout" }, { method: "POST", path: "/auth/refresh" }, { method: "GET", path: "/auth/me" },
-  { method: "GET", path: "/profile/00000000-0000-4000-8000-000000000001" }, { method: "PUT", path: "/profile/me" }, { method: "GET", path: "/profile/me/stats" }, { method: "GET", path: "/profile/me/matches" }, { method: "PUT", path: "/profile/me/links" }, { method: "GET", path: "/profile/me/penalties" },
+  { method: "GET", path: "/profile/00000000-0000-4000-8000-000000000001", public: true }, { method: "GET", path: "/profile/00000000-0000-4000-8000-000000000001/loadout", public: true }, { method: "PUT", path: "/profile/me" }, { method: "GET", path: "/profile/me/stats" }, { method: "GET", path: "/profile/me/matches" }, { method: "PUT", path: "/profile/me/links" }, { method: "GET", path: "/profile/me/penalties" },
   { method: "GET", path: "/public/servers", public: true }, { method: "POST", path: "/public/servers/legacyx-match-1/join", public: true }, { method: "GET", path: "/play/5v5/quick-join", public: true }, { method: "GET", path: "/public/killfeed", public: true },
   { method: "GET", path: "/tournaments", public: true }, { method: "GET", path: "/tournaments/00000000-0000-4000-8000-000000000006", public: true },
   { method: "POST", path: "/tournaments/00000000-0000-4000-8000-000000000006/register" }, { method: "POST", path: "/tournaments/00000000-0000-4000-8000-000000000006/check-in" }, { method: "POST", path: "/tournaments/00000000-0000-4000-8000-000000000006/teams/00000000-0000-4000-8000-000000000007/join" }, { method: "DELETE", path: "/tournaments/00000000-0000-4000-8000-000000000006/registration" },
@@ -77,7 +77,7 @@ describe("frontend API endpoint inventory", () => {
   });
 
   it("contains the frontend endpoint inventory", () => {
-    expect(frontendEndpoints).toHaveLength(32);
+    expect(frontendEndpoints).toHaveLength(33);
   });
 
   it("no longer serves the removed clan and seasonal rank APIs", async () => {

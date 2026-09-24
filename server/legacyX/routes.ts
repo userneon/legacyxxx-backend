@@ -257,7 +257,7 @@ async function writePluginAudit(plugin: PluginPrincipal, action: string, targetT
 }
 
 /** Profile boxes a player may hide from others. Penalty history, SteamID, Steam link and rank always stay public. */
-const PROFILE_HIDEABLE_SECTIONS = ["kd", "matches", "kills", "faceit", "recent_matches"] as const;
+const PROFILE_HIDEABLE_SECTIONS = ["kd", "matches", "kills", "faceit", "recent_matches", "loadout"] as const;
 type ProfileHideableSection = typeof PROFILE_HIDEABLE_SECTIONS[number];
 /**
  * Names and avatars come only from Steam (synced at sign-in); accepting them here would let a player point every
@@ -545,8 +545,7 @@ function mapUserProfile(user: DbRow, links: DbRow[] = []) {
     steamId: textValue(user.steam_id),
     username: textValue(user.username),
     avatar: textValue(user.avatar),
-    level: numberValue(user.level),
-    rank: textValue(user.rank),
+    memberSince: timestampValue(user.created_at) || null,
   };
   if (user.faceit_username && user.faceit_elo != null && user.faceit_level != null) {
     profile.faceit = { username: textValue(user.faceit_username), elo: numberValue(user.faceit_elo), level: numberValue(user.faceit_level) };
@@ -713,8 +712,11 @@ export function createLegacyXRouter() {
   router.use(createAdminRouter());
   router.use(createTournamentRouter());
 
-  const resolveUserId = async (rawIdentity: string, caller: LegacyUser) => {
-    if (rawIdentity === "me") return caller.id;
+  const resolveUserId = async (rawIdentity: string, caller: LegacyUser | null) => {
+    if (rawIdentity === "me") {
+      if (!caller) apiError(401, "Sign in to view your own profile");
+      return caller.id;
+    }
     if (/^\d{15,20}$/.test(rawIdentity)) {
       const { data, error } = await db().from("users").select("id").eq("steam_id", rawIdentity).maybeSingle();
       legacyXError(error, "Unable to resolve SteamID64 profile");
@@ -723,7 +725,7 @@ export function createLegacyXRouter() {
     }
     return userIdSchema.parse(rawIdentity);
   };
-  const profileColumns = "id,steam_id,username,avatar,level,rank,faceit_username,faceit_elo,faceit_level,player_stats(*)";
+  const profileColumns = "id,steam_id,username,avatar,created_at,faceit_username,faceit_elo,faceit_level";
   const loadProfile = async (id: string) => {
     const [firstUserResult, linksResult] = await Promise.all([
       db().from("users").select(`${profileColumns},hidden_profile_sections,notification_prefs`).eq("id", id).maybeSingle(),
@@ -738,7 +740,7 @@ export function createLegacyXRouter() {
     return { user: userResult.data as DbRow, links: (linksResult.data ?? []) as DbRow[] };
   };
   /** Sections the player hid; the owner always sees everything on their own profile. */
-  const hiddenSectionsFor = async (userId: string, viewerId: string) => {
+  const hiddenSectionsFor = async (userId: string, viewerId: string | null) => {
     if (userId === viewerId) return [] as ProfileHideableSection[];
     const { data, error } = await db().from("users").select("hidden_profile_sections").eq("id", userId).maybeSingle();
     if (isMissingColumnError(error)) return [] as ProfileHideableSection[];
@@ -876,15 +878,22 @@ export function createLegacyXRouter() {
     });
   }));
   const competitiveProfileColumns = "user_id,steam_id,username,avatar,current_exp,rank_id,rank_slug,rank_name,rank_image_key,pro_league_unlocked,matches_completed,wins,losses,kills,deaths,assists,headshot_kills,last_match_at,current_rank_min_exp,next_rank_id,next_rank_name,next_rank_min_exp";
-  router.get("/public/competitive/players/:userId", asyncRoute(async (req, res) => {
+  router.get("/public/competitive/players/:userId", optionalUserRoute(async (req, res, viewer) => {
     const userId = userIdSchema.parse(req.params.userId);
-    const [{ data, error }, position] = await Promise.all([
+    const [{ data, error }, position, hidden] = await Promise.all([
       db().from("competitive_player_profiles").select(competitiveProfileColumns).eq("user_id", userId).maybeSingle(),
       db().from("competitive_leaderboard").select("position").eq("user_id", userId).maybeSingle(),
+      hiddenSectionsFor(userId, viewer?.id ?? null),
     ]);
     legacyXError(error || position.error, "Unable to load competitive player profile");
     if (data) {
-      res.json({ profile: { ...data, leaderboard_position: numberValue((position.data as DbRow | null)?.position) } });
+      const profile: DbRow = { ...data, leaderboard_position: numberValue((position.data as DbRow | null)?.position) };
+      // "Legacy-X stats" hidden by the player: rank, EXP and position stay public, the match stats are omitted.
+      if (hidden.some(section => section === "kd" || section === "matches" || section === "kills")) {
+        for (const key of ["matches_completed", "wins", "losses", "kills", "assists", "headshot_kills", "deaths"]) delete profile[key];
+        profile.stats_hidden = true;
+      }
+      res.json({ profile });
       return;
     }
     // The views cover every user; reaching this means the user does not exist.
@@ -1148,7 +1157,7 @@ export function createLegacyXRouter() {
     } });
   }));
 
-  router.get("/profile/:userId", userRoute(async (req, res, user) => {
+  router.get("/profile/:userId", optionalUserRoute(async (req, res, user) => {
     const profile = await loadProfile(await resolveUserId(req.params.userId, user));
     const payload = mapUserProfile(profile.user, profile.links);
     payload.role = await profileRoleFor(textValue(profile.user.id));
@@ -1156,7 +1165,36 @@ export function createLegacyXRouter() {
     // steamBackground stays a plain image URL for older frontends; steamMedia adds animated background, avatar and frame.
     payload.steamBackground = steamMedia.background;
     payload.steamMedia = { backgroundVideo: steamMedia.backgroundVideo, animatedAvatar: steamMedia.animatedAvatar, avatarFrame: steamMedia.avatarFrame };
+    // "Playing now": an open reconnect session on a server with a fresh heartbeat.
+    const session = await db().from("reconnect_sessions").select("server_id").eq("steam_id", textValue(profile.user.steam_id)).is("disconnected_at", null).order("connected_at", { ascending: false }).limit(1).maybeSingle();
+    const liveServer = session.data ? (await readServers()).find(server => server.id === textValue((session.data as DbRow).server_id) && server.status !== "offline") : undefined;
+    payload.playingNow = liveServer ? { serverId: liveServer.id, serverName: liveServer.name, map: liveServer.map, connectAddress: liveServer.connectAddress || null } : null;
+    // Public accountability for staff: how many penalties they issued (Penalties page filtered by admin).
+    if (payload.role !== "Player") {
+      const issued = await db().from("penalties").select("id", { count: "exact", head: true }).eq("admin_name", textValue(profile.user.username));
+      payload.penaltiesIssued = issued.error ? null : issued.count ?? 0;
+    }
     res.json(payload);
+  }));
+  /** Loadout showcase: knife, gloves, AK-47 and AWP for the side with the most equipped skins. */
+  router.get("/profile/:userId/loadout", optionalUserRoute(async (req, res, user) => {
+    const userId = await resolveUserId(req.params.userId, user);
+    if ((await hiddenSectionsFor(userId, user?.id ?? null)).includes("loadout")) {
+      res.json({ hidden: true, side: null, items: [] });
+      return;
+    }
+    const loadout = await loadSkinchangerLoadout(req, userId);
+    const entries = ((loadout?.entries ?? []) as DbRow[]).filter(entry => entry.skinchanger_catalog_items);
+    const showcase = [["knife", (key: string) => key === "knife"], ["gloves", (key: string) => key === "gloves"], ["ak47", (key: string) => /ak-?47$/.test(key)], ["awp", (key: string) => /awp$/.test(key)]] as const;
+    const onSide = (side: "t" | "ct") => entries.filter(entry => textValue(entry.team_scope) === "all" || textValue(entry.team_scope) === side);
+    const side = onSide("ct").length > onSide("t").length ? "ct" : "t";
+    const sideEntries = onSide(side);
+    const items = showcase.flatMap(([slot, matches]) => {
+      const pick = sideEntries.filter(entry => matches(textValue(entry.slot_key))).sort((a, b) => Number(textValue(b.team_scope) === side) - Number(textValue(a.team_scope) === side))[0];
+      const item = pick ? recordValue(pick.skinchanger_catalog_items) : null;
+      return item ? [{ slot, name: textValue(item.display_name), imageUrl: textValue(item.image_url) || null }] : [];
+    });
+    res.json({ hidden: false, side: items.length ? side : null, items });
   }));
   router.put("/profile/me", userRoute(async (req, res, user) => {
     const { hiddenSections, notificationPrefs } = profileUpdateSchema.parse(req.body);
@@ -1182,9 +1220,9 @@ export function createLegacyXRouter() {
     legacyXError(error, "Unable to link FACEIT profile");
     res.json({ faceit });
   }));
-  router.get("/profile/:userId/faceit", userRoute(async (req, res, user) => {
+  router.get("/profile/:userId/faceit", optionalUserRoute(async (req, res, user) => {
     const profile = await loadProfile(await resolveUserId(req.params.userId, user));
-    if ((await hiddenSectionsFor(textValue(profile.user.id), user.id)).includes("faceit")) {
+    if ((await hiddenSectionsFor(textValue(profile.user.id), user?.id ?? null)).includes("faceit")) {
       res.json({ linked: false, hidden: true });
       return;
     }
@@ -1210,9 +1248,9 @@ export function createLegacyXRouter() {
     if (!data) apiError(404, "Player stats were not found");
     res.json(mapProfileStats(data as DbRow));
   }));
-  router.get("/profile/:userId/matches", userRoute(async (req, res, user) => {
+  router.get("/profile/:userId/matches", optionalUserRoute(async (req, res, user) => {
     const userId = await resolveUserId(req.params.userId, user);
-    if ((await hiddenSectionsFor(userId, user.id)).includes("recent_matches")) {
+    if ((await hiddenSectionsFor(userId, user?.id ?? null)).includes("recent_matches")) {
       res.json([]);
       return;
     }
@@ -1229,7 +1267,7 @@ export function createLegacyXRouter() {
     legacyXError(error, "Unable to replace profile links");
     res.json({ links: input.links });
   }));
-  router.get("/profile/:userId/penalties", userRoute(async (req, res, user) => {
+  router.get("/profile/:userId/penalties", optionalUserRoute(async (req, res, user) => {
     const userId = await resolveUserId(req.params.userId, user);
     const { data, error } = await db().from("penalties").select("*,users!penalties_user_id_fkey(username,steam_id,avatar)").eq("user_id", userId).order("created_at", { ascending: false });
     legacyXError(error, "Unable to load penalties");
