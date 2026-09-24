@@ -1,13 +1,13 @@
 # Admin & Moderation System — progress
 
-Branch: `feature/admin-system` (backend, frontend and plugins repos).
+Merged into `main` (backend, frontend and plugins repos) on 2026-09-24.
 
 | Phase | Status | Notes |
 |---|---|---|
-| 1. DB | done | `supabase/legacy_x_admin_system.sql`, validated locally on PGlite. **Not applied anywhere.** |
+| 1. DB | done | `supabase/legacy_x_admin_system.sql`, applied to production on 2026-09-24 (migration `legacy_x_admin_system`; the active Owner was carried over to the `owner` role). |
 | 2. Backend | done | `server/legacyX/admin/*`, mounted inside the LEGACY-X router. tsc, 172 tests and the build pass. |
 | 3. CS2 plugin | skipped | Skipped on request ("plugin taliig orhi"). The backend `/game/*` contract is ready for it. |
-| 4. Web panel | done | Frontend `feature/admin-system`: `/panel/*` and `/u/:steamId`, lazy-loaded. tsc and vite build pass. |
+| 4. Web panel | done | Frontend: `/panel/*` and `/u/:steamId`, lazy-loaded. tsc and vite build pass. |
 | 5. Header button | done | ShieldCheck left of the bell (desktop); first sidebar item on mobile. |
 
 ## Phase 1 — DB
@@ -73,7 +73,7 @@ The shared `apiError`/`asyncRoute`/`requireUser`/`userRoute` helpers moved to `s
 You asked mid-task to leave the plugin out.
 
 - A partial draft of `LegacyX-Staff` (menu engine, API client, main plugin) was moved out of the plugins repo into the session scratchpad. It is not committed.
-- The plugins repo is back on `main`, unchanged. Its `feature/admin-system` branch is empty.
+- The plugins repo had no admin-system changes.
 - Everything the plugin needs already exists in the backend `/game/*` endpoints.
 
 ## Phase 4 — Web panel (frontend repo)

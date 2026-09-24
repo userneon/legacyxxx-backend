@@ -46,6 +46,9 @@ references `core_matches` and is not deferrable, so **every `match_created` even
   (created, duplicate, event linked, season still filled for the previous API).
 - `users.notification_prefs` and the `loadout` privacy value.
 
+`supabase/legacy_x_admin_system.sql` (migration `legacy_x_admin_system`): roles, permissions, bans/mutes, reports,
+sessions, audit log and the rest of the admin panel's tables. Purely additive; the active Owner was carried over.
+
 `legacy_x_v1_cleanup.sql` (the drops) is **not** applied: on 2026-09-24 the live API still read `matches` and
 `community_clan_leaderboard`. Run it only after the new API is live and those reads have stopped.
 

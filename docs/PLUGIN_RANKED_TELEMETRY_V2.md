@@ -60,7 +60,7 @@ lobby-relative `score` for everyone and recorded in `exp_breakdown.omittedTerms`
 Validity (`finished_normally`, `human_players_at_end`, `total_rounds`) and `rounds_played` / `left_early` are
 required: without them a match cannot be judged, so the payload is rejected.
 
-## What the plugins send (legacyxxx-plugins, branch `claude/sharp-bohr-or0xkm`)
+## What the plugins send (legacyxxx-plugins, `main`)
 
 `LegacyX-MatchZy/LegacyXRankTelemetry.cs` builds `competitive_result` v2 for `result_final`. Team keys are the
 Match Core keys (team1 = the side that started CT); MatchZy's own team order is mapped onto them.
