@@ -1,8 +1,7 @@
 const crypto = require('crypto')
 const express = require('express')
 const { value } = require('../config')
-const { getLeaderboard, getPlayerRank, readRows } = require('../rank')
-const { getExperienceLeaderboard, getClanLeaderboard, getCommunityProfile } = require('../community')
+const { readRows } = require('../supabase')
 
 const router = express.Router()
 const buckets = new Map()
@@ -10,12 +9,6 @@ const buckets = new Map()
 function boundedInteger(input, fallback = 50, maximum = 100) {
   const parsed = Number.parseInt(input || String(fallback), 10)
   return Number.isInteger(parsed) ? Math.min(Math.max(parsed, 1), maximum) : fallback
-}
-
-function season(input) {
-  const candidate = String(input || value('LEGACYX_DEFAULT_SEASON', 'season-1')).trim()
-  if (!/^[a-z0-9-]{1,64}$/i.test(candidate)) throw new Error('season is invalid')
-  return candidate
 }
 
 function steamId(input) {
@@ -82,55 +75,6 @@ router.use((req, res, next) => {
   next()
 })
 
-router.get('/rank/leaderboard', async (req, res) => {
-  try {
-    const selectedSeason = season(req.query.season)
-    res.json({ season: selectedSeason, entries: await getLeaderboard(selectedSeason, boundedInteger(req.query.limit)) })
-  } catch (error) {
-    res.status(502).json({ error: error.message })
-  }
-})
-
-router.get('/rank/players/:steamId', async (req, res) => {
-  try {
-    const selectedSeason = season(req.query.season)
-    const entry = await getPlayerRank(selectedSeason, steamId(req.params.steamId))
-    if (!entry) return res.status(404).json({ error: 'Player rank not found for season' })
-    res.json({ season: selectedSeason, entry })
-  } catch (error) {
-    res.status(400).json({ error: error.message })
-  }
-})
-
-router.get('/community/experience', async (req, res) => {
-  try {
-    res.json({ entries: await getExperienceLeaderboard(boundedInteger(req.query.limit)) })
-  } catch (error) {
-    res.status(502).json({ error: error.message })
-  }
-})
-
-router.get('/community/clans', async (req, res) => {
-  try {
-    const selectedSeason = season(req.query.season)
-    res.json({ season: selectedSeason, entries: await getClanLeaderboard(selectedSeason, boundedInteger(req.query.limit)) })
-  } catch (error) {
-    res.status(502).json({ error: error.message })
-  }
-})
-
-router.get('/community/players/:steamId', async (req, res) => {
-  try {
-    const selectedSeason = season(req.query.season)
-    const selectedSteamId = steamId(req.params.steamId)
-    const [profile, rank] = await Promise.all([getCommunityProfile(selectedSteamId), getPlayerRank(selectedSeason, selectedSteamId)])
-    if (!profile && !rank) return res.status(404).json({ error: 'Player public profile not found' })
-    res.json({ season: selectedSeason, profile, rank })
-  } catch (error) {
-    res.status(400).json({ error: error.message })
-  }
-})
-
 router.get('/servers', async (_req, res) => {
   try {
     res.json({ entries: await publicServers() })
@@ -153,19 +97,16 @@ router.get('/servers/:serverId', async (req, res) => {
 
 router.get('/overview', async (_req, res) => {
   try {
-    const selectedSeason = season()
     const today = new Date()
     today.setUTCHours(0, 0, 0, 0)
-    const [servers, clans, matches] = await Promise.all([
+    const [servers, matches] = await Promise.all([
       publicServers(),
-      getClanLeaderboard(selectedSeason, 100),
       readRows('core_match_history', { select: 'match_id', started_at: `gte.${today.toISOString()}`, limit: '1000' }),
     ])
     res.json({
       playersOnline: servers.filter((server) => server.status !== 'offline').reduce((sum, server) => sum + server.players, 0),
       liveServers: servers.filter((server) => server.status !== 'offline').length,
       matchesToday: matches.length,
-      activeClans: clans.length,
     })
   } catch (error) {
     res.status(502).json({ error: error.message })

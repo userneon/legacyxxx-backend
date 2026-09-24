@@ -1,5 +1,5 @@
 const { value } = require('./config')
-const { rpc, readRows } = require('./rank')
+const { rpc, readRows } = require('./supabase')
 
 const STEAM_ID = /^\d{15,20}$/
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i

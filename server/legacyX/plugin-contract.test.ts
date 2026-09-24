@@ -10,7 +10,7 @@ const baseSnapshot = {
   round_number: 14,
   score_t: 7,
   score_ct: 6,
-  terrorist_players: [{ steam_id: "76561198000000001", name: "T Player", connected: true, adr: 82.4, ping: 24, rank_id: 12, rank_name: "Legendary Eagle", rank_image_key: "rank-12" }],
+  terrorist_players: [{ steam_id: "76561198000000001", name: "T Player", connected: true, adr: 82.4, ping: 24, rank_id: 12, rank_name: "Vanguard II", rank_image_key: "rank-12" }],
   counter_terrorist_players: [{ steam_id: "76561198000000002", name: "CT Player", connected: true }],
   spectator_players: [],
 };

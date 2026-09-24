@@ -13,7 +13,6 @@ import {
   rotateRefreshSession,
   sha256,
   steamLoginUrl,
-  verifyAccessToken,
   verifySteamCallback,
   type LegacyUser,
   type PluginPrincipal,
@@ -22,16 +21,15 @@ import { apiAuthRateLimitMax, apiRateLimitMax, apiSensitiveRateLimitMax, isDefer
 import { getFaceitProfileSnapshot, getFaceitProfileSnapshotForSteamId, resolveFaceitNickname } from "./faceit";
 import { legacyXDb, legacyXError } from "./supabase";
 import { resolveSteamProfileMedia } from "./steamBackground";
-import { mapMatchDetail, mapRankedRecentMatch } from "./matchDetails";
+import { mapCompetitiveMatch, mapMatchRounds } from "./matchDetails";
 import { syncSteamUserProfile } from "./steamProfile";
 import { apiError, asyncRoute, hasAccessToken, requireUser, userRoute, type ApiRequest } from "./http";
 import { createAdminRouter } from "./admin";
+import { createTournamentRouter } from "./tournaments";
+import { killEventSchema, killFeed } from "./killfeed";
+import { applyCompetitiveResult } from "./rank/matchResult";
+import { PRO_LEAGUE_KEEP_EXP, PRO_LEAGUE_RANK_ID, PRO_LEAGUE_UNLOCK_EXP, STARTING_EXP, rankById, rankProgress } from "./rank/ranks";
 
-const pageSchema = z.object({
-  limit: z.coerce.number().int().min(1).max(100).default(25),
-  offset: z.coerce.number().int().min(0).default(0),
-});
-const leaderboardSchema = pageSchema.extend({ sort: z.enum(["rating", "kd_ratio", "experience"]).default("rating") });
 
 function pluginCredential(req: Request) {
   const value = req.header("authorization");
@@ -41,29 +39,9 @@ function pluginCredential(req: Request) {
   apiError(401, "Plugin credential is required");
 }
 
-function refreshTokenFromRequest(req: Request) {
-  const input = z.object({ refreshToken: z.string().min(20).optional() }).parse(req.body ?? {});
-  return input.refreshToken ?? parseCookieHeader(req.headers.cookie ?? "").legacyx_refresh_token ?? apiError(401, "Refresh token is required");
-}
-
 /** Public read routes: guests are served as null, while a present-but-invalid token still 401s so the client can refresh it. */
 function optionalUserRoute(handler: (req: ApiRequest, res: Response, user: LegacyUser | null) => Promise<void>) {
   return asyncRoute(async (req, res) => handler(req, res, hasAccessToken(req) ? await requireUser(req) : null));
-}
-
-function staffRoute(handler: (req: ApiRequest, res: Response, user: LegacyUser) => Promise<void>) {
-  return userRoute(async (req, res, user) => {
-    const { data: staff, error } = await legacyXDb().from("staff").select("id").eq("user_id", user.id).eq("status", "active").maybeSingle();
-    legacyXError(error, "Unable to verify staff access");
-    if (!staff) apiError(403, "Staff access is required");
-    await handler(req, res, user);
-  });
-}
-
-async function requireOwnerStaffRole(userId: string) {
-  const { data: staff, error } = await legacyXDb().from("staff").select("role").eq("user_id", userId).eq("status", "active").maybeSingle();
-  legacyXError(error, "Unable to verify Owner staff access");
-  if (!staff || staff.role !== "OWNER") apiError(403, "Only an Owner can perform this operation");
 }
 
 type StaffPanelRole = "OWNER" | "MANAGER";
@@ -281,11 +259,24 @@ async function writePluginAudit(plugin: PluginPrincipal, action: string, targetT
 /** Profile boxes a player may hide from others. Penalty history, SteamID, Steam link and rank always stay public. */
 const PROFILE_HIDEABLE_SECTIONS = ["kd", "matches", "kills", "faceit", "recent_matches"] as const;
 type ProfileHideableSection = typeof PROFILE_HIDEABLE_SECTIONS[number];
+/**
+ * Names and avatars come only from Steam (synced at sign-in); accepting them here would let a player point every
+ * viewer's browser at an arbitrary external image URL.
+ */
 const profileUpdateSchema = z.object({
-  username: z.string().trim().min(2).max(64).optional(),
-  avatar: z.string().max(2048).optional(),
   hiddenSections: z.array(z.enum(PROFILE_HIDEABLE_SECTIONS)).max(PROFILE_HIDEABLE_SECTIONS.length).optional(),
-});
+  notificationPrefs: z.object({ tournaments: z.boolean(), rankChanges: z.boolean() }).strict().optional(),
+}).strict();
+const DEFAULT_NOTIFICATION_PREFS = { tournaments: true, rankChanges: true, penalties: true } as const;
+function notificationPrefsValue(value: unknown) {
+  const prefs = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  return {
+    tournaments: typeof prefs.tournaments === "boolean" ? prefs.tournaments : DEFAULT_NOTIFICATION_PREFS.tournaments,
+    rankChanges: typeof prefs.rank_changes === "boolean" ? prefs.rank_changes : DEFAULT_NOTIFICATION_PREFS.rankChanges,
+    // Penalty notices are always on.
+    penalties: true,
+  };
+}
 function hiddenSectionsValue(value: unknown): ProfileHideableSection[] {
   if (!Array.isArray(value)) return [];
   return PROFILE_HIDEABLE_SECTIONS.filter((section) => value.includes(section));
@@ -296,12 +287,7 @@ function isMissingColumnError(error: unknown) {
 }
 const STAFF_PROFILE_ROLES: Record<string, string> = { OWNER: "Owner", MANAGER: "Manager", ADMIN: "Admin", DEVELOPER: "Developer", DESIGNER: "Designer" };
 const faceitLinkSchema = z.object({ nickname: z.string().trim().min(1).max(64).regex(/^[A-Za-z0-9_.-]+$/, "FACEIT nickname contains unsupported characters") });
-const linksSchema = z.object({ links: z.array(z.string().url().max(2048)).max(20) });
-const clanSchema = z.object({ name: z.string().trim().min(2).max(64), tag: z.string().trim().min(1).max(6), logo: z.string().max(2048).optional(), thumbnail: z.string().url().max(2048).optional(), description: z.string().max(2000).optional(), region: z.string().trim().min(2).max(64).optional(), maxPlayers: z.number().int().min(1).max(100).optional() });
-const feedbackSchema = z.object({ name: z.string().trim().min(1).max(64).optional(), rating: z.number().int().min(1).max(5), message: z.string().trim().min(1).max(4000) });
 const pluginServerSchema = z.object({ id: z.string().uuid().optional(), name: z.string().trim().min(1).max(100), map: z.string().trim().min(1).max(64), mode: z.string().trim().min(1).max(64), max_players: z.number().int().min(0).max(256), current_players: z.number().int().min(0).max(256), ping: z.number().int().min(0).max(10000).default(0), status: z.enum(["online", "offline", "full"]), ip_address: z.string().max(255).optional(), port: z.number().int().min(1).max(65535).optional() });
-const pluginMatchSchema = z.object({ id: z.string().uuid().optional(), server_id: z.string().uuid().optional(), map: z.string().trim().min(1).max(64), mode: z.enum(["5vs5", "fun", "proleague", "tournaments"]), number: z.number().int().min(0), status: z.enum(["live", "waiting", "finished", "locked"]).default("waiting"), players: z.number().int().min(0).max(256).default(0), max_players: z.number().int().min(1).max(256).default(10), score_t: z.number().int().min(0).default(0), score_ct: z.number().int().min(0).default(0), signal: z.number().int().min(0).default(0) });
-const pluginHistorySchema = z.object({ user_id: z.string().uuid(), match_id: z.string().uuid().optional(), map: z.string().trim().min(1).max(64), result: z.enum(["Win", "Loss"]), score: z.string().trim().min(1).max(32), kd: z.string().trim().min(1).max(32), stats: z.object({ matches: z.number().int().min(0), wins: z.number().int().min(0), kills: z.number().int().min(0), deaths: z.number().int().min(0), headshots: z.number().int().min(0), kd_ratio: z.number().min(0), rating: z.number().min(0), experience: z.number().int().min(0), played_hours: z.number().min(0) }).optional() });
 const pluginEventIdSchema = z.string().trim().min(8).max(220).regex(/^[A-Za-z0-9:_-]+$/, "event_id contains unsupported characters");
 const playerTelemetryEventSchema = z.object({
   event_id: pluginEventIdSchema,
@@ -411,12 +397,7 @@ const matchCoreEventSchema = z.object({
   if (input.event && input.event_type && input.event !== input.event_type) context.addIssue({ code: z.ZodIssueCode.custom, message: "event and event_type must match", path: ["event_type"] });
 });
 const userIdSchema = z.string().uuid();
-const playModeSchema = z.enum(["5vs5", "fun", "proleague", "tournaments"]);
-const matchStatusSchema = z.enum(["live", "waiting", "finished", "locked"]);
-const serverStatusSchema = z.enum(["online", "offline", "full"]);
-const tournamentMatchStatusSchema = z.enum(["live", "upcoming", "completed"]);
 const penaltyTypeSchema = z.enum(["ban", "comm", "gag"]);
-const userRoleSchema = z.enum(["Owner", "Founder", "Manager", "Admin", "Player", "Designer", "Developer"]);
 const staffPanelServerSchema = z.string().trim().min(1).max(80).regex(/^[A-Za-z0-9_-]+$/);
 const staffPanelMapSchema = z.enum(["de_ancient", "de_anubis", "de_cache", "de_dust2", "de_inferno", "de_mirage", "de_nuke", "de_overpass", "de_train", "de_vertigo"]);
 const staffPanelActionSchema = z.object({
@@ -573,6 +554,7 @@ function mapUserProfile(user: DbRow, links: DbRow[] = []) {
   }
   profile.links = links.map(link => ({ url: textValue(link.url) }));
   profile.hiddenSections = hiddenSectionsValue(user.hidden_profile_sections);
+  if ("notification_prefs" in user) profile.notificationPrefs = notificationPrefsValue(user.notification_prefs);
   return profile;
 }
 
@@ -580,55 +562,16 @@ function mapProfileStats(stats: DbRow) {
   return { matches: numberValue(stats.matches), wins: numberValue(stats.wins), kdRatio: numberValue(stats.kd_ratio), rating: numberValue(stats.rating) };
 }
 
-function mapRecentMatch(match: DbRow) {
-  return { map: textValue(match.map), result: textValue(match.result) as "Win" | "Loss", score: textValue(match.score), kd: textValue(match.kd) };
-}
-
-function mapServer(server: DbRow) {
-  return { id: textValue(server.id), name: textValue(server.name), map: textValue(server.map), players: numberValue(server.current_players), maxPlayers: numberValue(server.max_players), mode: textValue(server.mode), ping: numberValue(server.ping), status: textValue(server.status) };
-}
-
-function matchConnectAddress(match: DbRow) {
-  const server = firstRow(match.game_servers);
-  const ip = textValue(server?.ip_address);
-  const port = numberValue(server?.port);
-  return ip && port ? `${ip}:${port}` : undefined;
-}
-
-function mapMatch(match: DbRow, favorite = false) {
-  return { connectAddress: matchConnectAddress(match), id: textValue(match.id), number: numberValue(match.number), map: textValue(match.map), players: numberValue(match.players), maxPlayers: numberValue(match.max_players), status: textValue(match.status), favorite, signal: numberValue(match.signal), scoreT: numberValue(match.score_t), scoreCT: numberValue(match.score_ct) };
-}
-
 type ModerationStatus = "Banned" | "Muted" | "Clear";
-
-function mapLeader(stats: DbRow, index: number, moderationStatuses: Map<string, ModerationStatus> = new Map()) {
-  const user = firstRow(stats.users) ?? {};
-  const userId = textValue(user.id || stats.user_id);
-  return { id: userId, steamId: textValue(user.steam_id), rank: index + 1, name: textValue(user.username), level: numberValue(user.level), experience: numberValue(stats.experience), kills: numberValue(stats.kills), deaths: numberValue(stats.deaths), kd: numberValue(stats.kd_ratio), headshots: numberValue(stats.headshots), playedHours: numberValue(stats.played_hours), lastPlayed: timestampValue(stats.last_played_at), avatar: textValue(user.avatar), moderationStatus: moderationStatuses.get(userId) ?? "Clear" };
-}
 
 function mapLeaderFromUser(user: DbRow, index: number) {
   const stats = statsRow(user);
   return { id: textValue(user.id), steamId: textValue(user.steam_id), rank: index + 1, name: textValue(user.username), level: numberValue(user.level), experience: numberValue(stats.experience), kills: numberValue(stats.kills), deaths: numberValue(stats.deaths), kd: numberValue(stats.kd_ratio), headshots: numberValue(stats.headshots), playedHours: numberValue(stats.played_hours), lastPlayed: timestampValue(stats.last_played_at), avatar: textValue(user.avatar) };
 }
 
-function memberCount(clan: DbRow) {
-  const countRelation = firstRow(clan.clan_members);
-  return numberValue(countRelation?.count);
-}
 
-function mapClanCard(clan: DbRow, currentPlayers = memberCount(clan)) {
-  return { id: textValue(clan.id), name: textValue(clan.name), tag: textValue(clan.tag), logo: textValue(clan.logo), thumbnail: clan.thumbnail == null ? null : textValue(clan.thumbnail), currentPlayers, maxPlayers: numberValue(clan.max_players), region: textValue(clan.region) };
-}
 
-function mapClanMember(member: DbRow) {
-  const user = firstRow(member.users) ?? {};
-  return { id: textValue(user.id || member.user_id), steamId: textValue(user.steam_id), name: textValue(user.username), role: textValue(member.role), avatar: textValue(user.avatar), description: "" };
-}
 
-function mapTournamentMatch(match: DbRow) {
-  return { id: textValue(match.id), teamA: textValue(match.team_a), teamB: textValue(match.team_b), round: textValue(match.round), map: textValue(match.map), time: textValue(match.scheduled_time), score: match.score == null ? null : textValue(match.score), status: textValue(match.status) };
-}
 
 function mapPenalty(penalty: DbRow, adminProfiles: Map<string, { steamId: string; avatar: string }> = new Map(), moderationStatuses: Map<string, ModerationStatus> = new Map()) {
   const user = firstRow(penalty.users) ?? {};
@@ -701,9 +644,16 @@ function deferredFeatureForRequest(req: Request): DeferredFeatureKey | null {
   const path = req.path;
   if (path.startsWith("/staffpanel")) return "staffPanel";
   if (path.startsWith("/auth/steam") && String(req.query.staffpanel ?? "") === "1") return "staffPanel";
-  if (path.startsWith("/clans") || path.startsWith("/clan")) return "clan";
-  if (path === "/search/clans") return "clan";
   return null;
+}
+
+/** Play page bucket for a server's LEGACYX_SERVER_MODE (e.g. competitive_5v5, pro_league, fun_retake). */
+export function serverModeKind(mode: string): "5v5" | "pro" | "fun" | "other" {
+  const value = mode.trim().toLowerCase();
+  if (/pro/.test(value)) return "pro";
+  if (/fun|retake|dm|deathmatch|surf|aim|arena|casual/.test(value)) return "fun";
+  if (/5v5|5vs5|competitive/.test(value)) return "5v5";
+  return "other";
 }
 
 export function createLegacyXRouter() {
@@ -771,6 +721,7 @@ export function createLegacyXRouter() {
     next();
   });
   router.use(createAdminRouter());
+  router.use(createTournamentRouter());
 
   const resolveUserId = async (rawIdentity: string, caller: LegacyUser) => {
     if (rawIdentity === "me") return caller.id;
@@ -785,7 +736,7 @@ export function createLegacyXRouter() {
   const profileColumns = "id,steam_id,username,avatar,level,rank,faceit_username,faceit_elo,faceit_level,player_stats(*)";
   const loadProfile = async (id: string) => {
     const [firstUserResult, linksResult] = await Promise.all([
-      db().from("users").select(`${profileColumns},hidden_profile_sections`).eq("id", id).maybeSingle(),
+      db().from("users").select(`${profileColumns},hidden_profile_sections,notification_prefs`).eq("id", id).maybeSingle(),
       db().from("user_links").select("url").eq("user_id", id).order("created_at"),
     ]);
     // Until legacy_x_profile_privacy.sql is applied the column is missing; profiles then have nothing hidden.
@@ -810,41 +761,25 @@ export function createLegacyXRouter() {
     if (error) return "Player";
     return STAFF_PROFILE_ROLES[textValue((data as DbRow | null)?.role)] ?? "Player";
   };
-  const loadClanDetail = async (clanId: string) => {
-    const [clanResult, membersResult] = await Promise.all([
-      db().from("clans").select("*,clan_members(count)").eq("id", clanId).maybeSingle(),
-      db().from("clan_members").select("role,user_id,users(id,steam_id,username,avatar)").eq("clan_id", clanId).order("created_at"),
-    ]);
-    legacyXError(clanResult.error || membersResult.error, "Unable to load clan");
-    if (!clanResult.data) apiError(404, "Clan was not found");
-    const clan = clanResult.data as DbRow;
-    return { ...mapClanCard(clan), description: clan.description ?? undefined, members: ((membersResult.data ?? []) as DbRow[]).map(mapClanMember) };
-  };
-  const loadActiveTournament = async () => {
-    const { data, error } = await db().from("tournaments").select("*").in("status", ["active", "upcoming"]).order("created_at", { ascending: false }).limit(1).maybeSingle();
-    legacyXError(error, "Unable to load active tournament");
-    if (!data) apiError(404, "No active tournament was found");
-    return data as DbRow;
-  };
 
   // Public website reads deliberately bypass AdminPlus. CS2 plugins/admin tools
   // write to Supabase; the website reads these safe projections through root API.
-  const readLimit = (value: unknown) => z.coerce.number().int().min(1).max(100).default(50).parse(value);
   // Leaders shows the whole community, not a top slice, so its ladder is allowed to be long.
   const readLadderLimit = (value: unknown) => z.coerce.number().int().min(1).max(1000).default(500).parse(value);
-  const readSeason = (value: unknown) => {
-    const season = String(value || process.env.LEGACYX_DEFAULT_SEASON || "season-1").trim();
-    if (!/^[a-z0-9-]{1,64}$/i.test(season)) apiError(400, "season is invalid");
-    return season;
-  };
   const readServers = async () => {
-    const { data, error } = await db().from("reconnect_servers").select("server_id,connect_address,display_name,current_map,current_mode,player_count,last_heartbeat_at").order("display_name").limit(100);
-    legacyXError(error, "Unable to load public servers");
-    return ((data ?? []) as DbRow[]).map(server => {
+    const full = await db().from("reconnect_servers").select("server_id,connect_address,display_name,current_map,current_mode,player_count,last_heartbeat_at,max_players,gotv_address").order("display_name").limit(100);
+    // Before legacy_x_reconnect_server_capacity.sql the capacity columns are missing; fall back to the base columns.
+    const result = isMissingColumnError(full.error)
+      ? await db().from("reconnect_servers").select("server_id,connect_address,display_name,current_map,current_mode,player_count,last_heartbeat_at").order("display_name").limit(100)
+      : full;
+    legacyXError(result.error, "Unable to load public servers");
+    return ((result.data ?? []) as DbRow[]).map(server => {
       const heartbeat = new Date(String(server.last_heartbeat_at ?? "")).getTime();
       const players = numberValue(server.player_count);
+      const mode = serverModeKind(textValue(server.current_mode));
+      const maxPlayers = numberValue(server.max_players) || (mode === "fun" ? 16 : 10);
       const online = Number.isFinite(heartbeat) && Date.now() - heartbeat <= 90_000;
-      return { id: textValue(server.server_id), name: textValue(server.display_name) || textValue(server.server_id), map: textValue(server.current_map) || "Unknown", players, maxPlayers: 10, mode: textValue(server.current_mode) || "Community", ping: 0, status: online ? (players >= 10 ? "full" : "online") : "offline", connectAddress: textValue(server.connect_address) };
+      return { id: textValue(server.server_id), name: textValue(server.display_name) || textValue(server.server_id), map: textValue(server.current_map) || "Unknown", players, maxPlayers, mode, rawMode: textValue(server.current_mode) || null, ping: 0, status: online ? (players >= maxPlayers ? "full" : "online") : "offline", connectAddress: textValue(server.connect_address), gotvAddress: textValue(server.gotv_address) || null, lastHeartbeatAt: textValue(server.last_heartbeat_at) || null };
     });
   };
   const ingestLiveMatchSnapshot = async (pluginId: string, eventId: string, serverId: string, snapshot: z.infer<typeof liveMatchSnapshotV1Schema>) => {
@@ -857,21 +792,36 @@ export function createLegacyXRouter() {
     legacyXError(error, "Unable to ingest live server match snapshot");
     return data ?? {};
   };
-  router.get("/public/rank/leaderboard", asyncRoute(async (req, res) => {
-    const season = readSeason(req.query.season);
-    const { data, error } = await db().from("rank_leaderboard").select("season_slug,season_name,rank,steam_id,username,rating,tier,matches_played,wins,losses,kills,deaths,assists,kd_ratio,last_match_at").eq("season_slug", season).order("rank").limit(readLimit(req.query.limit));
-    legacyXError(error, "Unable to load public rank leaderboard");
-    res.json({ season, entries: data ?? [] });
-  }));
-  router.get("/public/community/experience", asyncRoute(async (req, res) => {
-    const { data, error } = await db().from("community_experience_leaderboard").select("rank,steam_id,username,level,experience,matches_played,last_match_at").order("rank").limit(readLimit(req.query.limit));
-    legacyXError(error, "Unable to load public experience leaderboard");
-    res.json({ entries: data ?? [] });
-  }));
-  router.get("/public/competitive/leaderboard", asyncRoute(async (req, res) => {
-    const { data, error } = await db().from("competitive_leaderboard").select("position,user_id,steam_id,username,avatar,current_exp,rank_id,rank_slug,rank_name,rank_image_key,pro_league_unlocked,matches_completed,wins,losses,kills,assists,headshot_kills,deaths,kd_ratio,played_hours,last_match_at").order("position").limit(readLadderLimit(req.query.limit));
+  const leaderboardColumns = "position,user_id,steam_id,username,avatar,current_exp,rank_id,rank_slug,rank_name,rank_image_key,pro_league_unlocked,matches_completed,wins,losses,kills,assists,headshot_kills,deaths,kd_ratio,win_rate,played_hours,last_match_at";
+  /** K/D and win rate only rank players with at least this many completed matches (EXP ranks everyone). */
+  const RATIO_LADDER_MIN_MATCHES = 10;
+  const leaderboardSortSchema = z.enum(["exp", "kd", "win"]).default("exp");
+  const leaderboardQuery = (sort: z.infer<typeof leaderboardSortSchema>) => {
+    let query = db().from("competitive_leaderboard").select(leaderboardColumns);
+    if (sort === "exp") return query.order("position");
+    query = query.gte("matches_completed", RATIO_LADDER_MIN_MATCHES);
+    const column = sort === "kd" ? "kd_ratio" : "win_rate";
+    return query.order(column, { ascending: false }).order("matches_completed", { ascending: false }).order("position");
+  };
+  router.get("/public/competitive/leaderboard", optionalUserRoute(async (req, res, viewer) => {
+    const sort = leaderboardSortSchema.parse(req.query.sort || undefined);
+    const search = z.string().trim().max(64).optional().parse(req.query.q || undefined);
+    const limit = readLadderLimit(req.query.limit);
+    // Positions always come from the full ladder for the active sort, so a search result keeps its real place.
+    const { data, error } = await leaderboardQuery(sort).limit(sort === "exp" && !search ? limit : 5000);
     legacyXError(error, "Unable to load competitive leaderboard");
-    res.json({ entries: data ?? [] });
+    const ladder: DbRow[] = ((data ?? []) as DbRow[]).map((row, index): DbRow => ({ ...row, position: sort === "exp" ? numberValue(row.position) ?? index + 1 : index + 1 }));
+    const needle = search?.toLowerCase();
+    const entries = needle
+      ? ladder.filter(row => textValue(row.username).toLowerCase().includes(needle) || textValue(row.steam_id) === search).slice(0, limit)
+      : ladder.slice(0, limit);
+    let viewerEntry: DbRow | null = viewer ? ladder.find(row => textValue(row.user_id) === viewer.id) ?? null : null;
+    if (viewer && !viewerEntry && sort === "exp") {
+      const own = await db().from("competitive_leaderboard").select(leaderboardColumns).eq("user_id", viewer.id).maybeSingle();
+      legacyXError(own.error, "Unable to load your leaderboard position");
+      viewerEntry = (own.data as DbRow | null) ?? null;
+    }
+    res.json({ sort, minimumMatches: sort === "exp" ? 0 : RATIO_LADDER_MIN_MATCHES, entries, viewer: viewerEntry });
   }));
   router.get("/public/servers/:serverId/live-match", asyncRoute(async (req, res) => {
     const serverId = z.string().trim().min(1).max(120).parse(req.params.serverId);
@@ -922,64 +872,119 @@ export function createLegacyXRouter() {
       },
     });
   }));
+  const competitiveProfileColumns = "user_id,steam_id,username,avatar,current_exp,rank_id,rank_slug,rank_name,rank_image_key,pro_league_unlocked,matches_completed,wins,losses,kills,deaths,assists,headshot_kills,last_match_at,current_rank_min_exp,next_rank_id,next_rank_name,next_rank_min_exp";
   router.get("/public/competitive/players/:userId", asyncRoute(async (req, res) => {
     const userId = userIdSchema.parse(req.params.userId);
-    const profileColumns = "user_id,steam_id,username,avatar,current_exp,rank_id,rank_slug,rank_name,rank_image_key,pro_league_unlocked,matches_completed,wins,losses,kills,assists,headshot_kills,last_match_at,current_rank_min_exp,next_rank_id,next_rank_name,next_rank_min_exp";
-    const { data, error } = await db().from("competitive_player_profiles").select(profileColumns).eq("user_id", userId).maybeSingle();
-    legacyXError(error, "Unable to load competitive player profile");
+    const [{ data, error }, position] = await Promise.all([
+      db().from("competitive_player_profiles").select(competitiveProfileColumns).eq("user_id", userId).maybeSingle(),
+      db().from("competitive_leaderboard").select("position").eq("user_id", userId).maybeSingle(),
+    ]);
+    legacyXError(error || position.error, "Unable to load competitive player profile");
     if (data) {
-      res.json({ profile: data });
+      res.json({ profile: { ...data, leaderboard_position: numberValue((position.data as DbRow | null)?.position) } });
       return;
     }
-
-    const [{ data: user, error: userError }, { data: definitions, error: definitionError }] = await Promise.all([
-      db().from("users").select("id,steam_id,username,avatar").eq("id", userId).maybeSingle(),
-      db().from("competitive_rank_definitions").select("rank_id,slug,display_name,image_key,minimum_exp").in("rank_id", [1, 2]).order("rank_id"),
-    ]);
+    // The views cover every user; reaching this means the user does not exist.
+    const { data: user, error: userError } = await db().from("users").select("id,steam_id,username,avatar").eq("id", userId).maybeSingle();
     legacyXError(userError, "Unable to load competitive player");
-    legacyXError(definitionError, "Unable to load competitive rank definitions");
     if (!user) apiError(404, "Competitive player profile was not found");
-    const silverOne = definitions?.find((definition) => definition.rank_id === 1);
-    const silverTwo = definitions?.find((definition) => definition.rank_id === 2);
-    if (!silverOne || !silverTwo) apiError(500, "Competitive rank definitions are unavailable");
+    const progress = rankProgress(STARTING_EXP);
     res.json({ profile: {
       user_id: user.id,
       steam_id: user.steam_id,
       username: user.username,
       avatar: user.avatar,
-      current_exp: 0,
-      rank_id: silverOne.rank_id,
-      rank_slug: silverOne.slug,
-      rank_name: silverOne.display_name,
-      rank_image_key: silverOne.image_key,
+      current_exp: progress.exp,
+      rank_id: progress.rank.id,
+      rank_slug: progress.rank.slug,
+      rank_name: progress.rank.name,
+      rank_image_key: progress.rank.imageKey,
       pro_league_unlocked: false,
       matches_completed: 0,
       wins: 0,
       losses: 0,
       kills: 0,
+      deaths: 0,
       assists: 0,
       headshot_kills: 0,
       last_match_at: null,
-      current_rank_min_exp: silverOne.minimum_exp,
-      next_rank_id: silverTwo.rank_id,
-      next_rank_name: silverTwo.display_name,
-      next_rank_min_exp: silverTwo.minimum_exp,
+      current_rank_min_exp: progress.rank.minimumExp,
+      next_rank_id: progress.next?.id ?? null,
+      next_rank_name: progress.next?.name ?? null,
+      next_rank_min_exp: progress.next?.minimumExp ?? null,
+      leaderboard_position: null,
     } });
   }));
-  router.get("/public/matches/:matchId/maps/:mapNumber", asyncRoute(async (req, res) => {
-    const matchId = z.string().regex(/^\d{1,64}$/, "matchId must be a MatchZy match id").parse(req.params.matchId);
-    const mapNumber = z.coerce.number().int().min(0).max(99).parse(req.params.mapNumber);
-    const [results, rounds] = await Promise.all([
-      db().from("rank_match_results").select("event_id,team_key,outcome,score_for,map_name,kills,deaths,assists,headshot_kills,rating_delta,stats,created_at,users(id,steam_id,username,avatar)").eq("match_external_id", matchId).eq("map_number", mapNumber),
-      db().from("match_rounds").select("round_number,winner_side,reason,team1_score,team2_score").eq("match_external_id", matchId).eq("map_number", mapNumber).order("round_number"),
+  /** Ranked match history with the EXP change and its breakdown (RANK-SYSTEM.md section 6). */
+  router.get("/public/competitive/players/:userId/matches", optionalUserRoute(async (req, res, viewer) => {
+    const userId = userIdSchema.parse(req.params.userId);
+    const limit = z.coerce.number().int().min(1).max(50).default(20).parse(req.query.limit || undefined);
+    if (!viewer || viewer.id !== userId) {
+      const hidden = await db().from("users").select("hidden_profile_sections").eq("id", userId).maybeSingle();
+      if (!isMissingColumnError(hidden.error)) legacyXError(hidden.error, "Unable to load profile privacy");
+      if (hiddenSectionsValue((hidden.data as DbRow | null)?.hidden_profile_sections).includes("recent_matches")) {
+        res.json({ entries: [], hidden: true });
+        return;
+      }
+    }
+    const { data, error } = await db().from("competitive_match_exp")
+      .select("event_id,match_id,team_key,outcome,exp_before,exp_delta,exp_after,rank_before,rank_after,exp_breakdown,counts_as_ranked,calculation_version,stats,created_at,core_matches(map_name,result,finished_at)")
+      .eq("user_id", userId).order("created_at", { ascending: false }).limit(limit);
+    legacyXError(error, "Unable to load ranked match history");
+    res.json({ hidden: false, entries: ((data ?? []) as DbRow[]).map(mapCompetitiveMatch) });
+  }));
+  /** One ranked match: map, score, both rosters with K/D/A and each player's EXP change. */
+  router.get("/public/ranked-matches/:matchId", asyncRoute(async (req, res) => {
+    const matchId = z.string().uuid().parse(req.params.matchId);
+    const [matchResult, rowsResult] = await Promise.all([
+      db().from("core_matches").select("id,map_name,map_number,matchzy_local_id,state,result,started_at,finished_at").eq("id", matchId).maybeSingle(),
+      db().from("competitive_match_exp").select("user_id,team_key,outcome,exp_before,exp_delta,exp_after,rank_after,exp_breakdown,counts_as_ranked,stats,created_at,users(id,steam_id,username,avatar,hidden_profile_sections)").eq("match_id", matchId),
     ]);
-    legacyXError(results.error, "Unable to load match");
-    const rows = (results.data ?? []) as DbRow[];
-    if (rows.length === 0) apiError(404, "Match was not found");
-    // The round timeline is optional (older matches, or match_rounds not migrated yet); never fail the scoreboard over it.
+    legacyXError(matchResult.error || rowsResult.error, "Unable to load ranked match");
+    if (!matchResult.data) apiError(404, "Match was not found");
+    const match = matchResult.data as DbRow;
+    const competitive = recordValue(recordValue(match.result).competitive_result);
+    // The round timeline is optional: it exists only for matches whose MatchZy round_end events were recorded.
+    const localId = textValue(match.matchzy_local_id);
+    const rounds = localId
+      ? await db().from("match_rounds").select("round_number,winner_side,reason,team1_score,team2_score").eq("match_external_id", localId).eq("map_number", numberValue(match.map_number) ?? 0).order("round_number")
+      : { data: [], error: null };
     if (rounds.error) console.warn("[legacy-x-api] match rounds unavailable", rounds.error.message);
-    const receipt = await db().from("plugin_event_receipts").select("payload").eq("event_id", textValue(rows[0]!.event_id)).maybeSingle();
-    res.json(mapMatchDetail({ matchId, mapNumber, results: rows, rounds: rounds.error ? [] : ((rounds.data ?? []) as DbRow[]), receiptPayload: receipt.data?.payload }));
+    const rows = (rowsResult.data ?? []) as DbRow[];
+    const team = (key: "team1" | "team2") => ({
+      key,
+      roundsWon: numberValue(recordValue(competitive[key]).rounds_won),
+      players: rows.filter(row => textValue(row.team_key) === key).map(row => {
+        const user = recordValue(row.users);
+        const stats = recordValue(row.stats);
+        const hidesMatches = hiddenSectionsValue(user.hidden_profile_sections).includes("recent_matches");
+        const breakdown = recordValue(row.exp_breakdown);
+        return {
+          userId: textValue(user.id),
+          steamId: textValue(user.steam_id),
+          name: textValue(user.username),
+          avatar: textValue(user.avatar),
+          kills: hidesMatches ? null : numberValue(stats.kills),
+          deaths: hidesMatches ? null : numberValue(stats.deaths),
+          assists: hidesMatches ? null : numberValue(stats.assists),
+          expDelta: numberValue(row.exp_delta),
+          expAfter: numberValue(row.exp_after),
+          rankId: numberValue(row.rank_after),
+          reason: textValue(breakdown.reason) || "ranked",
+        };
+      }).sort((a, b) => (b.expDelta ?? 0) - (a.expDelta ?? 0)),
+    });
+    res.json({
+      matchId,
+      map: textValue(match.map_name),
+      state: textValue(match.state),
+      startedAt: textValue(match.started_at) || null,
+      finishedAt: textValue(match.finished_at) || null,
+      mode: textValue(competitive.mode) || null,
+      totalRounds: numberValue(competitive.total_rounds),
+      teams: [team("team1"), team("team2")],
+      rounds: rounds.error ? [] : mapMatchRounds((rounds.data ?? []) as DbRow[]),
+    });
   }));
   router.get("/public/servers", asyncRoute(async (_req, res) => {
     res.json({ entries: await readServers() });
@@ -990,17 +995,46 @@ export function createLegacyXRouter() {
     if (!server) apiError(404, "Server not found");
     res.json({ server });
   }));
+  /** Records a player's intent to join a live server (the connect itself goes through steam://connect). */
+  router.post("/public/servers/:serverId/join", optionalUserRoute(async (req, res, user) => {
+    noBody(req);
+    const serverId = z.string().trim().min(1).max(120).parse(req.params.serverId);
+    const server = (await readServers()).find(entry => entry.id === serverId);
+    if (!server) apiError(404, "Server was not found");
+    if (server.status !== "online" || !server.connectAddress) apiError(409, "Server is not currently joinable");
+    if (user) {
+      const { error } = await db().from("audit_logs").insert({ actor_type: "user", actor_id: user.id, action: "server.join", target_type: "reconnect_servers", metadata: { serverId, map: server.map, mode: server.mode } });
+      legacyXError(error, "Unable to record server join");
+    }
+    res.status(204).end();
+  }));
+  router.get("/public/killfeed", asyncRoute(async (req, res) => {
+    const after = z.coerce.number().int().min(0).default(0).parse(req.query.after || undefined);
+    res.setHeader("Cache-Control", "no-store");
+    res.json(killFeed.since(after));
+  }));
+  /**
+   * Quick join: 5x5 / Pro prefer the joinable server with the most players (closest to starting), then the
+   * viewer's favourite maps; Fun picks the busiest server with a free slot.
+   */
+  router.get("/play/:mode/quick-join", asyncRoute(async (req, res) => {
+    const mode = z.enum(["5v5", "fun", "pro"]).parse(req.params.mode);
+    const favouriteMaps = z.string().max(400).optional().parse(req.query.maps || undefined)?.split(",").map(map => map.trim()).filter(Boolean) ?? [];
+    const joinable = (await readServers()).filter(server => server.mode === mode && server.status === "online" && server.players < server.maxPlayers && server.connectAddress);
+    joinable.sort((a, b) => b.players - a.players || Number(favouriteMaps.includes(b.map)) - Number(favouriteMaps.includes(a.map)) || a.name.localeCompare(b.name));
+    const server = joinable[0] ?? null;
+    res.json({ server, connectAddress: server?.connectAddress ?? null });
+  }));
   router.get("/public/overview", asyncRoute(async (_req, res) => {
     const today = new Date();
     today.setUTCHours(0, 0, 0, 0);
-    const [servers, clans, matches] = await Promise.all([
+    const [servers, matches] = await Promise.all([
       readServers(),
-      db().from("community_clan_leaderboard").select("clan_id").eq("season_slug", readSeason(undefined)).limit(100),
       db().from("core_match_history").select("match_id").gte("started_at", today.toISOString()).limit(1_000),
     ]);
-    legacyXError(clans.error || matches.error, "Unable to load public overview");
+    legacyXError(matches.error, "Unable to load public overview");
     const online = servers.filter(server => server.status !== "offline");
-    res.json({ playersOnline: online.reduce((total, server) => total + server.players, 0), liveServers: online.length, matchesToday: (matches.data ?? []).length, activeClans: (clans.data ?? []).length });
+    res.json({ playersOnline: online.reduce((total, server) => total + server.players, 0), liveServers: online.length, matchesToday: (matches.data ?? []).length });
   }));
 
   // Frontend contract: every route below is mounted by server/_core/index.ts under /api/v1.
@@ -1122,9 +1156,10 @@ export function createLegacyXRouter() {
     res.json(payload);
   }));
   router.put("/profile/me", userRoute(async (req, res, user) => {
-    const { hiddenSections, ...fields } = profileUpdateSchema.parse(req.body);
-    const updates: Record<string, unknown> = { ...fields };
+    const { hiddenSections, notificationPrefs } = profileUpdateSchema.parse(req.body);
+    const updates: Record<string, unknown> = {};
     if (hiddenSections) updates.hidden_profile_sections = PROFILE_HIDEABLE_SECTIONS.filter((section) => hiddenSections.includes(section));
+    if (notificationPrefs) updates.notification_prefs = { tournaments: notificationPrefs.tournaments, rank_changes: notificationPrefs.rankChanges };
     if (Object.keys(updates).length === 0) apiError(400, "At least one profile field is required");
     const { error } = await db().from("users").update(updates).eq("id", user.id);
     if (isMissingColumnError(error)) apiError(503, "Profile privacy is not available yet");
@@ -1178,16 +1213,11 @@ export function createLegacyXRouter() {
       res.json([]);
       return;
     }
-    // MatchZy results carry the match id/map number needed to open match details; legacy history rows do not.
-    const ranked = await db().from("rank_match_results").select("match_external_id,map_number,map_name,outcome,score_for,score_against,kills,deaths,created_at").eq("user_id", userId).order("created_at", { ascending: false }).limit(30);
-    legacyXError(ranked.error, "Unable to load match history");
-    if ((ranked.data ?? []).length > 0) {
-      res.json(((ranked.data ?? []) as DbRow[]).map(mapRankedRecentMatch));
-      return;
-    }
-    const { data, error } = await db().from("player_match_history").select("map,result,score,kd").eq("user_id", userId).order("created_at", { ascending: false });
+    const { data, error } = await db().from("competitive_match_exp")
+      .select("event_id,match_id,team_key,outcome,exp_before,exp_delta,exp_after,rank_before,rank_after,exp_breakdown,counts_as_ranked,calculation_version,stats,created_at,core_matches(map_name,result,finished_at)")
+      .eq("user_id", userId).order("created_at", { ascending: false }).limit(30);
     legacyXError(error, "Unable to load match history");
-    res.json(((data ?? []) as DbRow[]).map(mapRecentMatch));
+    res.json(((data ?? []) as DbRow[]).map(mapCompetitiveMatch));
   }));
   router.put("/profile/me/links", userRoute(async (req, res, user) => {
     const input = z.object({ links: z.array(z.object({ url: z.string().url().max(2048) })).max(20) }).parse(req.body);
@@ -1487,186 +1517,9 @@ export function createLegacyXRouter() {
     res.json({ version, entryCount: entries.length });
   }));
 
-  const frontendMatches = optionalUserRoute(async (req, res, user) => {
-    const filters = z.object({ mode: playModeSchema.optional(), status: matchStatusSchema.optional() }).parse(req.query);
-    let query = db().from("matches").select("*,game_servers(ip_address,port)").order("number");
-    if (filters.mode) query = query.eq("mode", filters.mode);
-    if (filters.status) query = query.eq("status", filters.status);
-    const [matchesResult, favoritesResult] = await Promise.all([query, user ? db().from("match_favorites").select("match_id").eq("user_id", user.id) : Promise.resolve({ data: [], error: null })]);
-    legacyXError(matchesResult.error || favoritesResult.error, "Unable to load matches");
-    const favorites = new Set(((favoritesResult.data ?? []) as DbRow[]).map(row => textValue(row.match_id)));
-    res.json(((matchesResult.data ?? []) as DbRow[]).map(match => mapMatch(match, favorites.has(textValue(match.id)))));
-  });
-  router.get("/play/matches", frontendMatches);
-  router.get("/play/matches/:matchId", optionalUserRoute(async (req, res, user) => {
-    const matchId = userIdSchema.parse(req.params.matchId);
-    const [matchResult, favoriteResult] = await Promise.all([db().from("matches").select("*,game_servers(ip_address,port)").eq("id", matchId).maybeSingle(), user ? db().from("match_favorites").select("id").eq("match_id", matchId).eq("user_id", user.id).maybeSingle() : Promise.resolve({ data: null, error: null })]);
-    legacyXError(matchResult.error || favoriteResult.error, "Unable to load match");
-    if (!matchResult.data) apiError(404, "Match was not found");
-    res.json(mapMatch(matchResult.data as DbRow, Boolean(favoriteResult.data)));
-  }));
-  router.post("/play/matches/:matchId/join", optionalUserRoute(async (req, res, user) => {
-    noBody(req);
-    const matchId = userIdSchema.parse(req.params.matchId);
-    const { data, error } = await db().from("matches").select("status,players,max_players,server_id").eq("id", matchId).maybeSingle();
-    legacyXError(error, "Unable to resolve match");
-    if (!data) apiError(404, "Match was not found");
-    if (data.status === "locked" || data.status === "finished" || data.players >= data.max_players) apiError(409, "Match is not joinable");
-    if (user) {
-      const { error: auditError } = await db().from("audit_logs").insert({ actor_type: "user", actor_id: user.id, action: "match.join", target_type: "matches", target_id: matchId, metadata: { serverId: data.server_id } });
-      legacyXError(auditError, "Unable to record match join");
-    }
-    res.status(204).end();
-  }));
-  router.post("/play/matches/:matchId/favorite", userRoute(async (req, res, user) => {
-    const input = z.object({ favorite: z.boolean() }).parse(req.body);
-    const matchId = userIdSchema.parse(req.params.matchId);
-    const { data: match, error: matchError } = await db().from("matches").select("*,game_servers(ip_address,port)").eq("id", matchId).maybeSingle();
-    legacyXError(matchError, "Unable to load match");
-    if (!match) apiError(404, "Match was not found");
-    if (input.favorite) {
-      const { error } = await db().from("match_favorites").upsert({ user_id: user.id, match_id: matchId }, { onConflict: "user_id,match_id" });
-      legacyXError(error, "Unable to favorite match");
-    } else {
-      const { error } = await db().from("match_favorites").delete().eq("user_id", user.id).eq("match_id", matchId);
-      legacyXError(error, "Unable to remove match favorite");
-    }
-    res.json(mapMatch(match as DbRow, input.favorite));
-  }));
 
-  router.get("/servers", userRoute(async (req, res) => {
-    const filters = z.object({ mode: z.string().trim().min(1).max(64).optional(), status: serverStatusSchema.optional() }).parse(req.query);
-    let query = db().from("game_servers").select("*").order("name");
-    if (filters.mode) query = query.eq("mode", filters.mode);
-    if (filters.status) query = query.eq("status", filters.status);
-    const { data, error } = await query;
-    legacyXError(error, "Unable to load servers");
-    res.json(((data ?? []) as DbRow[]).map(mapServer));
-  }));
-  router.get("/servers/home-stats", userRoute(async (_req, res) => {
-    const dayStart = new Date();
-    dayStart.setUTCHours(0, 0, 0, 0);
-    const [servers, matches, clans] = await Promise.all([
-      db().from("game_servers").select("current_players,status"),
-      db().from("matches").select("id", { count: "exact", head: true }).gte("created_at", dayStart.toISOString()),
-      db().from("clans").select("id", { count: "exact", head: true }),
-    ]);
-    legacyXError(servers.error || matches.error || clans.error, "Unable to load home statistics");
-    const rows = (servers.data ?? []) as DbRow[];
-    res.json({ playersOnline: rows.filter(server => server.status === "online" || server.status === "full").reduce((total, server) => total + numberValue(server.current_players), 0), liveServers: rows.filter(server => server.status === "online" || server.status === "full").length, matchesToday: matches.count ?? 0, activeClans: clans.count ?? 0 });
-  }));
-  router.get("/servers/:serverId", userRoute(async (req, res) => {
-    const { data, error } = await db().from("game_servers").select("*").eq("id", userIdSchema.parse(req.params.serverId)).maybeSingle();
-    legacyXError(error, "Unable to load server");
-    if (!data) apiError(404, "Server was not found");
-    res.json(mapServer(data as DbRow));
-  }));
-  router.post("/servers/:serverId/join", userRoute(async (req, res) => {
-    noBody(req);
-    const { data, error } = await db().from("game_servers").select("id,status,ip_address,port").eq("id", userIdSchema.parse(req.params.serverId)).maybeSingle();
-    legacyXError(error, "Unable to load server connection");
-    if (!data) apiError(404, "Server was not found");
-    if (!data.ip_address || !data.port || data.status === "offline") apiError(409, "Server is not currently joinable");
-    res.status(204).end();
-  }));
 
-  const frontendLeaderboard = userRoute(async (req, res) => {
-    z.object({ mode: playModeSchema.optional(), region: z.string().trim().min(1).max(64).optional() }).parse(req.query);
-    const { data, error } = await db().from("player_stats").select("*,users!inner(id,steam_id,username,avatar,level)").order("rating", { ascending: false });
-    legacyXError(error, "Unable to load leaderboard");
-    const rows = (data ?? []) as DbRow[];
-    const moderationStatuses = await resolveModerationStatuses(rows.map(row => textValue(row.user_id)), db());
-    res.json(rows.map((row, index) => mapLeader(row, index, moderationStatuses)));
-  });
-  router.get("/leaderboard", frontendLeaderboard);
-  router.get("/players/leaderboard", frontendLeaderboard);
-  router.get("/players/:playerId", userRoute(async (req, res) => {
-    const playerId = userIdSchema.parse(req.params.playerId);
-    const { data, error } = await db().from("player_stats").select("*,users!inner(id,steam_id,username,avatar,level)").order("rating", { ascending: false });
-    legacyXError(error, "Unable to load player");
-    const rows = (data ?? []) as DbRow[];
-    const index = rows.findIndex(row => textValue(row.user_id) === playerId);
-    if (index < 0) apiError(404, "Player was not found");
-    const moderationStatuses = await resolveModerationStatuses([textValue(rows[index]!.user_id)], db());
-    res.json(mapLeader(rows[index]!, index, moderationStatuses));
-  }));
 
-  router.get("/clans", userRoute(async (_req, res) => {
-    const { data, error } = await db().from("clans").select("*,clan_members(count)").order("created_at", { ascending: false });
-    legacyXError(error, "Unable to load clans");
-    res.json(((data ?? []) as DbRow[]).map(mapClanCard));
-  }));
-  router.get("/clans/team", userRoute(async (_req, res) => {
-    const { data, error } = await db().from("staff_team").select("name,role,avatar,description").order("display_order");
-    legacyXError(error, "Unable to load staff team");
-    res.json((data ?? []).map((member: DbRow) => ({ name: textValue(member.name), role: textValue(member.role), avatar: textValue(member.avatar), description: textValue(member.description) })));
-  }));
-  router.get("/clans/:clanId", userRoute(async (req, res) => {
-    res.json(await loadClanDetail(userIdSchema.parse(req.params.clanId)));
-  }));
-  router.get("/clans/:clanId/members", userRoute(async (req, res) => {
-    const clanId = userIdSchema.parse(req.params.clanId);
-    const { data: clan, error: clanError } = await db().from("clans").select("id").eq("id", clanId).maybeSingle();
-    legacyXError(clanError, "Unable to load clan");
-    if (!clan) apiError(404, "Clan was not found");
-    const { data, error } = await db().from("clan_members").select("role,user_id,users(id,username,avatar)").eq("clan_id", clanId).order("created_at");
-    legacyXError(error, "Unable to load clan members");
-    res.json(((data ?? []) as DbRow[]).map(mapClanMember));
-  }));
-  router.post("/clans", userRoute(async (req, res, user) => {
-    const input = z.object({ name: z.string().trim().min(2).max(64), tag: z.string().trim().min(1).max(6), logo: z.string().max(2048), thumbnail: z.string().max(2048).nullable().optional(), region: z.string().trim().min(2).max(64).optional() }).parse(req.body);
-    const { data, error } = await db().rpc("create_clan_with_leader", { p_owner_id: user.id, p_name: input.name, p_tag: input.tag, p_logo: input.logo, p_thumbnail: input.thumbnail ?? null, p_description: null, p_region: input.region ?? "Mongolia", p_max_players: 10 });
-    legacyXError(error, "Unable to create clan");
-    if (!data) apiError(500, "Clan was not created");
-    res.status(201).json(await loadClanDetail(String(data)));
-  }));
-  router.put("/clans/:clanId", userRoute(async (req, res, user) => {
-    const clanId = userIdSchema.parse(req.params.clanId);
-    const input = z.object({ name: z.string().trim().min(2).max(64).optional(), tag: z.string().trim().min(1).max(6).optional(), logo: z.string().max(2048).optional(), thumbnail: z.string().max(2048).nullable().optional(), region: z.string().trim().min(2).max(64).optional() }).refine(value => Object.keys(value).length > 0, "At least one clan field is required").parse(req.body);
-    const { data: clan, error: clanError } = await db().from("clans").select("id").eq("id", clanId).eq("owner_id", user.id).maybeSingle();
-    legacyXError(clanError, "Unable to validate clan ownership");
-    if (!clan) apiError(403, "Clan leader access is required");
-    const { error } = await db().from("clans").update(input).eq("id", clanId);
-    legacyXError(error, "Unable to update clan");
-    res.json(await loadClanDetail(clanId));
-  }));
-
-  router.get("/tournaments/matches", asyncRoute(async (req, res) => {
-    const filters = z.object({ status: tournamentMatchStatusSchema.optional() }).parse(req.query);
-    let query = db().from("tournament_matches").select("*").order("bracket_order");
-    if (filters.status) query = query.eq("status", filters.status);
-    const { data, error } = await query;
-    legacyXError(error, "Unable to load tournament matches");
-    res.json(((data ?? []) as DbRow[]).map(mapTournamentMatch));
-  }));
-  router.get("/tournaments/matches/:matchId", asyncRoute(async (req, res) => {
-    const { data, error } = await db().from("tournament_matches").select("*").eq("id", userIdSchema.parse(req.params.matchId)).maybeSingle();
-    legacyXError(error, "Unable to load tournament match");
-    if (!data) apiError(404, "Tournament match was not found");
-    res.json(mapTournamentMatch(data as DbRow));
-  }));
-  router.get("/tournaments/bracket", asyncRoute(async (_req, res) => {
-    const { data, error } = await db().from("tournament_matches").select("*").order("bracket_order");
-    legacyXError(error, "Unable to load tournament bracket");
-    const rounds = new Map<string, DbRow[]>();
-    for (const match of (data ?? []) as DbRow[]) rounds.set(textValue(match.round), [...(rounds.get(textValue(match.round)) ?? []), match]);
-    res.json(Array.from(rounds.entries()).map(([round, matches]) => ({ round, matches: matches.map(mapTournamentMatch) })));
-  }));
-  router.get("/tournaments/info", asyncRoute(async (_req, res) => {
-    const tournament = await loadActiveTournament();
-    const { count, error } = await db().from("tournament_registrations").select("id", { count: "exact", head: true }).eq("tournament_id", tournament.id);
-    legacyXError(error, "Unable to count tournament registrations");
-    res.json({ season: textValue(tournament.season), prizePool: textValue(tournament.prize_pool), format: textValue(tournament.format), registeredClans: count ?? 0, nextMatchTime: textValue(tournament.next_match_time) });
-  }));
-  router.post("/tournaments/register", userRoute(async (req, res, user) => {
-    const input = z.object({ clanId: userIdSchema }).parse(req.body);
-    const [tournament, clanResult] = await Promise.all([loadActiveTournament(), db().from("clans").select("id").eq("id", input.clanId).eq("owner_id", user.id).maybeSingle()]);
-    legacyXError(clanResult.error, "Unable to validate clan ownership");
-    if (!clanResult.data) apiError(403, "Only the clan owner can register a clan");
-    const { error } = await db().from("tournament_registrations").insert({ tournament_id: tournament.id, clan_id: input.clanId });
-    legacyXError(error, "Unable to register clan for tournament");
-    res.status(204).end();
-  }));
 
   router.get("/moderation/penalties", asyncRoute(async (req, res) => {
     const filters = z.object({ type: penaltyTypeSchema.optional(), query: z.string().trim().min(1).max(64).optional() }).parse(req.query);
@@ -1720,12 +1573,6 @@ export function createLegacyXRouter() {
     const { data, error } = await db().from("users").select("id,steam_id,username,avatar,level,player_stats(*)").ilike("username", `%${input.query}%`).order("username");
     legacyXError(error, "Unable to search players");
     res.json({ players: ((data ?? []) as DbRow[]).map(mapLeaderFromUser) });
-  }));
-  router.get("/search/clans", userRoute(async (req, res) => {
-    const input = z.object({ query: z.string().trim().min(1).max(64) }).parse(req.query);
-    const { data, error } = await db().from("clans").select("*,clan_members(count)").ilike("name", `%${input.query}%`).order("name");
-    legacyXError(error, "Unable to search clans");
-    res.json({ clans: ((data ?? []) as DbRow[]).map(mapClanCard) });
   }));
   router.get("/community/content", asyncRoute(async (_req, res) => {
     const [creators, partners] = await Promise.all([
@@ -1805,22 +1652,6 @@ export function createLegacyXRouter() {
       res.setHeader("Cache-Control", "no-store");
       res.redirect(302, new URL(`/staffpanel?staff_error=${code}&trace=${trace}`, redirect).toString());
     }
-  }));
-  router.post("/auth/logout", asyncRoute(async (req, res) => {
-    await revokeRefreshSession(refreshTokenFromRequest(req));
-    res.clearCookie("legacyx_access_token", sessionCookieOptions(0));
-    res.clearCookie("legacyx_refresh_token", sessionCookieOptions(0));
-    res.status(204).end();
-  }));
-  router.post("/auth/refresh", asyncRoute(async (req, res) => {
-    const user = await rotateRefreshSession(refreshTokenFromRequest(req));
-    const [accessToken, refreshToken] = await Promise.all([issueAccessToken(user), createRefreshSession(user.id)]);
-    res.cookie("legacyx_access_token", accessToken, sessionCookieOptions(15 * 60 * 1000));
-    res.cookie("legacyx_refresh_token", refreshToken, sessionCookieOptions(30 * 24 * 60 * 60 * 1000));
-    res.json({ accessToken, refreshToken });
-  }));
-  router.get("/auth/me", userRoute(async (_req, res, user) => {
-    res.json({ user: await getUserWithStats(user.id) });
   }));
 
   router.get("/staffpanel/access", staffPanelRoute(async (_req, res, staff) => {
@@ -2009,262 +1840,27 @@ export function createLegacyXRouter() {
     res.status(202).json({ action: data });
   }));
 
-  const leaderboardHandler = asyncRoute(async (req, res) => {
-    const { sort, limit, offset } = leaderboardSchema.parse(req.query);
-    const { data, error, count } = await db().from("player_stats").select("*,users(id,steam_id,username,avatar,level,rank)", { count: "exact" }).order(sort, { ascending: false }).range(offset, offset + limit - 1);
-    legacyXError(error, "Unable to load leaderboard");
-    sendPage(res, data, count, limit, offset);
-  });
-  router.get("/leaderboard", leaderboardHandler);
-  router.get("/players/leaderboard", leaderboardHandler);
-  router.get("/players/:playerId", asyncRoute(async (req, res) => {
-    res.json({ player: await getUserWithStats(req.params.playerId) });
-  }));
 
-  router.get("/profile/:userId", asyncRoute(async (req, res) => {
-    const [user, linksResult] = await Promise.all([
-      getUserWithStats(req.params.userId),
-      db().from("user_links").select("id,url,created_at").eq("user_id", req.params.userId).order("created_at"),
-    ]);
-    legacyXError(linksResult.error, "Unable to load profile links");
-    res.json({ profile: user, links: linksResult.data ?? [] });
-  }));
-  router.put("/profile/me", userRoute(async (req, res, user) => {
-    const updates = profileUpdateSchema.parse(req.body);
-    const { data, error } = await db().from("users").update(updates).eq("id", user.id).select("id,steam_id,username,avatar,level,rank,faceit_username,faceit_elo,faceit_level").single();
-    legacyXError(error, "Unable to update profile");
-    res.json({ profile: data });
-  }));
   router.get("/competitive/me/access", userRoute(async (_req, res, user) => {
     const { data, error } = await db().from("competitive_player_profiles").select("current_exp,rank_id,rank_name,rank_image_key,pro_league_unlocked").eq("user_id", user.id).maybeSingle();
     legacyXError(error, "Unable to load competitive access");
     res.json({
       competitive: data ?? null,
       proLeagueUnlocked: Boolean(data?.pro_league_unlocked),
-      requiredRankId: 11,
-      requiredRankName: "Master Guardian I",
+      requiredRankId: PRO_LEAGUE_RANK_ID,
+      requiredRankName: rankById(PRO_LEAGUE_RANK_ID)!.name,
+      requiredRankImageKey: rankById(PRO_LEAGUE_RANK_ID)!.imageKey,
+      requiredExp: PRO_LEAGUE_UNLOCK_EXP,
+      keepExp: PRO_LEAGUE_KEEP_EXP,
     });
   }));
-  router.get("/profile/:userId/stats", asyncRoute(async (req, res) => {
-    const { data, error } = await db().from("player_stats").select("*").eq("user_id", req.params.userId).maybeSingle();
-    legacyXError(error, "Unable to load player stats");
-    if (!data) apiError(404, "Player stats were not found");
-    res.json({ stats: data });
-  }));
-  router.get("/profile/:userId/matches", asyncRoute(async (req, res) => {
-    const { limit, offset } = pageSchema.parse(req.query);
-    const { data, error, count } = await db().from("player_match_history").select("*", { count: "exact" }).eq("user_id", req.params.userId).order("created_at", { ascending: false }).range(offset, offset + limit - 1);
-    legacyXError(error, "Unable to load match history");
-    sendPage(res, data, count, limit, offset);
-  }));
-  router.get("/profile/:userId/penalties", asyncRoute(async (req, res) => {
-    const { data, error } = await db().from("penalties").select("*").eq("user_id", req.params.userId).order("created_at", { ascending: false });
-    legacyXError(error, "Unable to load penalties");
-    res.json({ penalties: data ?? [] });
-  }));
-  router.put("/profile/me/links", userRoute(async (req, res, user) => {
-    const { links } = linksSchema.parse(req.body);
-    const { error } = await db().rpc("replace_user_links", { p_user_id: user.id, p_links: links });
-    legacyXError(error, "Unable to replace profile links");
-    res.json({ links });
-  }));
 
-  router.get("/servers", asyncRoute(async (req, res) => {
-    let query = db().from("game_servers").select("*").order("name");
-    if (typeof req.query.status === "string") query = query.eq("status", req.query.status);
-    if (typeof req.query.mode === "string") query = query.eq("mode", req.query.mode);
-    const { data, error } = await query;
-    legacyXError(error, "Unable to load servers");
-    res.json({ servers: data ?? [] });
-  }));
-  router.get("/servers/stats", asyncRoute(async (_req, res) => {
-    const [servers, matches, clans] = await Promise.all([
-      db().from("game_servers").select("id,current_players,status", { count: "exact" }),
-      db().from("matches").select("id", { count: "exact" }).eq("status", "live"),
-      db().from("clans").select("id", { count: "exact" }),
-    ]);
-    legacyXError(servers.error || matches.error || clans.error, "Unable to load server statistics");
-    res.json({ servers: servers.count ?? 0, onlinePlayers: (servers.data ?? []).reduce((total, server) => total + server.current_players, 0), liveMatches: matches.count ?? 0, clans: clans.count ?? 0 });
-  }));
-  router.get("/servers/:serverId", asyncRoute(async (req, res) => {
-    const { data, error } = await db().from("game_servers").select("*").eq("id", req.params.serverId).maybeSingle();
-    legacyXError(error, "Unable to load server");
-    if (!data) apiError(404, "Server was not found");
-    res.json({ server: data });
-  }));
-  router.post("/servers/:serverId/join", asyncRoute(async (req, res) => {
-    const { data, error } = await db().from("game_servers").select("id,name,ip_address,port,status").eq("id", req.params.serverId).maybeSingle();
-    legacyXError(error, "Unable to load server connection");
-    if (!data) apiError(404, "Server was not found");
-    if (!data.ip_address || !data.port || data.status === "offline") apiError(409, "Server is not currently joinable");
-    res.json({ serverId: data.id, name: data.name, connect: `${data.ip_address}:${data.port}` });
-  }));
 
-  router.get("/matches", asyncRoute(async (req, res) => {
-    const { limit, offset } = pageSchema.parse(req.query);
-    let query = db().from("matches").select("*,game_servers(id,name,ip_address,port),maps(id,label)", { count: "exact" }).order("number").range(offset, offset + limit - 1);
-    if (typeof req.query.mode === "string") query = query.eq("mode", req.query.mode);
-    if (typeof req.query.status === "string") query = query.eq("status", req.query.status);
-    const { data, error, count } = await query;
-    legacyXError(error, "Unable to load matches");
-    sendPage(res, data, count, limit, offset);
-  }));
-  router.get("/matches/:matchId", asyncRoute(async (req, res) => {
-    const { data, error } = await db().from("matches").select("*,game_servers(id,name,ip_address,port),maps(id,label)").eq("id", req.params.matchId).maybeSingle();
-    legacyXError(error, "Unable to load match");
-    if (!data) apiError(404, "Match was not found");
-    res.json({ match: data });
-  }));
-  router.post("/matches/:matchId/join", asyncRoute(async (req, res) => {
-    const { data, error } = await db().from("matches").select("id,status,game_servers(ip_address,port)").eq("id", req.params.matchId).maybeSingle();
-    legacyXError(error, "Unable to resolve match server");
-    if (!data) apiError(404, "Match was not found");
-    res.json({ matchId: data.id, status: data.status, server: data.game_servers });
-  }));
-  router.post("/matches/:matchId/favorite", userRoute(async (req, res, user) => {
-    const { data: existing, error } = await db().from("match_favorites").select("id").eq("user_id", user.id).eq("match_id", req.params.matchId).maybeSingle();
-    legacyXError(error, "Unable to read match favorite");
-    if (existing) {
-      const { error: deleteError } = await db().from("match_favorites").delete().eq("id", existing.id);
-      legacyXError(deleteError, "Unable to remove match favorite");
-      res.json({ favorited: false });
-      return;
-    }
-    const { error: insertError } = await db().from("match_favorites").insert({ user_id: user.id, match_id: req.params.matchId });
-    legacyXError(insertError, "Unable to favorite match");
-    res.json({ favorited: true });
-  }));
 
-  router.get("/clans", asyncRoute(async (req, res) => {
-    const { limit, offset } = pageSchema.parse(req.query);
-    let query = db().from("clans").select("*,clan_members(count)", { count: "exact" }).order("created_at", { ascending: false }).range(offset, offset + limit - 1);
-    if (typeof req.query.query === "string" && req.query.query.trim()) query = query.ilike("name", `%${req.query.query.trim()}%`);
-    const { data, error, count } = await query;
-    legacyXError(error, "Unable to load clans");
-    sendPage(res, data, count, limit, offset);
-  }));
-  router.get("/clans/me", userRoute(async (_req, res, user) => {
-    const { data, error } = await db().from("clan_members").select("role,clans(*)").eq("user_id", user.id).maybeSingle();
-    legacyXError(error, "Unable to load current clan");
-    res.json({ membership: data ?? null });
-  }));
-  router.post("/clans", userRoute(async (req, res, user) => {
-    const input = clanSchema.parse(req.body);
-    const { data, error } = await db().rpc("create_clan_with_leader", { p_owner_id: user.id, p_name: input.name, p_tag: input.tag, p_logo: input.logo ?? "", p_thumbnail: input.thumbnail ?? null, p_description: input.description ?? null, p_region: input.region ?? "Mongolia", p_max_players: input.maxPlayers ?? 10 });
-    legacyXError(error, "Unable to create clan");
-    res.status(201).json({ clanId: data });
-  }));
-  router.get("/clans/:clanId", asyncRoute(async (req, res) => {
-    const { data, error } = await db().from("clans").select("*,users!clans_owner_id_fkey(id,username,avatar),clan_members(count)").eq("id", req.params.clanId).maybeSingle();
-    legacyXError(error, "Unable to load clan");
-    if (!data) apiError(404, "Clan was not found");
-    res.json({ clan: data });
-  }));
-  router.get("/clans/:clanId/members", asyncRoute(async (req, res) => {
-    const { data, error } = await db().from("clan_members").select("id,role,created_at,users(id,username,avatar,level,rank)").eq("clan_id", req.params.clanId).order("created_at");
-    legacyXError(error, "Unable to load clan members");
-    res.json({ members: data ?? [] });
-  }));
-  router.post("/clans/:clanId/join", userRoute(async (req, res, user) => {
-    const { error } = await db().rpc("join_clan", { p_user_id: user.id, p_clan_id: req.params.clanId });
-    legacyXError(error, "Unable to join clan");
-    res.status(204).end();
-  }));
-  router.post("/clans/:clanId/leave", userRoute(async (req, res, user) => {
-    const { data: clan, error: clanError } = await db().from("clans").select("owner_id").eq("id", req.params.clanId).maybeSingle();
-    legacyXError(clanError, "Unable to load clan");
-    if (!clan) apiError(404, "Clan was not found");
-    if (clan.owner_id === user.id) apiError(409, "Clan owner must delete the clan or transfer ownership before leaving");
-    const { error } = await db().from("clan_members").delete().eq("clan_id", req.params.clanId).eq("user_id", user.id);
-    legacyXError(error, "Unable to leave clan");
-    res.status(204).end();
-  }));
-  router.delete("/clans/:clanId", userRoute(async (req, res, user) => {
-    const { error } = await db().rpc("delete_owned_clan", { p_owner_id: user.id, p_clan_id: req.params.clanId });
-    legacyXError(error, "Unable to delete clan");
-    res.status(204).end();
-  }));
 
-  router.get("/tournaments/info", asyncRoute(async (_req, res) => {
-    const { data: tournament, error } = await db().from("tournaments").select("*").in("status", ["active", "upcoming"]).order("created_at", { ascending: false }).limit(1).maybeSingle();
-    legacyXError(error, "Unable to load tournament");
-    if (!tournament) {
-      res.json({ tournament: null, registeredClans: 0 });
-      return;
-    }
-    const { count, error: countError } = await db().from("tournament_registrations").select("id", { count: "exact", head: true }).eq("tournament_id", tournament.id);
-    legacyXError(countError, "Unable to count tournament registrations");
-    res.json({ tournament, registeredClans: count ?? 0 });
-  }));
-  router.get("/tournaments/matches", asyncRoute(async (req, res) => {
-    let query = db().from("tournament_matches").select("*,tournaments(id,season),maps(id,label)").order("bracket_order");
-    if (typeof req.query.tournamentId === "string") query = query.eq("tournament_id", req.query.tournamentId);
-    const { data, error } = await query;
-    legacyXError(error, "Unable to load tournament matches");
-    res.json({ matches: data ?? [] });
-  }));
-  router.get("/tournaments/matches/:matchId", asyncRoute(async (req, res) => {
-    const { data, error } = await db().from("tournament_matches").select("*,tournaments(id,season),maps(id,label)").eq("id", req.params.matchId).maybeSingle();
-    legacyXError(error, "Unable to load tournament match");
-    if (!data) apiError(404, "Tournament match was not found");
-    res.json({ match: data });
-  }));
-  router.get("/tournaments/bracket", asyncRoute(async (req, res) => {
-    let query = db().from("tournament_matches").select("*").order("bracket_order");
-    if (typeof req.query.tournamentId === "string") query = query.eq("tournament_id", req.query.tournamentId);
-    const { data, error } = await query;
-    legacyXError(error, "Unable to load tournament bracket");
-    res.json({ bracket: data ?? [] });
-  }));
-  router.post("/tournaments/register", userRoute(async (req, res, user) => {
-    const input = z.object({ tournamentId: z.string().uuid(), clanId: z.string().uuid() }).parse(req.body);
-    const { data: clan, error: clanError } = await db().from("clans").select("id").eq("id", input.clanId).eq("owner_id", user.id).maybeSingle();
-    legacyXError(clanError, "Unable to validate clan ownership");
-    if (!clan) apiError(403, "Only the clan owner can register a clan");
-    const { error } = await db().from("tournament_registrations").insert({ tournament_id: input.tournamentId, clan_id: input.clanId });
-    legacyXError(error, "Unable to register clan for tournament");
-    res.status(201).end();
-  }));
 
-  router.get("/penalties", asyncRoute(async (req, res) => {
-    const { limit, offset } = pageSchema.parse(req.query);
-    let query = db().from("penalties").select("*,users!penalties_user_id_fkey(id,username,avatar)", { count: "exact" }).order("created_at", { ascending: false }).range(offset, offset + limit - 1);
-    if (typeof req.query.type === "string") query = query.eq("type", req.query.type);
-    const { data, error, count } = await query;
-    legacyXError(error, "Unable to load penalties");
-    sendPage(res, data, count, limit, offset);
-  }));
-  router.get("/penalties/stats", asyncRoute(async (_req, res) => {
-    const { data, error } = await db().from("penalties").select("type,is_permanent,is_unbanned");
-    legacyXError(error, "Unable to load penalty statistics");
-    const penalties = data ?? [];
-    res.json({ total: penalties.length, active: penalties.filter(p => !p.is_unbanned).length, permanent: penalties.filter(p => p.is_permanent).length, byType: penalties.reduce<Record<string, number>>((result, penalty) => ({ ...result, [penalty.type]: (result[penalty.type] ?? 0) + 1 }), {}) });
-  }));
-  router.get("/penalties/:penaltyId", asyncRoute(async (req, res) => {
-    const { data, error } = await db().from("penalties").select("*,users!penalties_user_id_fkey(id,username,avatar)").eq("id", req.params.penaltyId).maybeSingle();
-    legacyXError(error, "Unable to load penalty");
-    if (!data) apiError(404, "Penalty was not found");
-    res.json({ penalty: data });
-  }));
 
-  router.get("/search/players", asyncRoute(async (req, res) => {
-    const input = z.object({ q: z.string().trim().min(1).max(64), limit: z.coerce.number().int().min(1).max(50).default(20) }).parse(req.query);
-    const { data, error } = await db().from("users").select("id,steam_id,username,avatar,level,rank").ilike("username", `%${input.q}%`).limit(input.limit);
-    legacyXError(error, "Unable to search players");
-    res.json({ players: data ?? [] });
-  }));
-  router.get("/search/clans", asyncRoute(async (req, res) => {
-    const input = z.object({ q: z.string().trim().min(1).max(64), limit: z.coerce.number().int().min(1).max(50).default(20) }).parse(req.query);
-    const { data, error } = await db().from("clans").select("id,name,tag,logo,region").ilike("name", `%${input.q}%`).limit(input.limit);
-    legacyXError(error, "Unable to search clans");
-    res.json({ clans: data ?? [] });
-  }));
 
-  router.get("/community/content", asyncRoute(async (_req, res) => {
-    const [creators, partners] = await Promise.all([db().from("community_creators").select("*").order("created_at"), db().from("community_partners").select("*").order("created_at")]);
-    legacyXError(creators.error || partners.error, "Unable to load community content");
-    res.json({ creators: creators.data ?? [], partners: partners.data ?? [] });
-  }));
   router.post("/community/content", pluginRoute("community:write", async (req, res, plugin) => {
     const input = z.object({ kind: z.enum(["creator", "partner"]), name: z.string().trim().min(1).max(100), handle: z.string().trim().max(100).optional(), description: z.string().trim().max(2000).optional(), type: z.literal("website").optional(), url: z.string().url().max(2048) }).parse(req.body);
     const { data, error } = await db().rpc("plugin_write_community_content", { p_plugin_id: plugin.id, p_kind: input.kind, p_name: input.name, p_handle: input.handle ?? null, p_description: input.description ?? null, p_partner_type: input.type ?? "website", p_url: input.url });
@@ -2293,35 +1889,6 @@ export function createLegacyXRouter() {
     await writePluginAudit(plugin, "server.status.update", "game_servers", data.id, { status: data.status, currentPlayers: data.current_players });
     res.json({ server: data });
   }));
-  router.post("/plugin/matches", pluginRoute("matches:write", async (req, res, plugin) => {
-    const input = pluginMatchSchema.parse(req.body);
-    const { data, error } = await db().from("matches").insert(input).select("*").single();
-    legacyXError(error, "Unable to create match");
-    await writePluginAudit(plugin, "match.create", "matches", data.id, { mode: data.mode, number: data.number });
-    res.status(201).json({ match: data });
-  }));
-  router.patch("/plugin/matches/:matchId", pluginRoute("matches:write", async (req, res, plugin) => {
-    const input = pluginMatchSchema.partial().omit({ id: true }).parse(req.body);
-    const { data, error } = await db().from("matches").update(input).eq("id", req.params.matchId).select("*").single();
-    legacyXError(error, "Unable to update match");
-    await writePluginAudit(plugin, "match.update", "matches", data.id, { status: data.status, scoreT: data.score_t, scoreCt: data.score_ct });
-    res.json({ match: data });
-  }));
-  router.post("/plugin/player-match-history", pluginRoute("stats:write", async (req, res, plugin) => {
-    const input = pluginHistorySchema.parse(req.body);
-    const { data, error } = await db().rpc("ingest_player_match_result", {
-      p_plugin_id: plugin.id,
-      p_user_id: input.user_id,
-      p_match_id: input.match_id ?? null,
-      p_map: input.map,
-      p_result: input.result,
-      p_score: input.score,
-      p_kd: input.kd,
-      p_stats: input.stats ?? null,
-    });
-    legacyXError(error, "Unable to ingest player match result");
-    res.status(201).json({ historyId: data });
-  }));
 
   router.post("/plugin/match-core/events", pluginRoute("matches:write", async (req, res, plugin) => {
     const parsed = matchCoreEventSchema.parse(req.body);
@@ -2333,14 +1900,13 @@ export function createLegacyXRouter() {
     const matchCoreResult = recordValue(data);
     let competitive: unknown = null;
     if (input.event_type === "result_final" && ["processed", "duplicate"].includes(textValue(matchCoreResult.status))) {
-      const result = await db().schema("legacy_x").rpc("ingest_competitive_match_result", { p_plugin_id: pluginId, p_event_id: input.event_id, p_payload: input });
-      legacyXError(result.error, "Unable to ingest competitive match result");
-      competitive = result.data ?? null;
+      if (!input.match_id) apiError(400, "match_id is required for result_final");
+      competitive = await applyCompetitiveResult(db(), { pluginId, eventId: input.event_id, matchId: input.match_id, payload: input });
     }
     res.status(200).json({ result: data ?? {}, competitive });
   }));
   router.post("/plugin/matchzy/events", pluginRoute("stats:write", async (req, res, plugin) => {
-    const input = z.object({ event_id: pluginEventIdSchema, event: z.string().min(1).max(64) }).passthrough().parse(req.body);
+    z.object({ event_id: pluginEventIdSchema, event: z.string().min(1).max(64) }).passthrough().parse(req.body);
     const pluginId = req.header("x-plugin-id")?.trim() || plugin.name;
     if (pluginId !== "matchzy") apiError(403, "MatchZy plugin identity is required");
     // Competitive EXP is final-match only through authenticated Match Core. The
@@ -2452,13 +2018,16 @@ export function createLegacyXRouter() {
     const policyVersion = sha256(JSON.stringify(admins.map((member) => ({ steamId: member.steamId, stamina: member.stamina, immunity: member.immunity, permissions: member.permissions, updatedAt: member.updatedAt }))));
     res.json({ policyVersion, generatedAt: new Date().toISOString(), admins });
   }));
+  /** In-game profile line (!profile): rank and EXP from the single competitive source of truth. */
   router.get("/plugin/community/players/:steamId", pluginRoute("stats:write", async (req, res) => {
     const steamId = String(req.params.steamId || "").trim();
     if (!/^\d{15,20}$/.test(steamId)) apiError(400, "steamId must be a 15-20 digit SteamID64");
-    const { data, error } = await db().from("community_player_profiles").select("steam_id,username,avatar,level,experience,rating,rank_tier,clan_id,clan_name,clan_tag,clan_role").eq("steam_id", steamId).maybeSingle();
-    legacyXError(error, "Unable to load plugin community player profile");
+    const { data, error } = await db().from("competitive_leaderboard").select("position,steam_id,username,current_exp,rank_id,rank_name,pro_league_unlocked,matches_completed,wins,losses,kd_ratio").eq("steam_id", steamId).maybeSingle();
+    legacyXError(error, "Unable to load plugin player profile");
     if (!data) apiError(404, "Player profile not found");
-    res.json({ profile: data });
+    const row = data as DbRow;
+    const progress = rankProgress(numberValue(row.current_exp) ?? STARTING_EXP);
+    res.json({ profile: { ...row, next_rank_name: progress.next?.name ?? null, next_rank_min_exp: progress.next?.minimumExp ?? null } });
   }));
 
   // One request per player per second: a player spamming !rs cannot turn into database load.
@@ -2511,13 +2080,22 @@ export function createLegacyXRouter() {
     await writePluginAudit(plugin, "live_match.snapshot", "server_live_match_snapshots", input.server_id, { eventId: input.event_id, snapshotRevision: input.live_match.snapshot_revision });
     res.status(200).json({ result });
   }));
+  router.post("/plugin/killfeed/events", pluginRoute("servers:write", async (req, res) => {
+    const events = z.union([killEventSchema, z.array(killEventSchema).min(1).max(50)]).parse(req.body);
+    const accepted = (Array.isArray(events) ? events : [events]).filter(event => killFeed.add(event)).length;
+    res.status(202).json({ accepted });
+  }));
   router.post("/plugin/reconnect/events", pluginRoute("servers:write", async (req, res, plugin) => {
-    const input = z.object({ event: z.enum(["player_connected", "player_disconnected", "server_heartbeat"]), event_id: pluginEventIdSchema, server_id: z.string().min(1).max(120), server_address: z.string().min(1).max(255), map_name: z.string().max(128).optional().default(""), mode: z.string().max(128).optional().default(""), player_count: z.coerce.number().int().min(0).max(128).optional(), live_match: liveMatchSnapshotV1Schema.optional(), session_id: z.string().uuid().optional(), steam_id: z.string().regex(/^\d{15,20}$/).optional(), player_name: z.string().max(128).optional().default(""), disconnect_reason: z.string().max(96).optional().default(""), reconnect_window_minutes: z.coerce.number().int().min(5).max(1440).optional().default(720) }).strict().parse(req.body);
+    const input = z.object({ event: z.enum(["player_connected", "player_disconnected", "server_heartbeat"]), event_id: pluginEventIdSchema, server_id: z.string().min(1).max(120), server_address: z.string().min(1).max(255), map_name: z.string().max(128).optional().default(""), mode: z.string().max(128).optional().default(""), player_count: z.coerce.number().int().min(0).max(128).optional(), max_players: z.coerce.number().int().min(1).max(128).optional(), gotv_address: z.string().trim().max(255).optional(), live_match: liveMatchSnapshotV1Schema.optional(), session_id: z.string().uuid().optional(), steam_id: z.string().regex(/^\d{15,20}$/).optional(), player_name: z.string().max(128).optional().default(""), disconnect_reason: z.string().max(96).optional().default(""), reconnect_window_minutes: z.coerce.number().int().min(5).max(1440).optional().default(720) }).strict().parse(req.body);
     const pluginId = req.header("x-plugin-id")?.trim() || plugin.name;
     if (pluginId !== "legacyx-reconnect") apiError(403, "Reconnect plugin identity is required");
     if (input.event === "server_heartbeat") {
       const { data, error } = await db().schema("legacy_x").rpc("ingest_reconnect_heartbeat", { p_event_id: input.event_id, p_plugin_id: pluginId, p_server_id: input.server_id, p_server_address: input.server_address, p_map_name: input.map_name, p_mode: input.mode, p_player_count: input.player_count ?? 0 });
       legacyXError(error, "Unable to ingest reconnect server heartbeat");
+      if (input.max_players !== undefined || input.gotv_address !== undefined) {
+        const capacity = await db().from("reconnect_servers").update({ max_players: input.max_players ?? null, gotv_address: input.gotv_address || null }).eq("server_id", input.server_id);
+        if (capacity.error && !isMissingColumnError(capacity.error)) legacyXError(capacity.error, "Unable to store server capacity");
+      }
       let liveMatch: unknown = null;
       if (input.live_match) {
         liveMatch = await ingestLiveMatchSnapshot(pluginId, input.event_id, input.server_id, input.live_match);

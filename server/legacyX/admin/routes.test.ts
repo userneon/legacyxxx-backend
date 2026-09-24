@@ -125,10 +125,10 @@ describe("admin API guards", () => {
 });
 
 describe("existing routes keep working", () => {
-  it("leaves uuid player lookups on the existing route", async () => {
+  it("passes non-SteamID player lookups through instead of treating them as staff lookups", async () => {
     const response = await call({ method: "GET", path: "/players/00000000-0000-4000-8000-000000000004" });
-    // The existing route is signed-in only; the admin router must pass the uuid through to it.
-    expect(response.status).toBe(401);
+    // The legacy uuid player route was removed; the admin router must not claim the request.
+    expect(response.status).toBe(404);
   });
 
   it("keeps the reauth Steam redirect on the admin path and away from /auth", async () => {
