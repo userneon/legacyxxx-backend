@@ -42,8 +42,8 @@ Plugin routes require `Authorization: Bearer <raw-plugin-token>`. The server SHA
 | `matches:write` | `/plugin/matches/:matchId` | PATCH | Updates match score, state, and player counts. |
 | `stats:write` | `/plugin/player-match-history` | POST | Writes history, aggregate stats, and audit data atomically. |
 | `community:write` | `/community/content` | POST | Upserts a creator or partner and records an audit entry. |
-| `bans:write` | `/plugin/bans` | POST | Central SteamID ban (`{ steamId, durationMinutes (0 = permanent), reason, issuerName }`): writes the public `penalties` row and the linked `bans` row, creating the player's user row if needed. Used by the Discord bot's `/ban`. |
-| `bans:write` | `/plugin/bans/revoke` | POST | Lifts every active ban of a SteamID (`{ steamId, issuerName, reason? }`) and marks its ban penalties unbanned. Used by `/unban`. |
+| `bans:write` | `/plugin/bans` | POST | Central SteamID ban (`{ steamId, durationMinutes (0 = permanent), reason, issuerName }`): writes the public `penalties` row and the linked `bans` row, creating the player's user row if needed. Returns `{ ban, player: { steamId, username, avatar } }`. Used by the Discord bot's `/ban`. |
+| `bans:write` | `/plugin/bans/revoke` | POST | Lifts every active ban of a SteamID (`{ steamId, issuerName, reason? }`) and marks its ban penalties unbanned. Returns `{ bansLifted, penaltiesLifted, player }`. Used by `/unban`. |
 | `bans:read` | `/plugin/bans/check` | POST | `{ steamIds: [...] }` (up to 128) → `{ bans: [{ steamId, reason, isPermanent, expiresAt }] }` for bans still in force. LegacyX-Admin calls it on connect and every 30 s to kick banned players. |
 
 Create a token on the VPS with `node --env-file=.env scripts/create-api-token.mjs <name> <scope...>`; it prints the raw token once and stores only the hash.

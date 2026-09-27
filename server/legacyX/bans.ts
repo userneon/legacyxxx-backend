@@ -132,3 +132,10 @@ export async function activeBans(db: Db, steamIds: string[], now = new Date()): 
     .filter((row) => !seen.has(row.steam_id) && seen.add(row.steam_id))
     .map((row) => ({ steamId: row.steam_id, reason: row.reason, isPermanent: Boolean(row.is_permanent), expiresAt: row.expires_at ?? null }));
 }
+
+/** Name and avatar for the ban card (the Discord bot draws them). Null if the player has no row. */
+export async function bannedPlayer(db: Db, steamId: string) {
+  const { data, error } = await db.from("users").select("username,avatar").eq("steam_id", steamId).maybeSingle();
+  legacyXError(error, "Unable to read player");
+  return data ? { steamId, username: String(data.username ?? ""), avatar: String(data.avatar ?? "") } : null;
+}

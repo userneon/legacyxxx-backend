@@ -27,7 +27,7 @@ import { fetchSteamAccountCreatedAt, syncSteamUserProfile } from "./steamProfile
 import { RANK_CALCULATION_VERSION, calculateMatchExp } from "./ranking";
 import { buildRankedInput, rankedResultSchema, type MatchParticipant, type PlayerProgression } from "./rankedMatch";
 import { PROFILE_SECTIONS, hiddenForViewer, loadoutShowcase, mapWinRates, normalizeHiddenSections, profileStats, staffCard, type ProfileSection } from "./profileOverview";
-import { activeBans, checkBansSchema, issueBan, issueBanSchema, revokeBans, revokeBanSchema } from "./bans";
+import { activeBans, bannedPlayer, checkBansSchema, issueBan, issueBanSchema, revokeBans, revokeBanSchema } from "./bans";
 import { killEventSchema, killFeed } from "./killfeed";
 import { mapPlayServer, pickQuickJoin, sortPlayServers, type PlayMode } from "./play";
 import { bracketRounds, checkInOpen, groupTeams, mapTournamentMatch as mapTournamentPlayerMatch, mapTournamentSummary, nextMatchFor, tournamentPhase } from "./tournaments";
@@ -2442,13 +2442,13 @@ export function createLegacyXRouter() {
     // Show the real Steam name and avatar on the penalties page when the Steam API is configured.
     await syncSteamUserProfile(input.steamId).catch(() => undefined);
     await writePluginAudit(plugin, "ban.issue", "ban", ban.banId, { steamId: input.steamId, durationMinutes: input.durationMinutes, reason: input.reason, issuer: input.issuerName });
-    res.status(201).json({ ban });
+    res.status(201).json({ ban, player: await bannedPlayer(db(), input.steamId) });
   }));
   router.post("/plugin/bans/revoke", pluginRoute("bans:write", async (req, res, plugin) => {
     const input = revokeBanSchema.parse(req.body);
     const result = await revokeBans(db(), input);
     await writePluginAudit(plugin, "ban.revoke", "steam_id", input.steamId, { ...result, issuer: input.issuerName, reason: input.reason ?? null });
-    res.json(result);
+    res.json({ ...result, player: await bannedPlayer(db(), input.steamId) });
   }));
   router.post("/plugin/bans/check", pluginRoute("bans:read", async (req, res) => {
     const input = checkBansSchema.parse(req.body);

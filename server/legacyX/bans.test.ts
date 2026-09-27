@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { activeBans, banTerm, checkBansSchema, issueBan, issueBanSchema, revokeBans } from "./bans";
+import { activeBans, bannedPlayer, banTerm, checkBansSchema, issueBan, issueBanSchema, revokeBans } from "./bans";
 
 type Call = { table: string; op: string; payload?: unknown; filters: Array<[string, string, unknown]> };
 
@@ -83,6 +83,12 @@ describe("central bans", () => {
     expect(result).toEqual({ bansLifted: 2, penaltiesLifted: 1 });
     expect(calls[0]).toMatchObject({ table: "bans", op: "update", payload: { revoked_at: now.toISOString(), revoke_reason: "Lifted by staffer (Discord)" }, filters: [["eq", "steam_id", "76561198000000001"], ["is", "revoked_at", null]] });
     expect(calls[2]).toMatchObject({ table: "penalties", op: "update", payload: { is_unbanned: true } });
+  });
+
+  it("returns the banned player's name and avatar for the ban card", async () => {
+    const { db } = fakeDb({ "users.select": [{ data: { username: "s1mple", avatar: "https://avatars/1.jpg" }, error: null }, { data: null, error: null }] });
+    expect(await bannedPlayer(db, "76561198000000001")).toEqual({ steamId: "76561198000000001", username: "s1mple", avatar: "https://avatars/1.jpg" });
+    expect(await bannedPlayer(db, "76561198000000002")).toBeNull();
   });
 
   it("reports only bans still in force, once per SteamID", async () => {
