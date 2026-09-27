@@ -2441,13 +2441,18 @@ export function createLegacyXRouter() {
     const ban = await issueBan(db(), input);
     // Show the real Steam name and avatar on the penalties page when the Steam API is configured.
     await syncSteamUserProfile(input.steamId).catch(() => undefined);
-    await writePluginAudit(plugin, "ban.issue", "ban", ban.banId, { steamId: input.steamId, durationMinutes: input.durationMinutes, reason: input.reason, issuer: input.issuerName });
+    // The ban is already recorded; a failed audit write is logged instead of failing the request.
+    await writePluginAudit(plugin, "ban.issue", "ban", ban.banId, { steamId: input.steamId, durationMinutes: input.durationMinutes, reason: input.reason, issuer: input.issuerName })
+      .catch((error) => console.error("[legacy-x-api] Unable to audit ban", error));
     res.status(201).json({ ban, player: await bannedPlayer(db(), input.steamId) });
   }));
   router.post("/plugin/bans/revoke", pluginRoute("bans:write", async (req, res, plugin) => {
     const input = revokeBanSchema.parse(req.body);
     const result = await revokeBans(db(), input);
-    await writePluginAudit(plugin, "ban.revoke", "steam_id", input.steamId, { ...result, issuer: input.issuerName, reason: input.reason ?? null });
+    // audit_logs.target_id is a UUID, so the SteamID goes in metadata. The bans are already lifted;
+    // a failed audit write is logged instead of failing the request.
+    await writePluginAudit(plugin, "ban.revoke", "ban", null, { steamId: input.steamId, ...result, issuer: input.issuerName, reason: input.reason ?? null })
+      .catch((error) => console.error("[legacy-x-api] Unable to audit ban lift", error));
     res.json({ ...result, player: await bannedPlayer(db(), input.steamId) });
   }));
   router.post("/plugin/bans/check", pluginRoute("bans:read", async (req, res) => {
