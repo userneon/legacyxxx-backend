@@ -27,6 +27,7 @@ import { fetchSteamAccountCreatedAt, syncSteamUserProfile } from "./steamProfile
 import { RANK_CALCULATION_VERSION, calculateMatchExp } from "./ranking";
 import { buildRankedInput, rankedResultSchema, type MatchParticipant, type PlayerProgression } from "./rankedMatch";
 import { PROFILE_SECTIONS, hiddenForViewer, loadoutShowcase, mapWinRates, normalizeHiddenSections, profileStats, staffCard, type ProfileSection } from "./profileOverview";
+import { activeBans, checkBansSchema, issueBan, issueBanSchema, revokeBans, revokeBanSchema } from "./bans";
 import { killEventSchema, killFeed } from "./killfeed";
 import { mapPlayServer, pickQuickJoin, sortPlayServers, type PlayMode } from "./play";
 import { bracketRounds, checkInOpen, groupTeams, mapTournamentMatch as mapTournamentPlayerMatch, mapTournamentSummary, nextMatchFor, tournamentPhase } from "./tournaments";
@@ -2434,6 +2435,26 @@ export function createLegacyXRouter() {
     legacyXError(error, "Unable to load Phantom suspension state");
     res.json({ suspension: data ?? null });
   }));
+  // Central SteamID bans (Discord bot /ban, /unban). Game servers poll /plugin/bans/check and kick.
+  router.post("/plugin/bans", pluginRoute("bans:write", async (req, res, plugin) => {
+    const input = issueBanSchema.parse(req.body);
+    const ban = await issueBan(db(), input);
+    // Show the real Steam name and avatar on the penalties page when the Steam API is configured.
+    await syncSteamUserProfile(input.steamId).catch(() => undefined);
+    await writePluginAudit(plugin, "ban.issue", "ban", ban.banId, { steamId: input.steamId, durationMinutes: input.durationMinutes, reason: input.reason, issuer: input.issuerName });
+    res.status(201).json({ ban });
+  }));
+  router.post("/plugin/bans/revoke", pluginRoute("bans:write", async (req, res, plugin) => {
+    const input = revokeBanSchema.parse(req.body);
+    const result = await revokeBans(db(), input);
+    await writePluginAudit(plugin, "ban.revoke", "steam_id", input.steamId, { ...result, issuer: input.issuerName, reason: input.reason ?? null });
+    res.json(result);
+  }));
+  router.post("/plugin/bans/check", pluginRoute("bans:read", async (req, res) => {
+    const input = checkBansSchema.parse(req.body);
+    res.json({ bans: await activeBans(db(), input.steamIds) });
+  }));
+
   router.get("/plugin/admin-policy", pluginRoute("admin:read", async (req, res, plugin) => {
     const pluginId = req.header("x-plugin-id")?.trim() || plugin.name;
     if (pluginId !== "legacyx-admin") apiError(403, "LegacyX Admin plugin identity is required");

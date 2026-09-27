@@ -131,6 +131,14 @@ describe("LEGACY-X REST API", () => {
 			expect(response.status).toBe(401);
 		});
 
+		it("rejects central ban writes, lifts and checks without a plugin token before any database access", async () => {
+			const ban = { steamId: "76561198000000001", durationMinutes: 1440, reason: "wallhack", issuerName: "staff (Discord)" };
+			for (const [path, body] of [["/plugin/bans", ban], ["/plugin/bans/revoke", { steamId: ban.steamId, issuerName: ban.issuerName }], ["/plugin/bans/check", { steamIds: [ban.steamId] }]] as const) {
+				const response = await fetch(`${baseUrl}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+				expect(response.status, path).toBe(401);
+			}
+		});
+
 		it("rejects website-managed admin policy reads without a scoped plugin token before any database read", async () => {
 			const response = await fetch(`${baseUrl}/plugin/admin-policy`);
 
