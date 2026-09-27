@@ -1,5 +1,7 @@
 # LEGACY-X Reconnect & Last Played
 
+> **Retired (2026-09-27):** the LegacyX-Reconnect plugin and the `/plugin/reconnect/*` routes were removed. This document describes the former design; the tables and `GET /reconnect/me` are kept read-only.
+
 ## Scope
 
 Reconnect solves accidental disconnect and server discovery without letting a player inject a destination address. The CounterStrikeSharp plugin records an authenticated session when a player fully connects, closes it on disconnect, and emits an availability heartbeat every 30 seconds. The backend stores the latest three private sessions and marks them reconnectable only if their server sent a heartbeat within 90 seconds and the reconnect window has not expired.

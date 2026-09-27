@@ -62,8 +62,6 @@ supabase/legacy_x_reconnect.sql
 | `GET /api/seasons/current` | `x-api-secret` | Active UTC monthly rank season |
 | `POST /api/seasons/rollover` | `x-api-secret` | Emergency manual rollover; disabled by default |
 | `GET /api/reconnect/players/:steamId` | `x-api-secret` | Private Last Played sessions for staff/backend features |
-| `POST /api/plugin/reconnect/events` | `x-plugin-secret` | Reconnect plugin server heartbeat and session events |
-| `GET /api/plugin/reconnect/players/:steamId` | `x-plugin-secret` | Reconnect plugin's private Last Played lookup |
 | `/api/players`, `/api/server`, `/api/rcon` | `x-api-secret` | AdminPlus staff/RCON actions |
 
 Rank API болон MatchZy deployment-ийн дэлгэрэнгүйг [`docs/LEADERBOARD_RANK_INTEGRATION.md`](docs/LEADERBOARD_RANK_INTEGRATION.md), EXP/Clan policy-г [`docs/COMMUNITY_PROGRESSION_CLANS.md`](docs/COMMUNITY_PROGRESSION_CLANS.md), AdminPlus API-only hardening-ийг [`docs/ADMINPLUS_API_ONLY.md`](docs/ADMINPLUS_API_ONLY.md) файлаас үзнэ үү.
@@ -74,7 +72,7 @@ Competitive rank and clan season points roll over automatically on the UTC month
 
 ## Reconnect and Last Played
 
-The Reconnect plugin records private connect/disconnect sessions and server heartbeat state. A game server is accepted only when its `server_id=host:port` mapping exactly matches `RECONNECT_SERVER_REGISTRY`; the player command asks the authenticated backend for a recent, online, different server and validates the returned target before issuing a reconnect command. See [`docs/RECONNECT_LAST_PLAYED.md`](docs/RECONNECT_LAST_PLAYED.md).
+The LegacyX-Reconnect CS2 plugin has been retired, together with its `/plugin/reconnect/*` ingest routes. The session tables and `GET /reconnect/me` remain (read-only), so nothing new is recorded until another producer writes them. Historical design: [`docs/RECONNECT_LAST_PLAYED.md`](docs/RECONNECT_LAST_PLAYED.md).
 
 ## Production safety
 

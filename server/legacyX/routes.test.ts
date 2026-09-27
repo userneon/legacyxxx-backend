@@ -107,30 +107,6 @@ describe("LEGACY-X REST API", () => {
 		expect(response.status).toBe(401);
 	});
 
-		it("rejects player telemetry writes without a scoped plugin token before any database write", async () => {
-		const response = await fetch(`${baseUrl}/plugin/player-telemetry/events`, {
-			method: "POST",
-			headers: { "content-type": "application/json" },
-			body: JSON.stringify({
-				event_id: "telemetry-test-event-0001",
-				event_type: "player_disconnected",
-				server_id: "legacyx-match-1",
-				server_mode: "competitive_5v5",
-				match_reference: "legacyx-match-1:de_mirage:20260826150000",
-				map_name: "de_mirage",
-				steam_id: "76561198000000000",
-				player_name: "Telemetry test",
-				round_number: 8,
-				match_state: "live",
-				active_seconds: 901,
-				disconnect_method: "client_disconnect",
-				metrics: { kills: 10, deaths: 8, damage_dealt: 1294, damage_taken: 1011 },
-			}),
-		});
-
-			expect(response.status).toBe(401);
-		});
-
 		it("rejects central ban writes, lifts and checks without a plugin token before any database access", async () => {
 			const ban = { steamId: "76561198000000001", durationMinutes: 1440, reason: "wallhack", issuerName: "staff (Discord)" };
 			for (const [path, body] of [["/plugin/bans", ban], ["/plugin/bans/revoke", { steamId: ban.steamId, issuerName: ban.issuerName }], ["/plugin/bans/check", { steamIds: [ban.steamId] }]] as const) {
@@ -141,12 +117,6 @@ describe("LEGACY-X REST API", () => {
 
 		it("rejects in-game staff authorization lookups without a scoped plugin token before any database read", async () => {
 			const response = await fetch(`${baseUrl}/plugin/admin/authorizations`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ serverId: "srv-1", steamIds: ["76561198000000001"] }) });
-			expect(response.status).toBe(401);
-		});
-
-		it("rejects website-managed admin policy reads without a scoped plugin token before any database read", async () => {
-			const response = await fetch(`${baseUrl}/plugin/admin-policy`);
-
 			expect(response.status).toBe(401);
 		});
 

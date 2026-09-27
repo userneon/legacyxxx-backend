@@ -341,80 +341,6 @@ const clanSchema = z.object({ name: z.string().trim().min(2).max(64), tag: z.str
 const feedbackSchema = z.object({ name: z.string().trim().min(1).max(64).optional(), rating: z.number().int().min(1).max(5), message: z.string().trim().min(1).max(4000) });
 const pluginServerSchema = z.object({ id: z.string().uuid().optional(), name: z.string().trim().min(1).max(100), map: z.string().trim().min(1).max(64), mode: z.string().trim().min(1).max(64), max_players: z.number().int().min(0).max(256), current_players: z.number().int().min(0).max(256), ping: z.number().int().min(0).max(10000).default(0), status: z.enum(["online", "offline", "full"]), ip_address: z.string().max(255).optional(), port: z.number().int().min(1).max(65535).optional() });
 const pluginEventIdSchema = z.string().trim().min(8).max(220).regex(/^[A-Za-z0-9:_-]+$/, "event_id contains unsupported characters");
-const playerTelemetryEventSchema = z.object({
-  event_id: pluginEventIdSchema,
-  event_type: z.enum(["round_snapshot", "player_disconnected"]),
-  server_id: z.string().trim().min(1).max(120),
-  server_mode: z.string().trim().min(1).max(64),
-  match_reference: z.string().trim().min(1).max(255),
-  map_name: z.string().trim().max(128).default(""),
-  steam_id: z.string().regex(/^\d{15,20}$/),
-  player_name: z.string().trim().max(128).default(""),
-  round_number: z.coerce.number().int().min(0).max(500),
-  match_state: z.enum(["waiting", "live", "paused", "ended"]),
-  active_seconds: z.coerce.number().int().min(0).max(172800),
-  disconnect_method: z.enum(["client_disconnect", "admin_kick", "admin_ban", "server_shutdown", "unknown"]).nullable().optional(),
-  disconnect_reason: z.string().trim().max(160).nullable().optional(),
-  metrics: z.object({
-    kills: z.coerce.number().int().min(0).max(500),
-    deaths: z.coerce.number().int().min(0).max(500),
-    damage_dealt: z.coerce.number().int().min(0).max(100000),
-    damage_taken: z.coerce.number().int().min(0).max(100000),
-  }).strict(),
-}).strict();
-const phantomVectorSchema = z.object({ x: z.number().finite().min(-32768).max(32768), y: z.number().finite().min(-32768).max(32768), z: z.number().finite().min(-4096).max(32768) }).strict();
-const phantomEvidenceSchema = z.object({
-  event_id: pluginEventIdSchema,
-  match_reference: z.string().trim().min(1).max(255),
-  server_id: z.string().trim().min(1).max(120),
-  server_mode: z.string().trim().min(1).max(64),
-  steam_id: z.string().regex(/^\d{15,20}$/),
-  phantom_id: z.string().uuid(),
-  mapped_steam_id: z.string().regex(/^\d{15,20}$/),
-  phantom_position: phantomVectorSchema,
-  player_position: phantomVectorSchema,
-  round_number: z.coerce.number().int().min(0).max(500),
-  tick: z.coerce.number().int().min(0).max(9_223_372_036_854_775),
-  interaction_type: z.enum(["aim_correlation", "shot_correlation"]),
-  interaction_count: z.coerce.number().int().min(1).max(1000),
-  aim_correlation: z.coerce.number().finite().min(0).max(1),
-  movement_correlation: z.coerce.number().finite().min(0).max(1),
-  wall_interaction: z.coerce.number().finite().min(0).max(1),
-  shot_interaction: z.coerce.number().finite().min(0).max(1),
-  suspicion_score: z.coerce.number().finite().min(0).max(100),
-  evidence_confidence: z.coerce.number().finite().min(0).max(1),
-  occurred_at: z.string().datetime({ offset: true }),
-}).strict();
-const phantomSuspensionSignalSchema = z.object({
-  event_id: pluginEventIdSchema,
-  match_reference: z.string().trim().min(1).max(255),
-  server_id: z.string().trim().min(1).max(120),
-  server_mode: z.string().trim().min(1).max(64),
-  steam_id: z.string().regex(/^\d{15,20}$/),
-  event_type: z.enum(["suspended", "suspended_disconnect", "restored"]),
-  round_number: z.coerce.number().int().min(0).max(500),
-  suspicion_score: z.coerce.number().finite().min(0).max(100),
-  evidence_count: z.coerce.number().int().min(1).max(10_000),
-  evidence_summary: z.object({ phantom_ids: z.array(z.string().uuid()).max(64), latest_interaction: z.enum(["aim_correlation", "shot_correlation"]), evidence_confidence: z.coerce.number().finite().min(0).max(1) }).strict(),
-  occurred_at: z.string().datetime({ offset: true }),
-}).strict();
-const phantomHistoryVectorSchema = z.object({ x: z.number().finite().min(-32768).max(32768), y: z.number().finite().min(-32768).max(32768), z: z.number().finite().min(-4096).max(32768) }).strict();
-const phantomHistorySampleSchema = z.object({ sequence: z.coerce.number().int().min(0).max(599), offset_ms: z.coerce.number().int().min(0).max(180_000), position: phantomHistoryVectorSchema, view: z.object({ pitch: z.number().finite().min(-89).max(89), yaw: z.number().finite().min(-180).max(180) }).strict(), velocity: phantomHistoryVectorSchema, crouched: z.boolean() }).strict();
-const phantomHistoryRoundSchema = z.object({
-  source_ref: z.string().uuid(),
-  match_reference: z.string().trim().min(1).max(255),
-  server_id: z.string().trim().min(1).max(120),
-  server_mode: z.string().trim().min(1).max(64),
-  map_name: z.string().trim().min(1).max(128),
-  round_number: z.coerce.number().int().min(1).max(500),
-  completed_at: z.string().datetime({ offset: true }),
-  samples: z.array(phantomHistorySampleSchema).min(3).max(600),
-}).strict().superRefine((input, context) => {
-  for (let index = 1; index < input.samples.length; index += 1) {
-    if (input.samples[index].sequence <= input.samples[index - 1].sequence || input.samples[index].offset_ms <= input.samples[index - 1].offset_ms) context.addIssue({ code: z.ZodIssueCode.custom, path: ["samples", index], message: "History samples must be strictly ordered" });
-  }
-});
-const phantomCaseReviewSchema = z.object({ decision: z.enum(["clear", "keep", "confirm_ban"]), note: z.string().trim().min(8).max(1000) }).strict();
 const liveMatchPlayerSchema = z.object({
   steam_id: z.string().regex(/^\d{15,20}$/),
   name: z.string().trim().min(1).max(128),
@@ -2140,33 +2066,6 @@ export function createLegacyXRouter() {
       { name: "staff_panel_actions", count: actions.count ?? 0 },
     ] });
   }));
-  router.get("/staffpanel/anti-cheat/phantom-evidence", staffPanelRoute(async (_req, res) => {
-    const { data, error } = await db().from("phantom_evidence_events").select("id,event_id,match_reference,server_id,server_mode,steam_id,phantom_id,mapped_steam_id,round_number,tick,interaction_type,interaction_count,suspicion_score,evidence_confidence,occurred_at").order("occurred_at", { ascending: false }).limit(250);
-    legacyXError(error, "Unable to load Phantom evidence");
-    res.json({ evidence: data ?? [] });
-  }));
-  router.get("/staffpanel/anti-cheat/phantom-cases", staffPanelRoute(async (_req, res) => {
-    const { data, error } = await db().from("phantom_suspension_cases").select("id,match_reference,server_id,server_mode,steam_id,status,suspicion_score,evidence_count,evidence_summary,suspended_at,reviewed_at,review_note,reviewed_by_staff_id,updated_at").order("updated_at", { ascending: false }).limit(250);
-    legacyXError(error, "Unable to load Phantom suspension cases");
-    res.json({ cases: data ?? [] });
-  }));
-  router.patch("/staffpanel/anti-cheat/phantom-cases/:caseId", staffPanelRoute(async (req, res, staff) => {
-    const input = phantomCaseReviewSchema.parse(req.body);
-    const caseId = z.string().uuid().parse(req.params.caseId);
-    const { data: current, error: currentError } = await db().from("phantom_suspension_cases").select("id,server_id,steam_id,status").eq("id", caseId).maybeSingle();
-    legacyXError(currentError, "Unable to load Phantom suspension case");
-    if (!current) apiError(404, "Phantom suspension case was not found");
-    const nextStatus = input.decision === "clear" ? "CLEARED" : input.decision === "confirm_ban" ? "CONFIRMED" : "SUSPENDED";
-    const { data, error } = await db().from("phantom_suspension_cases").update({ status: nextStatus, reviewed_by_staff_id: staff.staffId, reviewed_at: new Date().toISOString(), review_note: input.note, requires_manager_review: input.decision === "keep" }).eq("id", caseId).select("id,status,server_id,steam_id,reviewed_at").single();
-    legacyXError(error, "Unable to review Phantom suspension case");
-    if (input.decision === "confirm_ban") {
-      const queue = await db().from("staff_panel_actions").insert({ server_id: textValue(current.server_id), requested_by: staff.userId, requested_by_staff_id: staff.staffId, action_type: "ban", payload: { type: "ban", serverId: textValue(current.server_id), playerSteamId: textValue(current.steam_id), banTerm: "permanent", enforceAfterSeconds: 10, message: `Phantom suspension confirmed after ${staff.role} review: ${input.note}` }, status: "pending" });
-      legacyXError(queue.error, "Unable to queue reviewed Phantom ban");
-    }
-    const audit = await db().from("staff_audit_logs").insert({ staff_id: staff.staffId, event_type: "phantom_case_reviewed", target_type: "phantom_suspension_case", target_id: caseId, metadata: { decision: input.decision, note: input.note, previous_status: textValue(current.status), next_status: nextStatus } });
-    legacyXError(audit.error, "Unable to audit Phantom case review");
-    res.json({ case: data });
-  }));
 
   router.get("/staffpanel/staff", ownerPanelRoute(async (_req, res) => {
     const { data, error } = await db().from("staff").select("id,user_id,role,permissions,game_permissions,stamina,immunity,status,created_at,updated_at,users(username,steam_id,avatar)").order("created_at", { ascending: false });
@@ -2364,78 +2263,6 @@ export function createLegacyXRouter() {
     // not fail, but it can never create a second progression authority.
     res.status(202).json({ accepted: true, ignored: true, reason: "competitive_exp_is_awarded_by_match_core_final_only" });
   }));
-  router.post("/plugin/player-telemetry/events", pluginRoute("stats:write", async (req, res, plugin) => {
-    const input = playerTelemetryEventSchema.parse(req.body);
-    const pluginId = req.header("x-plugin-id")?.trim() || plugin.name;
-    if (pluginId !== "legacyx-player-telemetry") apiError(403, "Player Telemetry plugin identity is required");
-    const { data, error } = await db().schema("legacy_x").rpc("ingest_player_telemetry_event", {
-      p_plugin_id: pluginId,
-      p_event_id: input.event_id,
-      p_payload: input,
-    });
-    legacyXError(error, "Unable to ingest player telemetry event");
-    const progressionLookup = input.event_type === "round_snapshot"
-      ? await db().from("competitive_player_profiles").select("current_exp,rank_name").eq("steam_id", input.steam_id).maybeSingle()
-      : { data: null, error: null };
-    if (progressionLookup.error) console.warn("[legacy-x-api] Round progression snapshot unavailable", progressionLookup.error.message);
-    const progression = progressionLookup.data && numberValue((progressionLookup.data as DbRow).current_exp) !== null
-      ? { experience: numberValue((progressionLookup.data as DbRow).current_exp)!, rankName: textValue((progressionLookup.data as DbRow).rank_name) || "Unranked" }
-      : null;
-    await writePluginAudit(plugin, `player_telemetry.${input.event_type}`, "player_telemetry_events", input.steam_id, {
-      eventId: input.event_id,
-      serverId: input.server_id,
-      matchReference: input.match_reference,
-      roundNumber: input.round_number,
-      disconnectMethod: input.disconnect_method ?? null,
-    });
-    res.status(202).json({ result: data ?? {}, progression });
-  }));
-  router.post("/plugin/phantom/evidence", pluginRoute("phantom:write", async (req, res, plugin) => {
-    const input = phantomEvidenceSchema.parse(req.body);
-    const pluginId = req.header("x-plugin-id")?.trim() || plugin.name;
-    if (pluginId !== "legacyx-phantom") apiError(403, "LegacyX Phantom plugin identity is required");
-    const { data, error } = await db().schema("legacy_x").rpc("ingest_phantom_evidence", { p_plugin_id: pluginId, p_event_id: input.event_id, p_payload: input });
-    legacyXError(error, "Unable to ingest Phantom evidence");
-    await writePluginAudit(plugin, `phantom.${input.interaction_type}`, "phantom_evidence_events", input.steam_id, { eventId: input.event_id, matchReference: input.match_reference, serverId: input.server_id, phantomId: input.phantom_id, score: input.suspicion_score, confidence: input.evidence_confidence });
-    res.status(202).json({ result: data ?? {} });
-  }));
-  router.post("/plugin/phantom/suspensions", pluginRoute("phantom:write", async (req, res, plugin) => {
-    const input = phantomSuspensionSignalSchema.parse(req.body);
-    const pluginId = req.header("x-plugin-id")?.trim() || plugin.name;
-    if (pluginId !== "legacyx-phantom") apiError(403, "LegacyX Phantom plugin identity is required");
-    const { data, error } = await db().schema("legacy_x").rpc("ingest_phantom_suspension_signal", { p_plugin_id: pluginId, p_event_id: input.event_id, p_payload: input });
-    legacyXError(error, "Unable to ingest Phantom suspension signal");
-    await writePluginAudit(plugin, `phantom.${input.event_type}`, "phantom_suspension_cases", input.steam_id, { eventId: input.event_id, matchReference: input.match_reference, serverId: input.server_id, score: input.suspicion_score, evidenceCount: input.evidence_count });
-    res.status(202).json({ result: data ?? {} });
-  }));
-  router.post("/plugin/phantom/history/rounds", pluginRoute("phantom:write", async (req, res, plugin) => {
-    const input = phantomHistoryRoundSchema.parse(req.body);
-    const pluginId = req.header("x-plugin-id")?.trim() || plugin.name;
-    if (pluginId !== "legacyx-phantom") apiError(403, "LegacyX Phantom plugin identity is required");
-    const { data, error } = await db().from("phantom_history_rounds").upsert({ plugin_id: pluginId, source_ref: input.source_ref, match_reference: input.match_reference, server_id: input.server_id, server_mode: input.server_mode, map_name: input.map_name, round_number: input.round_number, sample_count: input.samples.length, samples: input.samples, completed_at: input.completed_at }, { onConflict: "server_id,match_reference,round_number,source_ref", ignoreDuplicates: true }).select("id").maybeSingle();
-    legacyXError(error, "Unable to ingest Phantom history round");
-    res.status(202).json({ accepted: Boolean(data), sampleCount: input.samples.length });
-  }));
-  router.get("/plugin/phantom/history/rounds", pluginRoute("phantom:read", async (req, res, plugin) => {
-    const pluginId = req.header("x-plugin-id")?.trim() || plugin.name;
-    if (pluginId !== "legacyx-phantom") apiError(403, "LegacyX Phantom plugin identity is required");
-    const serverId = z.string().trim().min(1).max(120).parse(req.query.serverId);
-    const mapName = z.string().trim().min(1).max(128).parse(req.query.mapName);
-    const excludeMatchReference = z.string().trim().min(1).max(255).parse(req.query.excludeMatchReference);
-    const minimumSamples = z.coerce.number().int().min(3).max(600).default(12).parse(req.query.minimumSamples);
-    const { data, error } = await db().from("phantom_history_rounds").select("source_ref,match_reference,map_name,round_number,sample_count,samples,completed_at").eq("server_id", serverId).eq("map_name", mapName).neq("match_reference", excludeMatchReference).gte("sample_count", minimumSamples).order("completed_at", { ascending: false }).limit(20);
-    legacyXError(error, "Unable to load Phantom history rounds");
-    res.json({ rounds: data ?? [] });
-  }));
-  router.get("/plugin/phantom/suspensions/:steamId", pluginRoute("phantom:read", async (req, res, plugin) => {
-    const pluginId = req.header("x-plugin-id")?.trim() || plugin.name;
-    if (pluginId !== "legacyx-phantom") apiError(403, "LegacyX Phantom plugin identity is required");
-    const steamId = z.string().regex(/^\d{15,20}$/).parse(req.params.steamId);
-    const serverId = z.string().trim().min(1).max(120).parse(req.query.serverId);
-    const { data, error } = await db().from("phantom_suspension_cases").select("id,status,suspicion_score,evidence_count,evidence_summary,suspended_at").eq("server_id", serverId).eq("steam_id", steamId).eq("status", "SUSPENDED").order("updated_at", { ascending: false }).limit(1).maybeSingle();
-    legacyXError(error, "Unable to load Phantom suspension state");
-    res.json({ suspension: data ?? null });
-  }));
   // Central SteamID bans (Discord bot /ban, /unban). Game servers poll /plugin/bans/check and kick.
   router.post("/plugin/bans", pluginRoute("bans:write", async (req, res, plugin) => {
     const input = issueBanSchema.parse(req.body);
@@ -2470,38 +2297,6 @@ export function createLegacyXRouter() {
     res.json({ serverId: input.serverId, checkedAt: new Date().toISOString(), players: await resolveAuthorizations(db(), input) });
   }));
 
-  router.get("/plugin/admin-policy", pluginRoute("admin:read", async (req, res, plugin) => {
-    const pluginId = req.header("x-plugin-id")?.trim() || plugin.name;
-    if (pluginId !== "legacyx-admin") apiError(403, "LegacyX Admin plugin identity is required");
-
-    const { data, error } = await db()
-      .from("staff")
-      .select("id,user_id,role,game_permissions,stamina,immunity,status,updated_at,users(username,steam_id)")
-      .eq("status", "active")
-      .order("updated_at", { ascending: true });
-    legacyXError(error, "Unable to load in-game admin policy");
-
-    const admins = ((data ?? []) as DbRow[]).map((member) => {
-      const user = firstRow(member.users) ?? {};
-      const steamId = textValue(user.steam_id);
-      const gamePermissions = Array.isArray(member.game_permissions)
-        ? member.game_permissions.filter((value): value is string => typeof value === "string" && inGameAdminPermissionSchema.safeParse(value).success)
-        : [];
-      return {
-        staffId: textValue(member.id),
-        steamId,
-        username: textValue(user.username) || "LEGACY-X Staff",
-        role: textValue(member.role),
-        stamina: Math.max(0, Math.min(1000, numberValue(member.stamina) ?? staffRoleNumericDefaults[member.role as keyof typeof staffRoleNumericDefaults] ?? 0)),
-        immunity: Math.max(0, Math.min(1000, numberValue(member.immunity) ?? staffRoleNumericDefaults[member.role as keyof typeof staffRoleNumericDefaults] ?? 0)),
-        permissions: gamePermissions,
-        updatedAt: timestampValue(member.updated_at),
-      };
-    }).filter((member) => /^7656\d{13,14}$/.test(member.steamId) && member.permissions.length > 0);
-
-    const policyVersion = sha256(JSON.stringify(admins.map((member) => ({ steamId: member.steamId, stamina: member.stamina, immunity: member.immunity, permissions: member.permissions, updatedAt: member.updatedAt }))));
-    res.json({ policyVersion, generatedAt: new Date().toISOString(), admins });
-  }));
   // In-game !xp / !rank: the player's rank on the Legacy-X ladder (the same source as the website).
   router.get("/plugin/community/players/:steamId", pluginRoute("stats:write", async (req, res) => {
     const steamId = String(req.params.steamId || "").trim();
@@ -2568,7 +2363,7 @@ export function createLegacyXRouter() {
   router.post("/plugin/live-match/snapshots", pluginRoute("servers:write", async (req, res, plugin) => {
     const input = z.object({ event_id: pluginEventIdSchema, server_id: z.string().trim().min(1).max(120), live_match: liveMatchSnapshotV1Schema }).strict().parse(req.body);
     const pluginId = req.header("x-plugin-id")?.trim() || plugin.name;
-    if (!new Set(["legacyx-reconnect", "legacyx-live-snapshot"]).has(pluginId)) apiError(403, "Live snapshot plugin identity is required");
+    if (pluginId !== "legacyx-live-snapshot") apiError(403, "Live snapshot plugin identity is required");
     const result = await ingestLiveMatchSnapshot(pluginId, input.event_id, input.server_id, input.live_match);
     await writePluginAudit(plugin, "live_match.snapshot", "server_live_match_snapshots", input.server_id, { eventId: input.event_id, snapshotRevision: input.live_match.snapshot_revision });
     res.status(200).json({ result });
@@ -2577,41 +2372,6 @@ export function createLegacyXRouter() {
     const events = z.union([killEventSchema, z.array(killEventSchema).min(1).max(50)]).parse(req.body);
     const accepted = (Array.isArray(events) ? events : [events]).filter(event => killFeed.add(event)).length;
     res.status(202).json({ accepted });
-  }));
-  router.post("/plugin/reconnect/events", pluginRoute("servers:write", async (req, res, plugin) => {
-    const input = z.object({ event: z.enum(["player_connected", "player_disconnected", "server_heartbeat"]), event_id: pluginEventIdSchema, server_id: z.string().min(1).max(120), server_address: z.string().min(1).max(255), map_name: z.string().max(128).optional().default(""), mode: z.string().max(128).optional().default(""), player_count: z.coerce.number().int().min(0).max(128).optional(), max_players: z.coerce.number().int().min(1).max(128).optional(), gotv_address: z.string().trim().max(255).optional(), live_match: liveMatchSnapshotV1Schema.optional(), session_id: z.string().uuid().optional(), steam_id: z.string().regex(/^\d{15,20}$/).optional(), player_name: z.string().max(128).optional().default(""), disconnect_reason: z.string().max(96).optional().default(""), reconnect_window_minutes: z.coerce.number().int().min(5).max(1440).optional().default(720) }).strict().parse(req.body);
-    const pluginId = req.header("x-plugin-id")?.trim() || plugin.name;
-    if (pluginId !== "legacyx-reconnect") apiError(403, "Reconnect plugin identity is required");
-    if (input.event === "server_heartbeat") {
-      const { data, error } = await db().schema("legacy_x").rpc("ingest_reconnect_heartbeat", { p_event_id: input.event_id, p_plugin_id: pluginId, p_server_id: input.server_id, p_server_address: input.server_address, p_map_name: input.map_name, p_mode: input.mode, p_player_count: input.player_count ?? 0 });
-      legacyXError(error, "Unable to ingest reconnect server heartbeat");
-      if (input.max_players !== undefined || input.gotv_address !== undefined) {
-        const capacity: DbRow = {};
-        if (input.max_players !== undefined) capacity.max_players = input.max_players;
-        if (input.gotv_address !== undefined) capacity.gotv_address = input.gotv_address || null;
-        const { error: capacityError } = await db().schema("legacy_x").from("reconnect_servers").update(capacity).eq("server_id", input.server_id);
-        legacyXError(capacityError, "Unable to store server capacity");
-      }
-      let liveMatch: unknown = null;
-      if (input.live_match) {
-        liveMatch = await ingestLiveMatchSnapshot(pluginId, input.event_id, input.server_id, input.live_match);
-      }
-      res.status(200).json({ result: data ?? {}, liveMatch });
-      return;
-    }
-    if (!input.session_id || !input.steam_id) apiError(400, "session_id and steam_id are required for player reconnect events");
-    const { data, error } = await db().schema("legacy_x").rpc("ingest_reconnect_event", { p_event_id: input.event_id, p_plugin_id: pluginId, p_event_type: input.event, p_session_id: input.session_id, p_steam_id: input.steam_id, p_player_name: input.player_name, p_server_id: input.server_id, p_server_address: input.server_address, p_map_name: input.map_name, p_mode: input.mode, p_disconnect_reason: input.disconnect_reason || null, p_reconnect_window_minutes: input.reconnect_window_minutes });
-    legacyXError(error, "Unable to ingest reconnect player event");
-    res.status(200).json({ result: data ?? {} });
-  }));
-  router.get("/plugin/reconnect/players/:steamId", pluginRoute("servers:write", async (req, res) => {
-    const steamId = String(req.params.steamId || "").trim();
-    if (!/^\d{15,20}$/.test(steamId)) apiError(400, "steamId must be a 15-20 digit SteamID64");
-    const excludedServerId = typeof req.query.exclude_server_id === "string" ? req.query.exclude_server_id.trim() : "";
-    const { data, error } = await db().schema("legacy_x").from("reconnect_last_played").select("session_id,steam_id,player_name,server_id,server_name,connect_address,map_name,mode,connected_at,disconnected_at,reconnectable_until,player_count,last_heartbeat_at,server_online").eq("steam_id", steamId).order("connected_at", { ascending: false }).limit(10);
-    legacyXError(error, "Unable to load reconnect sessions");
-    const now = Date.now();
-    res.json({ sessions: (data ?? []).filter(session => session.server_id !== excludedServerId).map(session => ({ ...session, reconnectable: session.server_online === true && new Date(session.reconnectable_until).getTime() >= now })) });
   }));
 
   router.use((_req, res) => {
