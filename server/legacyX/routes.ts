@@ -28,6 +28,7 @@ import { RANK_CALCULATION_VERSION, calculateMatchExp } from "./ranking";
 import { buildRankedInput, rankedResultSchema, type MatchParticipant, type PlayerProgression } from "./rankedMatch";
 import { PROFILE_SECTIONS, hiddenForViewer, loadoutShowcase, mapWinRates, normalizeHiddenSections, profileStats, staffCard, type ProfileSection } from "./profileOverview";
 import { activeBans, bannedPlayer, checkBansSchema, issueBan, issueBanSchema, revokeBans, revokeBanSchema } from "./bans";
+import { authorizationRequestSchema, resolveAuthorizations } from "./adminAuthorization";
 import { killEventSchema, killFeed } from "./killfeed";
 import { mapPlayServer, pickQuickJoin, sortPlayServers, type PlayMode } from "./play";
 import { bracketRounds, checkInOpen, groupTeams, mapTournamentMatch as mapTournamentPlayerMatch, mapTournamentSummary, nextMatchFor, tournamentPhase } from "./tournaments";
@@ -2458,6 +2459,15 @@ export function createLegacyXRouter() {
   router.post("/plugin/bans/check", pluginRoute("bans:read", async (req, res) => {
     const input = checkBansSchema.parse(req.body);
     res.json({ bans: await activeBans(db(), input.steamIds) });
+  }));
+
+  // LegacyX-Admin asks which connected players are staff on its server; it grants in-game permissions only for authorized answers.
+  router.post("/plugin/admin/authorizations", pluginRoute("admin:read", async (req, res, plugin) => {
+    const pluginId = req.header("x-plugin-id")?.trim() || plugin.name;
+    if (pluginId !== "legacyx-admin") apiError(403, "LegacyX Admin plugin identity is required");
+    const input = authorizationRequestSchema.parse(req.body);
+    res.set("Cache-Control", "no-store");
+    res.json({ serverId: input.serverId, checkedAt: new Date().toISOString(), players: await resolveAuthorizations(db(), input) });
   }));
 
   router.get("/plugin/admin-policy", pluginRoute("admin:read", async (req, res, plugin) => {

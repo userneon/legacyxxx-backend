@@ -139,6 +139,11 @@ describe("LEGACY-X REST API", () => {
 			}
 		});
 
+		it("rejects in-game staff authorization lookups without a scoped plugin token before any database read", async () => {
+			const response = await fetch(`${baseUrl}/plugin/admin/authorizations`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ serverId: "srv-1", steamIds: ["76561198000000001"] }) });
+			expect(response.status).toBe(401);
+		});
+
 		it("rejects website-managed admin policy reads without a scoped plugin token before any database read", async () => {
 			const response = await fetch(`${baseUrl}/plugin/admin-policy`);
 
