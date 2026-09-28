@@ -310,14 +310,18 @@ function staticStorageUrl(req: Request, key: string | null | undefined) {
   return `${protocol}://${host}/manus-storage/${encodedKey}`;
 }
 
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 async function writePluginAudit(plugin: PluginPrincipal, action: string, targetType: string, targetId: string | null, metadata: Record<string, unknown>) {
+  // audit_logs.target_id is a uuid; server ids (srv-27015), SteamIDs and other keys go in metadata instead.
+  const uuidTarget = targetId !== null && UUID_PATTERN.test(targetId) ? targetId : null;
   const { error } = await legacyXDb().from("audit_logs").insert({
     actor_type: "plugin",
     actor_id: plugin.id,
     action,
     target_type: targetType,
-    target_id: targetId,
-    metadata,
+    target_id: uuidTarget,
+    metadata: targetId !== null && uuidTarget === null ? { ...metadata, targetKey: targetId } : metadata,
   });
   legacyXError(error, "Unable to record plugin audit entry");
 }
@@ -2453,7 +2457,7 @@ export function createLegacyXRouter() {
     const pluginId = req.header("x-plugin-id")?.trim() || plugin.name;
     if (pluginId !== "legacyx-live-snapshot") apiError(403, "Live snapshot plugin identity is required");
     const result = await ingestLiveMatchSnapshot(pluginId, input.event_id, input.server_id, input.live_match);
-    await writePluginAudit(plugin, "live_match.snapshot", "server_live_match_snapshots", input.server_id, { eventId: input.event_id, snapshotRevision: input.live_match.snapshot_revision });
+    // Not audited: snapshots arrive every 30 s per server (like heartbeats); they are telemetry, not staff actions.
     res.status(200).json({ result });
   }));
   router.post("/plugin/killfeed/events", pluginRoute("servers:write", async (req, res) => {
