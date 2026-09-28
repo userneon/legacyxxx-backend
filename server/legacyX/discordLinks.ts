@@ -29,7 +29,7 @@ export function isLinkToken(value: unknown): value is string {
 }
 
 export function linkCallbackUrl(origin: string, token: string) {
-  return `${origin}/api/v1/discord/link/${token}/callback`;
+  return `${origin}/api/v1/auth/steam/discord/${token}/callback`;
 }
 
 /**

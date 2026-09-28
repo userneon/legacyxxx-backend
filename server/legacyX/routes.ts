@@ -755,7 +755,6 @@ export function createLegacyXRouter() {
     message: { error: "Too many sensitive requests. Please retry shortly." },
   });
   router.use("/auth", authRateLimit);
-  router.use("/discord", authRateLimit);
   router.use("/staff", sensitiveMutationRateLimit);
   router.use((req, res, next) => {
     res.setHeader("X-Content-Type-Options", "nosniff");
@@ -2280,12 +2279,13 @@ export function createLegacyXRouter() {
       .catch((error) => console.error("[legacy-x-api] Unable to audit ban lift", error));
     res.json({ ...result, player: await bannedPlayer(db(), input.steamId) });
   }));
-  // Discord /link: the bot asks for a one-time URL; the player opens it and signs in with Steam.
+  // Discord /link: the bot asks for a one-time URL; the player opens it and signs in with Steam. The
+  // public link lives under /auth/steam so it shares the auth rate limit and the legacyx.cc callback proxy.
   router.post("/plugin/discord/link-requests", pluginRoute("discord:link", async (req, res) => {
     const input = linkRequestSchema.parse(req.body);
     const { token, expiresAt } = await createLinkRequest(db(), input);
     res.set("Cache-Control", "no-store");
-    res.status(201).json({ url: `${requestOrigin(req)}/api/v1/discord/link/${token}`, expiresAt });
+    res.status(201).json({ url: `${requestOrigin(req)}/api/v1/auth/steam/discord/${token}`, expiresAt });
   }));
   router.get("/plugin/discord/links", pluginRoute("discord:link", async (_req, res) => {
     res.set("Cache-Control", "no-store");
@@ -2308,14 +2308,14 @@ export function createLegacyXRouter() {
     res.status(status).set({ "Cache-Control": "no-store", "Content-Type": "text/html; charset=utf-8", "Content-Security-Policy": page.csp }).send(page.html);
   };
   const expiredLink = (res: Response) => sendLinkPage(res, 410, false, "Холбоос хүчингүй", "Энэ холбоосын хугацаа дууссан эсвэл ашиглагдсан байна. Discord дээр /link командыг дахин ажиллуулна уу.");
-  router.get("/discord/link/:token", asyncRoute(async (req, res) => {
+  router.get("/auth/steam/discord/:token", asyncRoute(async (req, res) => {
     const token = req.params.token;
     if (!isLinkToken(token) || !(await pendingLinkRequest(db(), token))) return expiredLink(res);
     const origin = steamOpenIdOrigin(req);
     res.set("Cache-Control", "no-store");
     res.redirect(302, steamLoginUrl(origin, linkCallbackUrl(origin, token)));
   }));
-  router.get("/discord/link/:token/callback", asyncRoute(async (req, res) => {
+  router.get("/auth/steam/discord/:token/callback", asyncRoute(async (req, res) => {
     const token = req.params.token;
     if (!isLinkToken(token)) return expiredLink(res);
     const request = await pendingLinkRequest(db(), token);

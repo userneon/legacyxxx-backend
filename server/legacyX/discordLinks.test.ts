@@ -74,7 +74,7 @@ describe("Discord links", () => {
 
   it("accepts only a Steam response issued for this exact link callback", () => {
     const expected = linkCallbackUrl("https://api.legacyx.cc", "t".repeat(32));
-    expect(expected).toBe(`https://api.legacyx.cc/api/v1/discord/link/${"t".repeat(32)}/callback`);
+    expect(expected).toBe(`https://api.legacyx.cc/api/v1/auth/steam/discord/${"t".repeat(32)}/callback`);
     expect(returnToMatches({ "openid.return_to": expected }, expected)).toBe(true);
     expect(returnToMatches({ "openid.return_to": "https://api.legacyx.cc/api/v1/auth/steam/callback" }, expected)).toBe(false);
     expect(returnToMatches({}, expected)).toBe(false);
