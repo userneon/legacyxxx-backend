@@ -45,6 +45,9 @@ Plugin routes require `Authorization: Bearer <raw-plugin-token>`. The server SHA
 | `bans:write` | `/plugin/bans` | POST | Central SteamID ban (`{ steamId, durationMinutes (0 = permanent), reason, issuerName }`): writes the public `penalties` row and the linked `bans` row, creating the player's user row if needed. Returns `{ ban, player: { steamId, username, avatar } }`. Used by the Discord bot's `/ban`. |
 | `bans:write` | `/plugin/bans/revoke` | POST | Lifts every active ban of a SteamID (`{ steamId, issuerName, reason? }`) and marks its ban penalties unbanned. Returns `{ bansLifted, penaltiesLifted, player }`. Used by `/unban`. |
 | `bans:read` | `/plugin/bans/check` | POST | `{ steamIds: [...] }` (up to 128) → `{ bans: [{ steamId, reason, isPermanent, expiresAt }] }` for bans still in force. LegacyX-Admin calls it on connect and every 30 s to kick banned players. |
+| `discord:link` | `/plugin/discord/link-requests` | POST | `{ discordId, discordName }` → `{ url, expiresAt }`: a one-time, 10-minute link. The player opens `url` (`GET /discord/link/:token`), signs in with Steam, and `/discord/link/:token/callback` links that Discord ID to their user (`complete_discord_link`, one Discord account per user). Used by the Discord bot's `/link`. |
+| `discord:link` | `/plugin/discord/links` | GET | `{ links: [{ discordId, discordName, linkedAt, steamId, username, rankId, rankName, currentExp, matchesCompleted }] }` for rank-role sync. `/plugin/discord/links/:discordId` returns one (`404` when unlinked). |
+| `discord:link` | `/plugin/discord/links/:discordId` | DELETE | Removes the link → `{ unlinked }`. Used by `/unlink`. |
 
 Create a token on the VPS with `node --env-file=.env scripts/create-api-token.mjs <name> <scope...>`; it prints the raw token once and stores only the hash.
 

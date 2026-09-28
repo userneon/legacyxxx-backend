@@ -3,7 +3,7 @@
 // token is printed once here, so run this on the VPS and paste it straight into the tool's .env.
 //
 //   node --env-file=.env scripts/create-api-token.mjs <name> <scope> [scope...]
-//   node --env-file=.env scripts/create-api-token.mjs legacyx-discord-bot bans:write
+//   node --env-file=.env scripts/create-api-token.mjs legacyx-discord-bot bans:write discord:link
 //   node --env-file=.env scripts/create-api-token.mjs legacyx-admin admin:read bans:read
 
 import { createClient } from "@supabase/supabase-js";
@@ -11,7 +11,7 @@ import { createHash, randomBytes } from "node:crypto";
 
 // Every scope a plugin route checks (grep pluginRoute in server/legacyX/routes.ts).
 const SCOPES = [
-  "admin:read", "bans:read", "bans:write", "community:write", "maps:write", "matches:write",
+  "admin:read", "bans:read", "bans:write", "community:write", "discord:link", "maps:write", "matches:write",
   "servers:write", "skinchanger:read", "stats:write",
 ];
 

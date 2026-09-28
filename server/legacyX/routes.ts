@@ -29,6 +29,7 @@ import { buildRankedInput, rankedResultSchema, type MatchParticipant, type Playe
 import { PROFILE_SECTIONS, hiddenForViewer, loadoutShowcase, mapWinRates, normalizeHiddenSections, profileStats, staffCard, type ProfileSection } from "./profileOverview";
 import { activeBans, bannedPlayer, checkBansSchema, issueBan, issueBanSchema, revokeBans, revokeBanSchema } from "./bans";
 import { authorizationRequestSchema, resolveAuthorizations } from "./adminAuthorization";
+import { completeLink, createLinkRequest, discordIdSchema, isLinkToken, linkCallbackUrl, linkRequestSchema, linkResultPage, listLinks, pendingLinkRequest, returnToMatches, unlink } from "./discordLinks";
 import { killEventSchema, killFeed } from "./killfeed";
 import { mapPlayServer, pickQuickJoin, sortPlayServers, type PlayMode } from "./play";
 import { bracketRounds, checkInOpen, groupTeams, mapTournamentMatch as mapTournamentPlayerMatch, mapTournamentSummary, nextMatchFor, tournamentPhase } from "./tournaments";
@@ -754,6 +755,7 @@ export function createLegacyXRouter() {
     message: { error: "Too many sensitive requests. Please retry shortly." },
   });
   router.use("/auth", authRateLimit);
+  router.use("/discord", authRateLimit);
   router.use("/staff", sensitiveMutationRateLimit);
   router.use((req, res, next) => {
     res.setHeader("X-Content-Type-Options", "nosniff");
@@ -2277,6 +2279,63 @@ export function createLegacyXRouter() {
     await writePluginAudit(plugin, "ban.revoke", "ban", null, { steamId: input.steamId, ...result, issuer: input.issuerName, reason: input.reason ?? null })
       .catch((error) => console.error("[legacy-x-api] Unable to audit ban lift", error));
     res.json({ ...result, player: await bannedPlayer(db(), input.steamId) });
+  }));
+  // Discord /link: the bot asks for a one-time URL; the player opens it and signs in with Steam.
+  router.post("/plugin/discord/link-requests", pluginRoute("discord:link", async (req, res) => {
+    const input = linkRequestSchema.parse(req.body);
+    const { token, expiresAt } = await createLinkRequest(db(), input);
+    res.set("Cache-Control", "no-store");
+    res.status(201).json({ url: `${requestOrigin(req)}/api/v1/discord/link/${token}`, expiresAt });
+  }));
+  router.get("/plugin/discord/links", pluginRoute("discord:link", async (_req, res) => {
+    res.set("Cache-Control", "no-store");
+    res.json({ links: await listLinks(db()) });
+  }));
+  router.get("/plugin/discord/links/:discordId", pluginRoute("discord:link", async (req, res) => {
+    const discordId = discordIdSchema.parse(req.params.discordId);
+    const [link] = await listLinks(db(), discordId);
+    if (!link) apiError(404, "Discord account is not linked");
+    res.set("Cache-Control", "no-store");
+    res.json({ link });
+  }));
+  router.delete("/plugin/discord/links/:discordId", pluginRoute("discord:link", async (req, res) => {
+    const discordId = discordIdSchema.parse(req.params.discordId);
+    res.json({ unlinked: await unlink(db(), discordId) });
+  }));
+
+  const sendLinkPage = (res: Response, status: number, ok: boolean, title: string, message: string) => {
+    const page = linkResultPage(ok, title, message);
+    res.status(status).set({ "Cache-Control": "no-store", "Content-Type": "text/html; charset=utf-8", "Content-Security-Policy": page.csp }).send(page.html);
+  };
+  const expiredLink = (res: Response) => sendLinkPage(res, 410, false, "Холбоос хүчингүй", "Энэ холбоосын хугацаа дууссан эсвэл ашиглагдсан байна. Discord дээр /link командыг дахин ажиллуулна уу.");
+  router.get("/discord/link/:token", asyncRoute(async (req, res) => {
+    const token = req.params.token;
+    if (!isLinkToken(token) || !(await pendingLinkRequest(db(), token))) return expiredLink(res);
+    const origin = steamOpenIdOrigin(req);
+    res.set("Cache-Control", "no-store");
+    res.redirect(302, steamLoginUrl(origin, linkCallbackUrl(origin, token)));
+  }));
+  router.get("/discord/link/:token/callback", asyncRoute(async (req, res) => {
+    const token = req.params.token;
+    if (!isLinkToken(token)) return expiredLink(res);
+    const request = await pendingLinkRequest(db(), token);
+    if (!request) return expiredLink(res);
+    const query = req.query as Record<string, unknown>;
+    let steamId: string;
+    try {
+      if (!returnToMatches(query, linkCallbackUrl(steamOpenIdOrigin(req), token))) apiError(401, "Steam response was not issued for this link");
+      steamId = await verifySteamCallback(query);
+    } catch {
+      return sendLinkPage(res, 401, false, "Steam баталгаажуулалт амжилтгүй", "Steam нэвтрэлтийг баталгаажуулж чадсангүй. Discord дээрх холбоосыг дахин нээнэ үү.");
+    }
+    const { data: userId, error } = await db().rpc("ensure_steam_user", { p_steam_id: steamId, p_username: `Steam ${steamId}`, p_avatar: "" });
+    legacyXError(error, "Unable to create Steam user");
+    if (!userId) apiError(500, "Steam user was not created");
+    await syncSteamUserProfile(steamId).catch(() => undefined);
+    if (!(await completeLink(db(), token, userId))) return expiredLink(res);
+    const { data: user } = await db().from("users").select("username").eq("id", userId).maybeSingle();
+    const steamName = typeof user?.username === "string" && user.username ? user.username : steamId;
+    sendLinkPage(res, 200, true, "Амжилттай холбогдлоо", `Discord акаунт ${request.discordName || request.discordId} нь Steam акаунт ${steamName}-тэй холбогдлоо. Rank role хэдэн секундын дотор Discord дээр гарч ирнэ.`);
   }));
   router.post("/plugin/bans/check", pluginRoute("bans:read", async (req, res) => {
     const input = checkBansSchema.parse(req.body);
