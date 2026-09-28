@@ -1669,11 +1669,6 @@ export function createLegacyXRouter() {
     legacyXError(error, "Unable to load clans");
     res.json(((data ?? []) as DbRow[]).map(mapClanCard));
   }));
-  router.get("/clans/team", userRoute(async (_req, res) => {
-    const { data, error } = await db().from("staff_team").select("name,role,avatar,description").order("display_order");
-    legacyXError(error, "Unable to load staff team");
-    res.json((data ?? []).map((member: DbRow) => ({ name: textValue(member.name), role: textValue(member.role), avatar: textValue(member.avatar), description: textValue(member.description) })));
-  }));
   router.get("/clans/:clanId", userRoute(async (req, res) => {
     res.json(await loadClanDetail(userIdSchema.parse(req.params.clanId)));
   }));
