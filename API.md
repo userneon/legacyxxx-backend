@@ -54,7 +54,7 @@ Plugin routes require `Authorization: Bearer <raw-plugin-token>`. The server SHA
 
 Create a token on the VPS with `node --env-file=.env scripts/create-api-token.mjs <name> <scope...>`; it prints the raw token once and stores only the hash.
 
-For a CS2 server use `node --env-file=.env scripts/create-game-server.mjs <server-id> <host:port> [competitive_5v5|fun|proleague] [name]` instead: it creates one token with every scope the plugins use and writes the complete `CounterStrikeSharp/.env` for that server (`./<server-id>.env`). Running it again replaces the server's token.
+For CS2 servers use `node --env-file=.env scripts/create-game-server.mjs <host> <port>[:mode[:name]] [...]` instead: it creates one token (every scope the plugins use) for the machine and writes the one `CounterStrikeSharp/.env` all its servers share (`./legacyx-srv-<host>.env`). Each server tells itself apart by its `-port`: id `srv-<port>`, address `<host>:<port>`, plus the mode and name given for that port. Running it again replaces the machine's token.
 
 The API database functions live in `supabase/legacy_x_api_functions.sql` and `supabase/legacy_x_api_transactions.sql`. They make clan creation, purchases, wallet credits, link replacement, community writes, and player-result ingestion transactional.
 
