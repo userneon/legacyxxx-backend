@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { issueBan, issueBanSchema } from "./bans";
+import { issueBan, issueBanSchema, revokeAllBans } from "./bans";
 import { issueCommPenalty, issueCommPenaltySchema, liftCommPenalties } from "./gamePenalties";
 import { heartbeatSchema, ingestHeartbeat } from "./serverHeartbeat";
 
@@ -52,6 +52,24 @@ describe("game → API → database", () => {
     await issueBan(db, input, now);
     expect(calls[1]).toMatchObject({ table: "bans", payload: { source: "game", issuer_steam_id: "76561198000000009" } });
     expect(issueBanSchema.parse({ steamId: STEAM, durationMinutes: 0, reason: "x", issuerName: "y" }).source).toBe("panel");
+  });
+
+  it("!cleanbans wipes every ban only for a website owner", async () => {
+    const owner = fakeDb({
+      "users.select": [{ data: { id: "u-owner" }, error: null }],
+      "staff.select": [{ data: { role: "OWNER" }, error: null }],
+      "bans.update": [{ data: [{ id: "b1" }, { id: "b2" }], error: null }],
+      "penalties.update": [{ data: [{ id: "p1" }], error: null }],
+    });
+    expect(await revokeAllBans(owner.db, { issuerSteamId: STEAM, issuerName: "owner (in-game)" }, now)).toEqual({ bansLifted: 2, penaltiesLifted: 1 });
+    expect(owner.calls[1]!.filters).toEqual([["eq", "user_id", "u-owner"], ["eq", "status", "active"]]);
+    expect(owner.calls[2]).toMatchObject({ table: "bans", op: "update", filters: [["is", "revoked_at", null]] });
+
+    const manager = fakeDb({ "users.select": [{ data: { id: "u2" }, error: null }], "staff.select": [{ data: { role: "MANAGER" }, error: null }] });
+    await expect(revokeAllBans(manager.db, { issuerSteamId: STEAM, issuerName: "m" }, now)).rejects.toMatchObject({ statusCode: 403 });
+    expect(manager.calls.some((c) => c.table === "bans")).toBe(false);
+    const stranger = fakeDb({ "users.select": [{ data: null, error: null }] });
+    await expect(revokeAllBans(stranger.db, { issuerSteamId: STEAM, issuerName: "x" }, now)).rejects.toMatchObject({ statusCode: 403 });
   });
 
   it("records in-game mutes and gags as public penalties and lifts them", async () => {

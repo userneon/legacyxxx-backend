@@ -11,3 +11,6 @@ adminplus/backend/.env.*
 !adminplus/backend/.env.example
 *.log
 *.tsbuildinfo
+
+# Game server environments made by scripts/create-game-server.mjs (contain tokens)
+/*.env

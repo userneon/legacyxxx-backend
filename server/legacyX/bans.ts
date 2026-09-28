@@ -120,6 +120,41 @@ export async function revokeBans(db: Db, input: z.infer<typeof revokeBanSchema>,
   return { bansLifted: (bans ?? []).length, penaltiesLifted: penalties.length };
 }
 
+/** !cleanbans on a CS2 server: only a website OWNER can wipe every ban. */
+export const revokeAllBansSchema = z.object({
+  issuerSteamId: steamId64,
+  issuerName: z.string().trim().min(1).max(64),
+});
+
+/**
+ * Lifts every active ban and marks every ban penalty lifted. The API checks that the SteamID
+ * belongs to an active OWNER itself, so a leaked server token alone cannot wipe the bans.
+ */
+export async function revokeAllBans(db: Db, input: z.infer<typeof revokeAllBansSchema>, now = new Date()) {
+  const { data: user, error: userError } = await db.from("users").select("id").eq("steam_id", input.issuerSteamId).maybeSingle();
+  legacyXError(userError, "Unable to resolve issuer");
+  const { data: staff, error: staffError } = user?.id
+    ? await db.from("staff").select("role").eq("user_id", user.id).eq("status", "active").maybeSingle()
+    : { data: null, error: null };
+  legacyXError(staffError, "Unable to verify issuer");
+  if (staff?.role !== "OWNER") throw Object.assign(new Error("Only an owner can clear every ban"), { statusCode: 403 });
+
+  const { data: bans, error: bansError } = await db
+    .from("bans")
+    .update({ revoked_at: now.toISOString(), revoke_reason: `Cleared by ${input.issuerName} (!cleanbans)`.slice(0, 240) })
+    .is("revoked_at", null)
+    .select("id");
+  legacyXError(bansError, "Unable to lift bans");
+  const { data: penalties, error: penaltiesError } = await db
+    .from("penalties")
+    .update({ is_unbanned: true })
+    .eq("type", "ban")
+    .eq("is_unbanned", false)
+    .select("id");
+  legacyXError(penaltiesError, "Unable to update penalties");
+  return { bansLifted: (bans ?? []).length, penaltiesLifted: (penalties ?? []).length };
+}
+
 export type ActiveBan = { steamId: string; reason: string; isPermanent: boolean; expiresAt: string | null };
 
 /** Active bans among the given SteamIDs (not lifted, not expired). */

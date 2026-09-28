@@ -27,7 +27,7 @@ import { fetchSteamAccountCreatedAt, syncSteamUserProfile } from "./steamProfile
 import { RANK_CALCULATION_VERSION, calculateMatchExp } from "./ranking";
 import { buildRankedInput, rankedResultSchema, type MatchParticipant, type PlayerProgression } from "./rankedMatch";
 import { PROFILE_SECTIONS, hiddenForViewer, loadoutShowcase, mapWinRates, normalizeHiddenSections, profileStats, staffCard, type ProfileSection } from "./profileOverview";
-import { activeBans, bannedPlayer, checkBansSchema, issueBan, issueBanSchema, revokeBans, revokeBanSchema } from "./bans";
+import { activeBans, bannedPlayer, checkBansSchema, issueBan, issueBanSchema, revokeAllBans, revokeAllBansSchema, revokeBans, revokeBanSchema } from "./bans";
 import { authorizationRequestSchema, resolveAuthorizations } from "./adminAuthorization";
 import { completeLink, createLinkRequest, discordIdSchema, isLinkToken, linkCallbackUrl, linkRequestSchema, linkResultPage, listLinks, pendingLinkRequest, returnToMatches, unlink } from "./discordLinks";
 import { issueCommPenalty, issueCommPenaltySchema, liftCommPenalties, liftCommPenaltySchema } from "./gamePenalties";
@@ -2344,6 +2344,14 @@ export function createLegacyXRouter() {
     const { data: user } = await db().from("users").select("username").eq("id", userId).maybeSingle();
     const steamName = typeof user?.username === "string" && user.username ? user.username : steamId;
     sendLinkPage(res, 200, true, "Амжилттай холбогдлоо", `Discord акаунт ${request.discordName || request.discordId} нь Steam акаунт ${steamName}-тэй холбогдлоо. Rank role хэдэн секундын дотор Discord дээр гарч ирнэ.`);
+  }));
+  // !cleanbans on a CS2 server: every ban lifted everywhere, only for a website OWNER.
+  router.post("/plugin/bans/revoke-all", pluginRoute("bans:write", async (req, res, plugin) => {
+    const input = revokeAllBansSchema.parse(req.body);
+    const result = await revokeAllBans(db(), input);
+    await writePluginAudit(plugin, "ban.revoke_all", "ban", null, { ...result, issuer: input.issuerName, issuerSteamId: input.issuerSteamId })
+      .catch((error) => console.error("[legacy-x-api] Unable to audit ban wipe", error));
+    res.json(result);
   }));
   // In-game voice mutes and chat gags (LegacyX-Admin): the public record next to the bans.
   router.post("/plugin/penalties", pluginRoute("bans:write", async (req, res, plugin) => {

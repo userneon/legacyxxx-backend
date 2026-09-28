@@ -45,6 +45,7 @@ Plugin routes require `Authorization: Bearer <raw-plugin-token>`. The server SHA
 | `bans:write` | `/plugin/bans` | POST | Central SteamID ban (`{ steamId, durationMinutes (0 = permanent), reason, issuerName }`): writes the public `penalties` row and the linked `bans` row, creating the player's user row if needed. Returns `{ ban, player: { steamId, username, avatar } }`. Used by the Discord bot's `/ban`. |
 | `bans:write` | `/plugin/bans/revoke` | POST | Lifts every active ban of a SteamID (`{ steamId, issuerName, reason? }`) and marks its ban penalties unbanned. Returns `{ bansLifted, penaltiesLifted, player }`. Used by `/unban`. |
 | `servers:write` | `/plugin/servers/heartbeat` | POST | Every CS2 server (LegacyX-Status) every 30 s: `{ serverId, name, address, gotvAddress?, map, mode, maxPlayers, players: [{ steamId, name }] }`. `ingest_server_heartbeat` updates `reconnect_servers` (Play pages, home tiles, Discord boards) and `reconnect_sessions` (who is playing where) in one transaction. |
+| `bans:write` | `/plugin/bans/revoke-all` | POST | `!cleanbans` on a CS2 server: `{ issuerSteamId, issuerName }` lifts every ban and ban penalty, only if `issuerSteamId` belongs to an active website OWNER (checked by the API, `403` otherwise). |
 | `bans:write` | `/plugin/penalties` | POST | In-game voice mute or chat gag (LegacyX-Admin): `{ steamId, type: "comm" \| "gag", durationMinutes (0 = permanent), reason, issuerName }` → a public penalty. `/plugin/penalties/revoke` `{ steamId, type, issuerName }` lifts them. In-game bans use `/plugin/bans` with `source: "game"` and `issuerSteamId`. |
 | `bans:read` | `/plugin/bans/check` | POST | `{ steamIds: [...] }` (up to 128) → `{ bans: [{ steamId, reason, isPermanent, expiresAt }] }` for bans still in force. LegacyX-Admin calls it on connect and every 30 s to kick banned players. |
 | `discord:link` | `/plugin/discord/link-requests` | POST | `{ discordId, discordName }` → `{ url, expiresAt }`: a one-time, 10-minute link. The player opens `url` (`GET /auth/steam/discord/:token`), signs in with Steam, and `/auth/steam/discord/:token/callback` (under `/auth/steam`, so the legacyx.cc proxy for the Steam callback already covers it) links that Discord ID to their user (`complete_discord_link`, one Discord account per user). Used by the Discord bot's `/link`. |
@@ -52,6 +53,8 @@ Plugin routes require `Authorization: Bearer <raw-plugin-token>`. The server SHA
 | `discord:link` | `/plugin/discord/links/:discordId` | DELETE | Removes the link → `{ unlinked }`. Used by `/unlink`. |
 
 Create a token on the VPS with `node --env-file=.env scripts/create-api-token.mjs <name> <scope...>`; it prints the raw token once and stores only the hash.
+
+For a CS2 server use `node --env-file=.env scripts/create-game-server.mjs <server-id> <host:port> [competitive_5v5|fun|proleague] [name]` instead: it creates one token with every scope the plugins use and writes the complete `CounterStrikeSharp/.env` for that server (`./<server-id>.env`). Running it again replaces the server's token.
 
 The API database functions live in `supabase/legacy_x_api_functions.sql` and `supabase/legacy_x_api_transactions.sql`. They make clan creation, purchases, wallet credits, link replacement, community writes, and player-result ingestion transactional.
 
