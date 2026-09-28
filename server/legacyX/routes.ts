@@ -1488,8 +1488,9 @@ export function createLegacyXRouter() {
       actor_type: "user",
       actor_id: user.id,
       action: "skinchanger.loadout.entry.upsert",
-      target_type: "skinchanger_loadout_entries",
-      target_id: `${preparedEntry.slot_key}:${preparedEntry.team_scope}`,
+      // audit_logs.target_id is a uuid and entries have none: the target is the user's loadout, the slot is in metadata.
+      target_type: "skinchanger_loadouts",
+      target_id: user.id,
       metadata: { version, slot: preparedEntry.slot, slotKey: preparedEntry.slot_key, teamScope: preparedEntry.team_scope, catalogItemId: preparedEntry.catalog_item_id },
     });
     if (auditError) console.error("Unable to audit skinchanger entry save", auditError);
@@ -1512,8 +1513,9 @@ export function createLegacyXRouter() {
       actor_type: "user",
       actor_id: user.id,
       action: "skinchanger.loadout.entry.delete",
-      target_type: "skinchanger_loadout_entries",
-      target_id: `${input.slotKey}:${input.teamScope}`,
+      // audit_logs.target_id is a uuid and entries have none: the target is the user's loadout, the slot is in metadata.
+      target_type: "skinchanger_loadouts",
+      target_id: user.id,
       metadata: { version, slotKey: input.slotKey, teamScope: input.teamScope },
     });
     if (auditError) console.error("Unable to audit skinchanger entry deletion", auditError);
