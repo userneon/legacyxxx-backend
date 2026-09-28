@@ -21,6 +21,9 @@ export const issueBanSchema = z.object({
   reason: z.string().trim().min(1).max(200),
   /** Who issued it, as shown on the penalties page (e.g. the Discord staff member). */
   issuerName: z.string().trim().min(1).max(64),
+  /** "game" for bans issued on a CS2 server (LegacyX-Admin), "panel" for the website and Discord. */
+  source: z.enum(["panel", "game"]).default("panel"),
+  issuerSteamId: steamId64.optional(),
 });
 
 export const revokeBanSchema = z.object({
@@ -70,7 +73,8 @@ export async function issueBan(db: Db, input: z.infer<typeof issueBanSchema>, no
       is_permanent: isPermanent,
       expires_at: expiresAt,
       issuer_immunity: ISSUER_IMMUNITY,
-      source: "panel",
+      source: input.source ?? "panel",
+      issuer_steam_id: input.issuerSteamId ?? null,
       review_status: isPermanent ? "pending" : "none",
       penalty_id: penalty.id,
     })

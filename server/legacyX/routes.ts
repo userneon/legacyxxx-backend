@@ -30,7 +30,9 @@ import { PROFILE_SECTIONS, hiddenForViewer, loadoutShowcase, mapWinRates, normal
 import { activeBans, bannedPlayer, checkBansSchema, issueBan, issueBanSchema, revokeBans, revokeBanSchema } from "./bans";
 import { authorizationRequestSchema, resolveAuthorizations } from "./adminAuthorization";
 import { completeLink, createLinkRequest, discordIdSchema, isLinkToken, linkCallbackUrl, linkRequestSchema, linkResultPage, listLinks, pendingLinkRequest, returnToMatches, unlink } from "./discordLinks";
+import { issueCommPenalty, issueCommPenaltySchema, liftCommPenalties, liftCommPenaltySchema } from "./gamePenalties";
 import { killEventSchema, killFeed } from "./killfeed";
+import { heartbeatSchema, ingestHeartbeat } from "./serverHeartbeat";
 import { mapPlayServer, pickQuickJoin, sortPlayServers, type PlayMode } from "./play";
 import { bracketRounds, checkInOpen, groupTeams, mapTournamentMatch as mapTournamentPlayerMatch, mapTournamentSummary, nextMatchFor, tournamentPhase } from "./tournaments";
 
@@ -2228,6 +2230,12 @@ export function createLegacyXRouter() {
     await writePluginAudit(plugin, "server.create", "game_servers", data.id, { name: data.name, status: data.status });
     res.status(201).json({ server: data });
   }));
+  // Every CS2 server (LegacyX-Status) every 30 s: identity, map, mode and who is on it.
+  router.post("/plugin/servers/heartbeat", pluginRoute("servers:write", async (req, res) => {
+    const input = heartbeatSchema.parse(req.body);
+    res.set("Cache-Control", "no-store");
+    res.json(await ingestHeartbeat(db(), input));
+  }));
   router.put("/plugin/servers/:serverId/status", pluginRoute("servers:write", async (req, res, plugin) => {
     const input = pluginServerSchema.omit({ id: true, name: true, map: true, mode: true }).parse(req.body);
     const { data, error } = await db().from("game_servers").update(input).eq("id", req.params.serverId).select("*").single();
@@ -2336,6 +2344,22 @@ export function createLegacyXRouter() {
     const { data: user } = await db().from("users").select("username").eq("id", userId).maybeSingle();
     const steamName = typeof user?.username === "string" && user.username ? user.username : steamId;
     sendLinkPage(res, 200, true, "Амжилттай холбогдлоо", `Discord акаунт ${request.discordName || request.discordId} нь Steam акаунт ${steamName}-тэй холбогдлоо. Rank role хэдэн секундын дотор Discord дээр гарч ирнэ.`);
+  }));
+  // In-game voice mutes and chat gags (LegacyX-Admin): the public record next to the bans.
+  router.post("/plugin/penalties", pluginRoute("bans:write", async (req, res, plugin) => {
+    const input = issueCommPenaltySchema.parse(req.body);
+    const penalty = await issueCommPenalty(db(), input);
+    await syncSteamUserProfile(input.steamId).catch(() => undefined);
+    await writePluginAudit(plugin, `${input.type}.issue`, "penalties", penalty.penaltyId, { steamId: input.steamId, durationMinutes: input.durationMinutes, reason: input.reason, issuer: input.issuerName })
+      .catch((error) => console.error("[legacy-x-api] Unable to audit penalty", error));
+    res.status(201).json({ penalty });
+  }));
+  router.post("/plugin/penalties/revoke", pluginRoute("bans:write", async (req, res, plugin) => {
+    const input = liftCommPenaltySchema.parse(req.body);
+    const result = await liftCommPenalties(db(), input);
+    await writePluginAudit(plugin, `${input.type}.revoke`, "penalties", null, { steamId: input.steamId, ...result, issuer: input.issuerName })
+      .catch((error) => console.error("[legacy-x-api] Unable to audit penalty lift", error));
+    res.json(result);
   }));
   router.post("/plugin/bans/check", pluginRoute("bans:read", async (req, res) => {
     const input = checkBansSchema.parse(req.body);
