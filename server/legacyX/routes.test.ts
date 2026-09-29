@@ -63,6 +63,20 @@ describe("LEGACY-X REST API", () => {
     expect(redirect.searchParams.get("openid.realm")).toBe(process.env.STEAM_OPENID_ORIGIN);
   });
 
+  it("sends a player who cancelled on Steam back to the site instead of a JSON error", async () => {
+    const response = await fetch(`${baseUrl}/auth/steam/callback?openid.mode=cancel`, { redirect: "manual" });
+
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location")).toBe(`${process.env.FRONTEND_ORIGIN}/?login=cancelled`);
+  });
+
+  it("sends a failed Steam login back to the site with a short code", async () => {
+    const response = await fetch(`${baseUrl}/auth/steam/callback?openid.mode=id_res&openid.claimed_id=https://example.com/not-steam`, { redirect: "manual" });
+
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location")).toBe(`${process.env.FRONTEND_ORIGIN}/?login=failed`);
+  });
+
   it("allows only the configured legacyx.cc frontend origin to make credentialed API requests", async () => {
     const response = await fetch(`${baseUrl}/health`, {
       method: "OPTIONS",

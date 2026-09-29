@@ -4,7 +4,7 @@ import express from "express";
 import { createServer } from "http";
 import { createLegacyXRouter } from "../legacyX/routes";
 import { apiBodyLimit, runtimeHost, runtimePort, trustProxyValue, validateProductionRuntime } from "../legacyX/config";
-import { apiParseErrorHandler, apiSecurityMiddleware } from "./security";
+import { apiParseErrorHandler, apiSecurityMiddleware, browserFallback } from "./security";
 
 async function startServer() {
   if (process.env.NODE_ENV === "production") validateProductionRuntime();
@@ -17,6 +17,7 @@ async function startServer() {
   app.use(apiSecurityMiddleware);
   app.use("/api/v1", express.json({ limit: apiBodyLimit() }), express.urlencoded({ limit: apiBodyLimit(), extended: true }), createLegacyXRouter());
   app.get("/health", (_req, res) => res.json({ ok: true, service: "legacy-x-backend" }));
+  app.use(browserFallback);
   app.use(apiParseErrorHandler);
 
   const port = runtimePort();

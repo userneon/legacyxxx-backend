@@ -1985,12 +1985,22 @@ export function createLegacyXRouter() {
       }
       apiError(500, "POST_LOGIN_REDIRECT or FRONTEND_ORIGIN must be configured for Steam login");
     } catch (error) {
-      if (!staffPanel || !redirect) throw error;
+      if (!redirect) throw error;
+      res.setHeader("Cache-Control", "no-store");
+      // A player who pressed Cancel on Steam goes back to the site quietly; nothing failed.
+      if (!staffPanel && req.query["openid.mode"] === "cancel") {
+        res.redirect(302, new URL("/?login=cancelled", redirect).toString());
+        return;
+      }
       const trace = randomBytes(8).toString("hex");
       const status = (error as { statusCode?: number }).statusCode ?? 500;
+      console.error(`[legacy-x-api] ${staffPanel ? "staffpanel_callback_failed" : "steam_login_failed"}`, { trace, status, message: error instanceof Error ? error.message : "Unknown error" });
+      // Back to the site with a short code the page turns into one line, never a raw JSON error page.
+      if (!staffPanel) {
+        res.redirect(302, new URL("/?login=failed", redirect).toString());
+        return;
+      }
       const code = status >= 500 ? "staff_setup_required" : "staff_auth_failed";
-      console.error("[legacy-x-api] staffpanel_callback_failed", { trace, status, message: error instanceof Error ? error.message : "Unknown error" });
-      res.setHeader("Cache-Control", "no-store");
       res.redirect(302, new URL(`/staffpanel?staff_error=${code}&trace=${trace}`, redirect).toString());
     }
   }));

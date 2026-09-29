@@ -2,15 +2,17 @@ import type { AddressInfo } from "node:net";
 import type { Server } from "node:http";
 import express from "express";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { apiParseErrorHandler, apiSecurityMiddleware } from "./security";
+import { apiParseErrorHandler, apiSecurityMiddleware, browserFallback } from "./security";
 
 let server: Server;
 let baseUrl: string;
 
 beforeAll(async () => {
+  process.env.FRONTEND_ORIGIN = "https://legacyx.cc";
   const app = express();
   app.use(apiSecurityMiddleware);
   app.post("/echo", express.json({ limit: "1kb" }), (req, res) => res.json({ received: req.body }));
+  app.use(browserFallback);
   app.use(apiParseErrorHandler);
   await new Promise<void>(resolve => { server = app.listen(0, "127.0.0.1", () => resolve()); });
   baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -40,5 +42,19 @@ describe("API security middleware", () => {
     const response = await fetch(`${baseUrl}/echo`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ payload: "x".repeat(2_048) }) });
     expect(response.status).toBe(413);
     await expect(response.json()).resolves.toMatchObject({ error: "Request body is too large" });
+  });
+});
+
+describe("browser fallback", () => {
+  it("sends a browser that opens the API host to the website", async () => {
+    const response = await fetch(`${baseUrl}/`, { redirect: "manual" });
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location")).toBe("https://legacyx.cc/");
+  });
+
+  it("answers other methods with a plain JSON 404", async () => {
+    const response = await fetch(`${baseUrl}/anything`, { method: "POST" });
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toEqual({ error: "Not found" });
   });
 });

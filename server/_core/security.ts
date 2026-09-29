@@ -47,3 +47,17 @@ export function apiParseErrorHandler(error: ParserError, req: RequestWithCorrela
   if (status >= 500) console.error("[legacy-x-api] parser failure", { requestId: req.legacyxRequestId, type: error.type });
   res.status(status).json({ error: status === 413 ? "Request body is too large" : "Malformed request body", requestId: req.legacyxRequestId ?? null });
 }
+
+/**
+ * Anything outside /api/v1 and /health: a person who opens api.legacyx.cc in a browser lands on the
+ * website instead of Express's bare "Cannot GET /". Other methods, and every path when no frontend
+ * origin is configured, get a plain JSON 404.
+ */
+export function browserFallback(req: Request, res: Response) {
+  const frontend = process.env.FRONTEND_ORIGIN?.trim().replace(/\/$/, "");
+  if (frontend && (req.method === "GET" || req.method === "HEAD")) {
+    res.redirect(302, `${frontend}/`);
+    return;
+  }
+  res.status(404).json({ error: "Not found" });
+}
