@@ -18,6 +18,17 @@ PORT="${PORT:-3000}"
 
 echo "==> Node $(node -v)"
 
+# Discord: the subjects of the commits this deploy brought, as written (legacyxxx-plugins/scripts/announce.sh
+# on this VPS; it posts nothing without a webhook and never fails the deploy).
+announce() {
+  local script="${ANNOUNCE:-/opt/legacyxxx-plugins/scripts/announce.sh}" to
+  [[ -f "$script" ]] || return 0
+  to="$(git rev-parse HEAD)"
+  bash "$script" --title "API updated" --commits "$(pwd)" "$FROM" "$to" \
+    --footer "legacyxxx-backend $(git rev-parse --short "$FROM") → $(git rev-parse --short "$to")" || true
+}
+
+FROM="$(git rev-parse HEAD)"
 echo "==> Pulling $BRANCH"
 git fetch origin "$BRANCH"
 git checkout "$BRANCH"
@@ -42,6 +53,7 @@ echo "==> Health check on 127.0.0.1:$PORT"
 for attempt in $(seq 1 15); do
   if curl -fsS "http://127.0.0.1:$PORT/health" >/dev/null 2>&1; then
     echo "==> Done: $(git log -1 --format='%h %s') (healthy)"
+    announce
     exit 0
   fi
   sleep 1
