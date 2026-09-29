@@ -63,6 +63,14 @@ Run the final command printed by `pm2 startup` exactly once; it registers PM2 af
 
 ## Subsequent releases
 
+One command does all of it (pull `main`, install, typecheck, build, reload pm2, check `/health`):
+
+```bash
+bash ops/deploy.sh
+```
+
+The same steps by hand:
+
 ```bash
 cd /var/www/legacy-x-api
 git pull --ff-only
