@@ -155,6 +155,21 @@ describe("calculateMatchExp", () => {
     expect(find(result, "u6").expDelta).toBe(-15);
   });
 
+  it("trims a gain to what is left of the rolling 24 hour cap, and never trims a loss", () => {
+    const players = lobby((id) => (id === 1 || id === 6 ? { expGainedLast24h: 140 } : {}));
+    const result = calculateMatchExp(match({ players }));
+    expect(find(result, "u1").expDelta).toBe(10);
+    expect(find(result, "u1").breakdown.dailyCapped).toBe(true);
+    expect(find(result, "u2").expDelta).toBe(17);
+    expect(find(result, "u2").breakdown.dailyCapped).toBeUndefined();
+    expect(find(result, "u6").expDelta).toBe(-15);
+  });
+
+  it("gives no gain once the daily cap is used up", () => {
+    const result = calculateMatchExp(match({ players: lobby((id) => (id === 1 ? { expGainedLast24h: 150 } : {})) }));
+    expect(find(result, "u1").expDelta).toBe(0);
+  });
+
   it("draw gives no result term", () => {
     const result = calculateMatchExp(match({ roundsWon: { team1: 12, team2: 12 } }));
     expect(find(result, "u1").outcome).toBe("draw");

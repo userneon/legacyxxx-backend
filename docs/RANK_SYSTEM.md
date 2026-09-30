@@ -35,3 +35,10 @@ Calculation version: `rank-v1.0` (stored on every `competitive_match_exp` row an
 `GET /api/v1/public/competitive/players/:userId/matches` returns each ranked match with `expDelta` and the
 breakdown (`result`, `margin`, `performance`, `bonus`, `calibration`, `reason`, `omittedTerms`), which the website
 shows as `+18 · Win vs stronger team +17 · Margin +2 · Performance −1`.
+
+## Daily gain cap (anti-farming)
+
+A player can gain at most **150 EXP in any rolling 24 hours**, however the matches were played. A gain that
+would go past the cap is trimmed to what is left (`exp_breakdown.dailyCapped = true`); once it is used up,
+wins give 0 until older gains fall out of the window. Losses are never limited. This makes farming with
+friends (win-trading, feeding kills) slow: reaching Legacy from the 1000 start takes at least ~9 days.

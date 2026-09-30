@@ -677,8 +677,13 @@ async function applyRankedMatchResult(pluginId: string, eventId: string, matchId
     const participants = (participantRows.data ?? []) as MatchParticipant[];
     const progressionRows = await legacyXDb().from("competitive_player_progression").select("user_id,current_exp,matches_completed,pro_league_unlocked").in("user_id", participants.map((participant) => participant.user_id));
     legacyXError(progressionRows.error, "Unable to load player EXP");
+    const recentGains = await legacyXDb().from("competitive_match_exp").select("user_id,exp_delta").in("user_id", participants.map((participant) => participant.user_id)).gt("exp_delta", 0).gte("created_at", new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString());
+    legacyXError(recentGains.error, "Unable to load recent EXP gains");
+    const gained24h = new Map<string, number>();
+    for (const row of recentGains.data ?? []) gained24h.set(row.user_id, (gained24h.get(row.user_id) ?? 0) + Number(row.exp_delta));
+    const progression = ((progressionRows.data ?? []) as PlayerProgression[]).map((row) => ({ ...row, exp_gained_24h: gained24h.get(row.user_id) ?? 0 }));
     const finishedAt = matchRow.data.finished_at ? new Date(matchRow.data.finished_at) : new Date();
-    const built = buildRankedInput(parsed.data, participants, (progressionRows.data ?? []) as PlayerProgression[], finishedAt);
+    const built = buildRankedInput(parsed.data, participants, progression, finishedAt);
     if (built.unrankable.length > 0) return { status: "not_ranked", reasons: built.unrankable };
     const outcome = calculateMatchExp(built.input);
     if (!outcome.appliesExp) return { status: "not_ranked", reasons: ["fun_mode"] };

@@ -25,6 +25,8 @@ export const PERFORMANCE_STD_FLOOR = 0.05;
 export const BONUS_CAP = 2;
 export const DELTA_CAP = 45;
 export const DELTA_CAP_CALIBRATING = 90;
+/** Most EXP one player can gain in a rolling 24 hours, however the matches were played (anti-farming). Losses are never limited. */
+export const DAILY_GAIN_CAP = 150;
 
 export type RankTier = "recruit" | "operator" | "vanguard" | "ace" | "apex" | "legacy";
 
@@ -114,6 +116,8 @@ export interface RankedPlayerInput extends PlayerMatchStats {
   /** Ranked matches already completed before this one (drives calibration). */
   rankedMatchesBefore: number;
   proLeagueUnlocked?: boolean;
+  /** EXP already gained in the 24 hours before this match (positive deltas only). */
+  expGainedLast24h?: number;
   /** Left and did not return within the Match Core rejoin window. */
   leftEarly?: boolean;
 }
@@ -134,6 +138,8 @@ export interface ExpBreakdown {
   performance: number;
   bonus: number;
   calibration: 1 | 2;
+  /** The gain was trimmed to stay inside the rolling 24 hour cap. */
+  dailyCapped?: boolean;
   /** Why the formula was not applied to this player, when it wasn't. */
   rule?: "leaver" | "invalid_match" | "low_participation" | "fun_mode";
   expected?: number;
@@ -305,7 +311,9 @@ export function calculateMatchExp(input: RankedMatchInput): MatchExpResult {
     const mvp = topScore !== null && score === topScore;
     const bonus = Math.min(BONUS_CAP, ((player.aces ?? 0) > 0 || bigClutch(player) ? 1 : 0) + (mvp ? 1 : 0));
 
-    const delta = composeDelta({ result, margin, performance, bonus, calibration });
+    const uncapped = composeDelta({ result, margin, performance, bonus, calibration });
+    const room = Math.max(0, DAILY_GAIN_CAP - Math.max(0, player.expGainedLast24h ?? 0));
+    const delta = uncapped > room ? room : uncapped;
     return settle(
       delta,
       {
@@ -319,6 +327,7 @@ export function calculateMatchExp(input: RankedMatchInput): MatchExpResult {
         z: round2(z),
         ...(shortHanded ? { shortHanded } : {}),
         ...(mvp ? { mvp } : {}),
+        ...(delta < uncapped ? { dailyCapped: true } : {}),
       },
       true,
     );
