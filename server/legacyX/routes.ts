@@ -24,7 +24,7 @@ import { legacyXDb, legacyXError } from "./supabase";
 import { resolveSteamProfileMedia } from "./steamBackground";
 import { coreRoundScore, expRowAsResult, mapExpRecentMatch, mapMatchDetail } from "./matchDetails";
 import { fetchSteamAccountCreatedAt, syncSteamUserProfile } from "./steamProfile";
-import { RANK_CALCULATION_VERSION, calculateMatchExp } from "./ranking";
+import { RANK_CALCULATION_VERSION, calculateMatchExp, expLimitUsage } from "./ranking";
 import { buildRankedInput, rankedResultSchema, type MatchParticipant, type PlayerProgression } from "./rankedMatch";
 import { PROFILE_SECTIONS, hiddenForViewer, loadoutShowcase, mapWinRates, normalizeHiddenSections, profileStats, staffCard, type ProfileSection } from "./profileOverview";
 import { activeBans, bannedPlayer, checkBansSchema, issueBan, issueBanSchema, revokeAllBans, revokeAllBansSchema, revokeBans, revokeBanSchema } from "./bans";
@@ -1205,6 +1205,8 @@ export function createLegacyXRouter() {
         nextRankMinExp: progression.next_rank_min_exp == null ? null : numberValue(progression.next_rank_min_exp),
         proLeagueUnlocked: Boolean(progression.pro_league_unlocked),
         position: positionResult.data ? numberValue((positionResult.data as DbRow).position) : null,
+        // The player's own daily / weekly EXP limits; only the owner sees them.
+        expLimits: isOwner ? expLimitUsage(expRows.map((row) => ({ exp_delta: numberValue(row.exp_delta), created_at: textValue(row.created_at) }))) : null,
       } : null,
       lastPlayedAt: timestampValue(progression?.last_match_at) || null,
       trust: { steamAccountCreatedAt: steamCreatedAt, activePenalty: activePenalty ? { id: activePenalty.id, type: activePenalty.type } : null },

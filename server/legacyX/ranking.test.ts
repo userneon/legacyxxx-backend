@@ -5,6 +5,7 @@ import {
   LEAVER_DELTA,
   RANKS,
   calculateMatchExp,
+  expLimitUsage,
   composeDelta,
   expectedScore,
   impactScore,
@@ -319,5 +320,19 @@ describe("calculateMatchExp", () => {
   it("is deterministic for the same input (idempotent recalculation)", () => {
     const input = match({ players: lobby((id) => ({ kills: 10 + id })) });
     expect(calculateMatchExp(input)).toEqual(calculateMatchExp(input));
+  });
+});
+
+describe("expLimitUsage", () => {
+  const now = Date.parse("2026-09-30T12:00:00Z");
+  const at = (hoursAgo: number) => new Date(now - hoursAgo * 3_600_000).toISOString();
+  it("adds up gains in the day and the week and ignores losses and older rows", () => {
+    const usage = expLimitUsage([
+      { exp_delta: 20, created_at: at(2) },
+      { exp_delta: -14, created_at: at(3) },
+      { exp_delta: 15, created_at: at(30) },
+      { exp_delta: 40, created_at: at(200) },
+    ], now);
+    expect(usage).toEqual({ day: { used: 20, cap: 150 }, week: { used: 35, cap: 600 } });
   });
 });

@@ -354,3 +354,17 @@ export function calculateMatchExp(input: RankedMatchInput): MatchExpResult {
     players,
   };
 }
+
+/** EXP gained (positive deltas only) inside the daily and weekly windows, for showing the limits on a profile. */
+export function expLimitUsage(rows: { exp_delta: number; created_at: string }[], now = Date.now()) {
+  let day = 0;
+  let week = 0;
+  for (const row of rows) {
+    const gain = Number(row.exp_delta);
+    const at = new Date(row.created_at).getTime();
+    if (!(gain > 0) || !Number.isFinite(at)) continue;
+    if (at >= now - 7 * 24 * 60 * 60 * 1000) week += gain;
+    if (at >= now - 24 * 60 * 60 * 1000) day += gain;
+  }
+  return { day: { used: day, cap: DAILY_GAIN_CAP }, week: { used: week, cap: WEEKLY_GAIN_CAP } };
+}
