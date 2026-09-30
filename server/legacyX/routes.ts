@@ -26,6 +26,7 @@ import { coreRoundScore, expRowAsResult, mapExpRecentMatch, mapMatchDetail } fro
 import { fetchSteamAccountCreatedAt, syncSteamUserProfile } from "./steamProfile";
 import { RANK_CALCULATION_VERSION, calculateMatchExp, expLimitUsage } from "./ranking";
 import { buildRankedInput, rankedResultSchema, type MatchParticipant, type PlayerProgression } from "./rankedMatch";
+import { ADMIN_CALL_COOLDOWN_SECONDS, ADMIN_CALL_MAX_AGE_HOURS, ADMIN_CALL_PAGE, adminCallRow, adminCallSchema, adminCallView, parseAfter, type AdminCallRecord } from "./adminCalls";
 import { PROFILE_SECTIONS, hiddenForViewer, loadoutShowcase, mapWinRates, normalizeHiddenSections, profileStats, staffCard, type ProfileSection } from "./profileOverview";
 import { activeBans, bannedPlayer, checkBansSchema, issueBan, issueBanSchema, revokeAllBans, revokeAllBansSchema, revokeBans, revokeBanSchema } from "./bans";
 import { authorizationRequestSchema, resolveAuthorizations } from "./adminAuthorization";
@@ -2294,6 +2295,40 @@ export function createLegacyXRouter() {
     // legacy map callback remains accepted as telemetry so old MatchZy builds do
     // not fail, but it can never create a second progression authority.
     res.status(202).json({ accepted: true, ignored: true, reason: "competitive_exp_is_awarded_by_match_core_final_only" });
+  }));
+  // In-game !calladmin / !callmanager: LegacyX-Admin posts the request, the Discord bot announces it.
+  router.post("/plugin/admin-calls", pluginRoute("bans:write", async (req, res, plugin) => {
+    const input = adminCallSchema.parse(req.body);
+    res.set("Cache-Control", "no-store");
+    const since = new Date(Date.now() - ADMIN_CALL_COOLDOWN_SECONDS * 1000).toISOString();
+    const recent = await db().from("admin_calls").select("id").eq("caller_steam_id", input.callerSteamId).gte("created_at", since).limit(1);
+    legacyXError(recent.error, "Unable to check recent admin calls");
+    if ((recent.data ?? []).length > 0) {
+      res.status(200).json({ recorded: false, reason: "cooldown" });
+      return;
+    }
+    const { data, error } = await db().from("admin_calls").insert(adminCallRow(input)).select("id").single();
+    legacyXError(error, "Unable to record the admin call");
+    const callId = Number((data as DbRow | null)?.id);
+    await writePluginAudit(plugin, "admin_call.create", "admin_calls", null, { id: callId, target: input.target, serverId: input.serverId, onlineStaff: input.onlineStaff })
+      .catch((auditError) => console.error("[legacy-x-api] Unable to audit admin call", auditError));
+    res.status(201).json({ recorded: true, id: callId });
+  }));
+  // The Discord bot's feed: new requests after an id, oldest first. Without `after` it only reports where the feed stands.
+  router.get("/plugin/admin-calls", pluginRoute("discord:link", async (req, res) => {
+    const after = parseAfter(req.query.after);
+    res.set("Cache-Control", "no-store");
+    const newest = await db().from("admin_calls").select("id").order("id", { ascending: false }).limit(1);
+    legacyXError(newest.error, "Unable to read admin calls");
+    const latestId = newest.data?.[0] ? Number(newest.data[0].id) : 0;
+    if (after === null) {
+      res.json({ calls: [], latestId });
+      return;
+    }
+    const cutoff = new Date(Date.now() - ADMIN_CALL_MAX_AGE_HOURS * 3_600_000).toISOString();
+    const { data, error } = await db().from("admin_calls").select("*").gt("id", after).gte("created_at", cutoff).order("id", { ascending: true }).limit(ADMIN_CALL_PAGE);
+    legacyXError(error, "Unable to read admin calls");
+    res.json({ calls: ((data ?? []) as AdminCallRecord[]).map(adminCallView), latestId });
   }));
   // Central SteamID bans (Discord bot /ban, /unban). Game servers poll /plugin/bans/check and kick.
   router.post("/plugin/bans", pluginRoute("bans:write", async (req, res, plugin) => {
