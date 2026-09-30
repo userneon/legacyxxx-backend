@@ -27,6 +27,8 @@ export const DELTA_CAP = 45;
 export const DELTA_CAP_CALIBRATING = 90;
 /** EXP a player can gain in a rolling 24 hours at full value (anti-farming); gains past it count for a quarter. Losses are never reduced. */
 export const DAILY_GAIN_CAP = 150;
+/** The same idea over a rolling 7 days. Both limits apply; the tighter one decides. */
+export const WEEKLY_GAIN_CAP = 600;
 export const OVER_CAP_GAIN_SHARE = 0.25;
 
 export type RankTier = "recruit" | "operator" | "vanguard" | "ace" | "apex" | "legacy";
@@ -119,6 +121,8 @@ export interface RankedPlayerInput extends PlayerMatchStats {
   proLeagueUnlocked?: boolean;
   /** EXP already gained in the 24 hours before this match (positive deltas only). */
   expGainedLast24h?: number;
+  /** EXP already gained in the 7 days before this match (positive deltas only). */
+  expGainedLast7d?: number;
   /** Left and did not return within the Match Core rejoin window. */
   leftEarly?: boolean;
 }
@@ -139,7 +143,7 @@ export interface ExpBreakdown {
   performance: number;
   bonus: number;
   calibration: 1 | 2;
-  /** Part of the gain went past the rolling 24 hour cap and counted for a quarter. */
+  /** Part of the gain went past the daily or weekly cap and counted for a quarter. */
   dailyCapped?: boolean;
   /** Why the formula was not applied to this player, when it wasn't. */
   rule?: "leaver" | "invalid_match" | "low_participation" | "fun_mode";
@@ -313,7 +317,7 @@ export function calculateMatchExp(input: RankedMatchInput): MatchExpResult {
     const bonus = Math.min(BONUS_CAP, ((player.aces ?? 0) > 0 || bigClutch(player) ? 1 : 0) + (mvp ? 1 : 0));
 
     const uncapped = composeDelta({ result, margin, performance, bonus, calibration });
-    const room = Math.max(0, DAILY_GAIN_CAP - Math.max(0, player.expGainedLast24h ?? 0));
+    const room = Math.max(0, Math.min(DAILY_GAIN_CAP - Math.max(0, player.expGainedLast24h ?? 0), WEEKLY_GAIN_CAP - Math.max(0, player.expGainedLast7d ?? 0)));
     // The part of a gain inside the cap counts in full, the rest for a quarter.
     const delta = uncapped > room ? Math.round(room + (uncapped - room) * OVER_CAP_GAIN_SHARE) : uncapped;
     return settle(

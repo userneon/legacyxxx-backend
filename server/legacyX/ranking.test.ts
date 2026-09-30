@@ -171,6 +171,13 @@ describe("calculateMatchExp", () => {
     expect(find(result, "u1").expDelta).toBe(4);
   });
 
+  it("also applies the weekly cap when it is tighter than the daily one", () => {
+    const result = calculateMatchExp(match({ players: lobby((id) => (id === 1 ? { expGainedLast24h: 0, expGainedLast7d: 590 } : {})) }));
+    // 17 gained: 10 fit under the weekly cap, 7 count for a quarter → 12.
+    expect(find(result, "u1").expDelta).toBe(12);
+    expect(find(result, "u1").breakdown.dailyCapped).toBe(true);
+  });
+
   it("draw gives no result term", () => {
     const result = calculateMatchExp(match({ roundsWon: { team1: 12, team2: 12 } }));
     expect(find(result, "u1").outcome).toBe("draw");

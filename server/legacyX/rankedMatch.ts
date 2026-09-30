@@ -126,6 +126,8 @@ export interface PlayerProgression {
   pro_league_unlocked: boolean;
   /** Sum of the positive EXP deltas of the last 24 hours. */
   exp_gained_24h?: number;
+  /** Sum of the positive EXP deltas of the last 7 days. */
+  exp_gained_7d?: number;
 }
 
 export interface BuiltRankedInput {
@@ -234,6 +236,7 @@ export function buildRankedInputV2(
       rankedMatchesBefore: current?.matches_completed ?? 0,
       proLeagueUnlocked: current?.pro_league_unlocked ?? false,
       expGainedLast24h: current?.exp_gained_24h ?? 0,
+      expGainedLast7d: current?.exp_gained_7d ?? 0,
       leftEarly,
     });
     stats.set(participant.user_id, {
@@ -312,6 +315,7 @@ export function buildRankedInput(
       rankedMatchesBefore: current?.matches_completed ?? 0,
       proLeagueUnlocked: current?.pro_league_unlocked ?? false,
       expGainedLast24h: current?.exp_gained_24h ?? 0,
+      expGainedLast7d: current?.exp_gained_7d ?? 0,
       leftEarly,
     });
     stats.set(participant.user_id, {
