@@ -2403,7 +2403,7 @@ export function createLegacyXRouter() {
   router.get("/plugin/community/players/:steamId", pluginRoute("stats:write", async (req, res) => {
     const steamId = String(req.params.steamId || "").trim();
     if (!/^\d{15,20}$/.test(steamId)) apiError(400, "steamId must be a 15-20 digit SteamID64");
-    const { data, error } = await db().from("competitive_player_profiles").select("user_id,steam_id,username,current_exp,rank_id,rank_name,next_rank_name,next_rank_min_exp,pro_league_unlocked,matches_completed").eq("steam_id", steamId).maybeSingle();
+    const { data, error } = await db().from("competitive_player_profiles").select("user_id,steam_id,username,current_exp,rank_id,rank_name,current_rank_min_exp,next_rank_name,next_rank_min_exp,pro_league_unlocked,matches_completed").eq("steam_id", steamId).maybeSingle();
     legacyXError(error, "Unable to load plugin player rank");
     if (!data) apiError(404, "Player profile not found");
     const membership = await db().from("clan_members").select("role,clans(name,tag)").eq("user_id", data.user_id).maybeSingle();
