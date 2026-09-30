@@ -38,7 +38,7 @@ shows as `+18 · Win vs stronger team +17 · Margin +2 · Performance −1`.
 
 ## Daily gain cap (anti-farming)
 
-A player can gain at most **150 EXP in any rolling 24 hours**, however the matches were played. A gain that
-would go past the cap is trimmed to what is left (`exp_breakdown.dailyCapped = true`); once it is used up,
-wins give 0 until older gains fall out of the window. Losses are never limited. This makes farming with
-friends (win-trading, feeding kills) slow: reaching Legacy from the 1000 start takes at least ~9 days.
+A player's first **150 EXP gained in any rolling 24 hours** count in full. Any gain past that counts for a
+quarter (a 20 EXP gain becomes 5; a gain that crosses the line is split: the part under it in full, the rest
+for a quarter; `exp_breakdown.dailyCapped = true`). Losses are never reduced. This makes farming with friends
+(win-trading, feeding kills) slow without ever showing a player a flat 0.

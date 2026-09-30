@@ -25,8 +25,9 @@ export const PERFORMANCE_STD_FLOOR = 0.05;
 export const BONUS_CAP = 2;
 export const DELTA_CAP = 45;
 export const DELTA_CAP_CALIBRATING = 90;
-/** Most EXP one player can gain in a rolling 24 hours, however the matches were played (anti-farming). Losses are never limited. */
+/** EXP a player can gain in a rolling 24 hours at full value (anti-farming); gains past it count for a quarter. Losses are never reduced. */
 export const DAILY_GAIN_CAP = 150;
+export const OVER_CAP_GAIN_SHARE = 0.25;
 
 export type RankTier = "recruit" | "operator" | "vanguard" | "ace" | "apex" | "legacy";
 
@@ -138,7 +139,7 @@ export interface ExpBreakdown {
   performance: number;
   bonus: number;
   calibration: 1 | 2;
-  /** The gain was trimmed to stay inside the rolling 24 hour cap. */
+  /** Part of the gain went past the rolling 24 hour cap and counted for a quarter. */
   dailyCapped?: boolean;
   /** Why the formula was not applied to this player, when it wasn't. */
   rule?: "leaver" | "invalid_match" | "low_participation" | "fun_mode";
@@ -313,7 +314,8 @@ export function calculateMatchExp(input: RankedMatchInput): MatchExpResult {
 
     const uncapped = composeDelta({ result, margin, performance, bonus, calibration });
     const room = Math.max(0, DAILY_GAIN_CAP - Math.max(0, player.expGainedLast24h ?? 0));
-    const delta = uncapped > room ? room : uncapped;
+    // The part of a gain inside the cap counts in full, the rest for a quarter.
+    const delta = uncapped > room ? Math.round(room + (uncapped - room) * OVER_CAP_GAIN_SHARE) : uncapped;
     return settle(
       delta,
       {
