@@ -21,6 +21,7 @@ async function frontendAuthHeaders() {
 }
 
 beforeAll(async () => {
+  process.env.JWT_SECRET ??= "test-only-secret-at-least-32-characters-long";
   process.env.STEAM_OPENID_ORIGIN ??= "https://legacyx.cc";
   process.env.FRONTEND_ORIGIN ??= "https://legacyx.cc";
   process.env.STAFF_PANEL_ENABLED = "true";

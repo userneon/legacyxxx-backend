@@ -38,10 +38,10 @@ shows as `+18 · Win vs stronger team +17 · Margin +2 · Performance −1`.
 
 ## Daily gain cap (anti-farming)
 
-A player's first **150 EXP gained in any rolling 24 hours** count in full. Any gain past that counts for a
-quarter (a 20 EXP gain becomes 5; a gain that crosses the line is split: the part under it in full, the rest
-for a quarter). The **weekly limit is a hard stop**: once a player has gained **600 EXP in a rolling 7 days**
-(quarter-value gains included), further gains are 0 until older ones drop out of the window.
-`exp_breakdown.dailyCapped = true` marks any reduced gain. Losses are never reduced, and the limits still apply
-at Legacy so the top of the leaderboard cannot be farmed. Ranks are never reset. This makes farming with
-friends (win-trading, feeding kills) slow.
+Limits use Ulaanbaatar time (UTC+8, no daylight saving). A player's first **150 EXP gained in a day** (00:00 to
+00:00) count in full. Any gain past that counts for a quarter (a 20 EXP gain becomes 5; a gain that crosses the
+line is split: the part under it in full, the rest for a quarter). The **weekly limit is a hard stop**: once a
+player has gained **600 EXP in a week** (Monday 00:00 to Sunday night, quarter-value gains included), further
+gains are 0 until Monday. `exp_breakdown.limited` is `"daily"` or `"weekly"` on any reduced gain. Losses are
+never reduced, and the limits still apply at Legacy so the top of the leaderboard cannot be farmed. Ranks are
+never reset. This makes farming with friends (win-trading, feeding kills) slow.

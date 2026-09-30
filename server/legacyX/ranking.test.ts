@@ -6,6 +6,7 @@ import {
   RANKS,
   calculateMatchExp,
   expLimitUsage,
+  limitWindows,
   composeDelta,
   expectedScore,
   impactScore,
@@ -157,26 +158,26 @@ describe("calculateMatchExp", () => {
   });
 
   it("counts the part of a gain past the rolling 24 hour cap for a quarter, and never reduces a loss", () => {
-    const players = lobby((id) => (id === 1 || id === 6 ? { expGainedLast24h: 140 } : {}));
+    const players = lobby((id) => (id === 1 || id === 6 ? { expGainedToday: 140 } : {}));
     const result = calculateMatchExp(match({ players }));
     // 17 gained: 10 fit under the cap, the other 7 count for a quarter (1.75) → 12.
     expect(find(result, "u1").expDelta).toBe(12);
-    expect(find(result, "u1").breakdown.dailyCapped).toBe(true);
+    expect(find(result, "u1").breakdown.limited).toBe("daily");
     expect(find(result, "u2").expDelta).toBe(17);
-    expect(find(result, "u2").breakdown.dailyCapped).toBeUndefined();
+    expect(find(result, "u2").breakdown.limited).toBeUndefined();
     expect(find(result, "u6").expDelta).toBe(-15);
   });
 
   it("gives a quarter of every gain once the daily cap is used up", () => {
-    const result = calculateMatchExp(match({ players: lobby((id) => (id === 1 ? { expGainedLast24h: 150 } : {})) }));
+    const result = calculateMatchExp(match({ players: lobby((id) => (id === 1 ? { expGainedToday: 150 } : {})) }));
     expect(find(result, "u1").expDelta).toBe(4);
   });
 
   it("stops gains completely at the weekly cap", () => {
-    const players = lobby((id) => (id === 1 ? { expGainedLast7d: 600 } : id === 2 ? { expGainedLast7d: 590 } : id === 6 ? { expGainedLast7d: 600 } : {}));
+    const players = lobby((id) => (id === 1 ? { expGainedThisWeek: 600 } : id === 2 ? { expGainedThisWeek: 590 } : id === 6 ? { expGainedThisWeek: 600 } : {}));
     const result = calculateMatchExp(match({ players }));
     expect(find(result, "u1").expDelta).toBe(0);
-    expect(find(result, "u1").breakdown.dailyCapped).toBe(true);
+    expect(find(result, "u1").breakdown.limited).toBe("weekly");
     expect(find(result, "u2").expDelta).toBe(10);
     expect(find(result, "u6").expDelta).toBe(-15);
   });
@@ -323,16 +324,44 @@ describe("calculateMatchExp", () => {
   });
 });
 
+describe("limitWindows", () => {
+  it("cuts the day at 00:00 and the week at Monday 00:00 in Ulaanbaatar time (UTC+8)", () => {
+    // Wednesday 30 Sep 2026, 20:00 in Ulaanbaatar.
+    const windows = limitWindows(Date.parse("2026-09-30T12:00:00Z"));
+    expect(new Date(windows.dayStart).toISOString()).toBe("2026-09-29T16:00:00.000Z");
+    expect(new Date(windows.dayEnd).toISOString()).toBe("2026-09-30T16:00:00.000Z");
+    expect(new Date(windows.weekStart).toISOString()).toBe("2026-09-27T16:00:00.000Z");
+    expect(new Date(windows.weekEnd).toISOString()).toBe("2026-10-04T16:00:00.000Z");
+  });
+  it("keeps Sunday evening in the old week and starts the new one on Monday 00:00 local", () => {
+    const sunday = limitWindows(Date.parse("2026-10-04T15:59:00Z")); // Sunday 23:59 local
+    const monday = limitWindows(Date.parse("2026-10-04T16:00:00Z")); // Monday 00:00 local
+    expect(new Date(sunday.weekStart).toISOString()).toBe("2026-09-27T16:00:00.000Z");
+    expect(new Date(monday.weekStart).toISOString()).toBe("2026-10-04T16:00:00.000Z");
+  });
+});
+
 describe("expLimitUsage", () => {
   const now = Date.parse("2026-09-30T12:00:00Z");
   const at = (hoursAgo: number) => new Date(now - hoursAgo * 3_600_000).toISOString();
-  it("adds up gains in the day and the week and ignores losses and older rows", () => {
+  it("adds up gains since 00:00 and since Monday, ignoring losses and last week, and says when each turns over", () => {
     const usage = expLimitUsage([
       { exp_delta: 20, created_at: at(2) },
       { exp_delta: -14, created_at: at(3) },
       { exp_delta: 15, created_at: at(30) },
       { exp_delta: 40, created_at: at(200) },
     ], now);
-    expect(usage).toEqual({ day: { used: 20, cap: 150 }, week: { used: 35, cap: 600 } });
+    expect(usage).toEqual({
+      day: { used: 20, cap: 150, resetsAt: "2026-09-30T16:00:00.000Z" },
+      week: { used: 35, cap: 600, resetsAt: "2026-10-04T16:00:00.000Z" },
+    });
+  });
+  it("counts a gain from one minute after local midnight as today and one minute before as yesterday", () => {
+    const usage = expLimitUsage([
+      { exp_delta: 10, created_at: "2026-09-29T16:01:00Z" },
+      { exp_delta: 7, created_at: "2026-09-29T15:59:00Z" },
+    ], now);
+    expect(usage.day.used).toBe(10);
+    expect(usage.week.used).toBe(17);
   });
 });
