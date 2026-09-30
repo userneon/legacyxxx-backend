@@ -27,7 +27,7 @@ export const DELTA_CAP = 45;
 export const DELTA_CAP_CALIBRATING = 90;
 /** EXP a player can gain in a rolling 24 hours at full value (anti-farming); gains past it count for a quarter. Losses are never reduced. */
 export const DAILY_GAIN_CAP = 150;
-/** The same idea over a rolling 7 days. Both limits apply; the tighter one decides. */
+/** Hard stop over a rolling 7 days: gains (even the quarter-value ones) end at this total until older ones drop out. */
 export const WEEKLY_GAIN_CAP = 600;
 export const OVER_CAP_GAIN_SHARE = 0.25;
 
@@ -143,7 +143,7 @@ export interface ExpBreakdown {
   performance: number;
   bonus: number;
   calibration: 1 | 2;
-  /** Part of the gain went past the daily or weekly cap and counted for a quarter. */
+  /** The gain was reduced by the daily (¼ value) or weekly (hard stop) limit. */
   dailyCapped?: boolean;
   /** Why the formula was not applied to this player, when it wasn't. */
   rule?: "leaver" | "invalid_match" | "low_participation" | "fun_mode";
@@ -317,9 +317,12 @@ export function calculateMatchExp(input: RankedMatchInput): MatchExpResult {
     const bonus = Math.min(BONUS_CAP, ((player.aces ?? 0) > 0 || bigClutch(player) ? 1 : 0) + (mvp ? 1 : 0));
 
     const uncapped = composeDelta({ result, margin, performance, bonus, calibration });
-    const room = Math.max(0, Math.min(DAILY_GAIN_CAP - Math.max(0, player.expGainedLast24h ?? 0), WEEKLY_GAIN_CAP - Math.max(0, player.expGainedLast7d ?? 0)));
-    // The part of a gain inside the cap counts in full, the rest for a quarter.
-    const delta = uncapped > room ? Math.round(room + (uncapped - room) * OVER_CAP_GAIN_SHARE) : uncapped;
+    const room = Math.max(0, DAILY_GAIN_CAP - Math.max(0, player.expGainedLast24h ?? 0));
+    // The part of a gain inside the daily cap counts in full, the rest for a quarter.
+    const dailyAdjusted = uncapped > room ? Math.round(room + (uncapped - room) * OVER_CAP_GAIN_SHARE) : uncapped;
+    // The weekly cap is a hard stop.
+    const weekRoom = Math.max(0, WEEKLY_GAIN_CAP - Math.max(0, player.expGainedLast7d ?? 0));
+    const delta = dailyAdjusted > weekRoom ? weekRoom : dailyAdjusted;
     return settle(
       delta,
       {

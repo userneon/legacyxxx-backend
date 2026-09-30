@@ -171,11 +171,13 @@ describe("calculateMatchExp", () => {
     expect(find(result, "u1").expDelta).toBe(4);
   });
 
-  it("also applies the weekly cap when it is tighter than the daily one", () => {
-    const result = calculateMatchExp(match({ players: lobby((id) => (id === 1 ? { expGainedLast24h: 0, expGainedLast7d: 590 } : {})) }));
-    // 17 gained: 10 fit under the weekly cap, 7 count for a quarter → 12.
-    expect(find(result, "u1").expDelta).toBe(12);
+  it("stops gains completely at the weekly cap", () => {
+    const players = lobby((id) => (id === 1 ? { expGainedLast7d: 600 } : id === 2 ? { expGainedLast7d: 590 } : id === 6 ? { expGainedLast7d: 600 } : {}));
+    const result = calculateMatchExp(match({ players }));
+    expect(find(result, "u1").expDelta).toBe(0);
     expect(find(result, "u1").breakdown.dailyCapped).toBe(true);
+    expect(find(result, "u2").expDelta).toBe(10);
+    expect(find(result, "u6").expDelta).toBe(-15);
   });
 
   it("draw gives no result term", () => {
