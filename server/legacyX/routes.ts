@@ -2301,7 +2301,10 @@ export function createLegacyXRouter() {
     const input = adminCallSchema.parse(req.body);
     res.set("Cache-Control", "no-store");
     const since = new Date(Date.now() - ADMIN_CALL_COOLDOWN_SECONDS * 1000).toISOString();
-    const recent = await db().from("admin_calls").select("id").eq("caller_steam_id", input.callerSteamId).gte("created_at", since).limit(1);
+    let recentQuery = db().from("admin_calls").select("id").eq("caller_steam_id", input.callerSteamId).eq("target", input.target).gte("created_at", since);
+    // Reports against different players are separate; the same player twice in a minute is not.
+    if (input.target === "report" && input.reportedSteamId) recentQuery = recentQuery.eq("reported_steam_id", input.reportedSteamId);
+    const recent = await recentQuery.limit(1);
     legacyXError(recent.error, "Unable to check recent admin calls");
     if ((recent.data ?? []).length > 0) {
       res.status(200).json({ recorded: false, reason: "cooldown" });

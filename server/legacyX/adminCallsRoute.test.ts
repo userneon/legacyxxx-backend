@@ -96,6 +96,16 @@ describe("POST /plugin/admin-calls", () => {
     expect(inserts()).toHaveLength(0);
   });
 
+  it("records a report with who and why, and only skips the same player inside the cooldown", async () => {
+    const report = { ...call, target: "report", reportedSteamId: "76561198000000002", reportedName: "Cheater", reason: "wallhack", onlineStaff: undefined };
+    const response = await post("game", report);
+    expect(response.status).toBe(201);
+    expect(inserts()[0].payload).toMatchObject({ target: "report", reported_steam_id: "76561198000000002", reported_name: "Cheater", reason: "wallhack", online_staff: 0 });
+    const check = runs.find((run) => run.op === "select" && run.table === "admin_calls");
+    expect(check?.filters).toEqual(expect.arrayContaining([["eq", "target", "report"], ["eq", "reported_steam_id", "76561198000000002"]]));
+    expect((await post("game", { ...report, reason: undefined })).status).toBe(400);
+  });
+
   it("rejects a bad request and a token without the scope, before any write", async () => {
     expect((await post("game", { ...call, callerSteamId: "STEAM_0:1:1" })).status).toBe(400);
     expect((await post("game", { ...call, target: "owner" })).status).toBe(400);
@@ -120,7 +130,7 @@ describe("GET /plugin/admin-calls", () => {
     const response = await get("bot", "?after=3");
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({
-      calls: [{ id: 4, callerSteamId: call.callerSteamId, callerName: "Temuulen", target: "manager", serverId: "srv-27015", serverName: null, map: "de_mirage", players: 8, onlineStaff: 0, createdAt: "2026-09-30T10:00:00Z" }],
+      calls: [{ id: 4, callerSteamId: call.callerSteamId, callerName: "Temuulen", target: "manager", reportedSteamId: null, reportedName: null, reason: null, serverId: "srv-27015", serverName: null, map: "de_mirage", players: 8, onlineStaff: 0, createdAt: "2026-09-30T10:00:00Z" }],
       latestId: 5,
     });
     const query = runs.find((run) => run.filters.some(([op, column, value]) => op === "gt" && column === "id" && value === 3));

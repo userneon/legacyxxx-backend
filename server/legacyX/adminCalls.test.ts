@@ -18,6 +18,23 @@ describe("adminCallSchema", () => {
   });
 });
 
+describe("a report", () => {
+  const report = { ...valid, target: "report", reportedSteamId: "76561198000000002", reportedName: "Cheater", reason: "wallhack" };
+  it("needs who was reported and why", () => {
+    expect(adminCallSchema.safeParse(report).success).toBe(true);
+    expect(adminCallSchema.safeParse({ ...valid, target: "report" }).success).toBe(false);
+    expect(adminCallSchema.safeParse({ ...report, reason: undefined }).success).toBe(false);
+    expect(adminCallSchema.safeParse({ ...report, reportedSteamId: "bot" }).success).toBe(false);
+    expect(adminCallSchema.safeParse({ ...report, reason: "x".repeat(301) }).success).toBe(false);
+  });
+  it("needs no staff count, and maps to the table and back", () => {
+    const parsed = adminCallSchema.parse({ ...report, onlineStaff: undefined });
+    expect(parsed.onlineStaff).toBe(0);
+    expect(adminCallRow(parsed)).toMatchObject({ target: "report", reported_steam_id: "76561198000000002", reported_name: "Cheater", reason: "wallhack" });
+    expect(adminCallRow(adminCallSchema.parse(valid))).toMatchObject({ reported_steam_id: null, reason: null });
+  });
+});
+
 describe("adminCallView", () => {
   it("returns camelCase with a numeric id", () => {
     const view = adminCallView({ id: 7, caller_steam_id: "76561198000000001", caller_name: "T", target: "manager", server_id: "s", server_name: null, map: null, players: null, online_staff: 2, created_at: "2026-09-30T10:00:00Z" });
