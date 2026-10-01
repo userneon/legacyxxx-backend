@@ -26,6 +26,12 @@ describe("mapPlayServer", () => {
     const live = mapPlayServer(server("1", { player_count: 9 }), { state: "live", score_t: 9, score_ct: 6, round_number: 16, map_name: "de_nuke", reported_at: ago(5) }, NOW);
     expect(live).toMatchObject({ status: "live", score: { t: 9, ct: 6 }, round: 16, map: "de_nuke", joinable: true });
   });
+  it("counts the players on each side from a fresh snapshot only", () => {
+    const row = { state: "live", score_t: 1, score_ct: 2, terrorist_players: [{}, {}, {}], counter_terrorist_players: [{}, {}], reported_at: ago(5) };
+    expect(mapPlayServer(server("1", { player_count: 5 }), row, NOW)?.teams).toEqual({ t: 3, ct: 2 });
+    expect(mapPlayServer(server("1", { player_count: 5 }), { ...row, reported_at: ago(500) }, NOW)?.teams).toBeNull();
+    expect(mapPlayServer(server("1", { player_count: 5 }), null, NOW)?.teams).toBeNull();
+  });
   it("ignores a stale snapshot and unknown modes", () => {
     const stale = mapPlayServer(server("1", { player_count: 3 }), { state: "live", score_t: 1, score_ct: 1, reported_at: ago(500) }, NOW);
     expect(stale).toMatchObject({ status: "warmup", score: null });

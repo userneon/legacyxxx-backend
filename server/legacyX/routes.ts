@@ -1614,7 +1614,7 @@ export function createLegacyXRouter() {
   const loadPlayServers = async () => {
     const [serversResult, snapshotsResult] = await Promise.all([
       db().schema("legacy_x").from("reconnect_servers").select("server_id,display_name,connect_address,gotv_address,current_map,current_mode,player_count,max_players,last_heartbeat_at").order("display_name").limit(200),
-      db().schema("legacy_x").from("server_live_match_snapshots").select("server_id,state,map_name,round_number,score_t,score_ct,reported_at").limit(200),
+      db().schema("legacy_x").from("server_live_match_snapshots").select("server_id,state,map_name,round_number,score_t,score_ct,terrorist_players,counter_terrorist_players,reported_at").limit(200),
     ]);
     legacyXError(serversResult.error || snapshotsResult.error, "Unable to load servers");
     const snapshots = new Map(((snapshotsResult.data ?? []) as DbRow[]).map((row) => [textValue(row.server_id), row]));

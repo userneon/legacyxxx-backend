@@ -21,6 +21,8 @@ export interface PlayServer {
   status: PlayServerStatus;
   round: number | null;
   score: { t: number; ct: number } | null;
+  /** Players on each side right now (from the live snapshot); null when the server has no fresh snapshot. */
+  teams: { t: number; ct: number } | null;
   connectAddress: string | null;
   gotvAddress: string | null;
   joinable: boolean;
@@ -42,6 +44,8 @@ export function playModeFromServerMode(value: unknown): PlayMode | null {
 const DEFAULT_MAX_PLAYERS: Record<PlayMode, number> = { "5x5": 10, pro: 10, fun: 10 };
 
 const number = (value: unknown) => (typeof value === "number" && Number.isFinite(value) ? value : null);
+
+const teamCount = (value: unknown) => (Array.isArray(value) ? value.length : 0);
 
 export function mapPlayServer(server: Row, snapshot: Row | null, now = Date.now()): PlayServer | null {
   const mode = playModeFromServerMode(server.current_mode);
@@ -75,6 +79,7 @@ export function mapPlayServer(server: Row, snapshot: Row | null, now = Date.now(
     status,
     round: live ? number(freshSnapshot?.round_number) : null,
     score: live && scoreT !== null && scoreCt !== null ? { t: scoreT, ct: scoreCt } : null,
+    teams: freshSnapshot ? { t: teamCount(freshSnapshot.terrorist_players), ct: teamCount(freshSnapshot.counter_terrorist_players) } : null,
     connectAddress,
     gotvAddress: typeof server.gotv_address === "string" && server.gotv_address.trim() ? server.gotv_address.trim() : null,
     joinable: online && players < maxPlayers && Boolean(connectAddress),
