@@ -934,6 +934,21 @@ export function createLegacyXRouter() {
     const hasSnapshot = Boolean(snapshot) && Number.isFinite(reportedAtMs) && Date.now() - reportedAtMs <= 90_000;
     const scoreT = nullableNumber(snapshot?.score_t);
     const scoreCt = nullableNumber(snapshot?.score_ct);
+    const teams = hasSnapshot ? { t: normalizePlayers(snapshot?.terrorist_players), ct: normalizePlayers(snapshot?.counter_terrorist_players) } : { t: [], ct: [] };
+    const spectators = hasSnapshot ? normalizePlayers(snapshot?.spectator_players) : [];
+    const connectedPlayers = hasSnapshot ? [] : rosterOnly;
+    // Steam avatars for the players who have a LEGACY-X account; anyone else has none and shows their initials.
+    const steamIds = Array.from(new Set([...teams.t, ...teams.ct, ...spectators, ...connectedPlayers].map(player => player.steamId).filter(Boolean))).slice(0, 64);
+    const avatarBySteamId = new Map<string, string>();
+    if (steamIds.length > 0) {
+      const { data: avatarRows, error: avatarError } = await db().from("competitive_player_profiles").select("steam_id,avatar").in("steam_id", steamIds);
+      if (avatarError) console.error("Unable to load live match avatars", avatarError);
+      for (const row of (avatarRows ?? []) as DbRow[]) {
+        const avatar = textValue(row.avatar);
+        if (avatar.startsWith("https://")) avatarBySteamId.set(textValue(row.steam_id), avatar);
+      }
+    }
+    const withAvatar = <T extends { steamId: string }>(players: T[]) => players.map(player => ({ ...player, avatar: avatarBySteamId.get(player.steamId) ?? null }));
     res.json({
       liveMatch: {
         serverId,
@@ -947,9 +962,9 @@ export function createLegacyXRouter() {
         state: hasSnapshot ? textValue(snapshot?.state) : "unavailable",
         round: hasSnapshot ? nullableNumber(snapshot?.round_number) : null,
         score: hasSnapshot && scoreT !== null && scoreCt !== null ? { t: scoreT, ct: scoreCt } : null,
-        teams: hasSnapshot ? { t: normalizePlayers(snapshot?.terrorist_players), ct: normalizePlayers(snapshot?.counter_terrorist_players) } : { t: [], ct: [] },
-        spectators: hasSnapshot ? normalizePlayers(snapshot?.spectator_players) : [],
-        connectedPlayers: hasSnapshot ? [] : rosterOnly,
+        teams: { t: withAvatar(teams.t), ct: withAvatar(teams.ct) },
+        spectators: withAvatar(spectators),
+        connectedPlayers: withAvatar(connectedPlayers),
         updatedAt: hasSnapshot ? reportedAt : textValue(serverResult.data.last_heartbeat_at) || null,
         availability: hasSnapshot ? "live_snapshot" : rosterOnly.length > 0 ? "roster_only" : "unavailable",
       },
