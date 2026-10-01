@@ -26,6 +26,7 @@ import { coreRoundScore, expRowAsResult, mapExpRecentMatch, mapMatchDetail } fro
 import { fetchSteamAccountCreatedAt, syncSteamUserProfile } from "./steamProfile";
 import { RANK_CALCULATION_VERSION, calculateMatchExp, expLimitUsage, limitWindows } from "./ranking";
 import { buildRankedInput, rankedResultSchema, type MatchParticipant, type PlayerProgression } from "./rankedMatch";
+import { ANNOUNCEMENT_MAX_AGE_HOURS, ANNOUNCEMENT_PAGE, announcementRow, announcementSchema, announcementView, type AnnouncementRecord } from "./announcements";
 import { ADMIN_CALL_COOLDOWN_SECONDS, ADMIN_CALL_MAX_AGE_HOURS, ADMIN_CALL_PAGE, adminCallRow, adminCallSchema, adminCallView, parseAfter, type AdminCallRecord } from "./adminCalls";
 import { PROFILE_SECTIONS, hiddenForViewer, loadoutShowcase, mapWinRates, normalizeHiddenSections, profileStats, staffCard, type ProfileSection } from "./profileOverview";
 import { activeBans, bannedPlayer, checkBansSchema, issueBan, issueBanSchema, revokeAllBans, revokeAllBansSchema, revokeBans, revokeBanSchema } from "./bans";
@@ -2347,6 +2348,32 @@ export function createLegacyXRouter() {
     const { data, error } = await db().from("admin_calls").select("*").gt("id", after).gte("created_at", cutoff).order("id", { ascending: true }).limit(ADMIN_CALL_PAGE);
     legacyXError(error, "Unable to read admin calls");
     res.json({ calls: ((data ?? []) as AdminCallRecord[]).map(adminCallView), latestId });
+  }));
+  // Update announcements for Discord: the deploy scripts post, the bot's feed reads (see announcements.ts).
+  router.post("/plugin/announcements", pluginRoute("announce:write", async (req, res, plugin) => {
+    const input = announcementSchema.parse(req.body);
+    res.set("Cache-Control", "no-store");
+    const { data, error } = await db().from("announcements").insert(announcementRow(input)).select("id").single();
+    legacyXError(error, "Unable to record the announcement");
+    const id = Number((data as DbRow | null)?.id);
+    await writePluginAudit(plugin, "announcement.create", "announcements", null, { id, title: input.title })
+      .catch((auditError) => console.error("[legacy-x-api] Unable to audit announcement", auditError));
+    res.status(201).json({ recorded: true, id });
+  }));
+  router.get("/plugin/announcements", pluginRoute("discord:link", async (req, res) => {
+    const after = parseAfter(req.query.after);
+    res.set("Cache-Control", "no-store");
+    const newest = await db().from("announcements").select("id").order("id", { ascending: false }).limit(1);
+    legacyXError(newest.error, "Unable to read announcements");
+    const latestId = newest.data?.[0] ? Number(newest.data[0].id) : 0;
+    if (after === null) {
+      res.json({ announcements: [], latestId });
+      return;
+    }
+    const cutoff = new Date(Date.now() - ANNOUNCEMENT_MAX_AGE_HOURS * 3_600_000).toISOString();
+    const { data, error } = await db().from("announcements").select("*").gt("id", after).gte("created_at", cutoff).order("id", { ascending: true }).limit(ANNOUNCEMENT_PAGE);
+    legacyXError(error, "Unable to read announcements");
+    res.json({ announcements: ((data ?? []) as AnnouncementRecord[]).map(announcementView), latestId });
   }));
   // Central SteamID bans (Discord bot /ban, /unban). Game servers poll /plugin/bans/check and kick.
   router.post("/plugin/bans", pluginRoute("bans:write", async (req, res, plugin) => {

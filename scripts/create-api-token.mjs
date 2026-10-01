@@ -11,7 +11,7 @@ import { createHash, randomBytes } from "node:crypto";
 
 // Every scope a plugin route checks (grep pluginRoute in server/legacyX/routes.ts).
 const SCOPES = [
-  "admin:read", "bans:read", "bans:write", "community:write", "discord:link", "maps:write", "matches:write",
+  "admin:read", "announce:write", "bans:read", "bans:write", "community:write", "discord:link", "maps:write", "matches:write",
   "servers:write", "skinchanger:read", "stats:write",
 ];
 
