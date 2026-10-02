@@ -65,7 +65,7 @@ npm run build                # esbuild → dist/index.js
 | `server/legacyX/bans.ts`, `gamePenalties.ts` | Ban, шийтгэл |
 | `server/legacyX/supabase.ts` | DB client (service role) |
 | `server/legacyX/*.test.ts` | Тест |
-| `supabase/*.sql` | Migration-ууд (~58) |
+| `supabase/*.sql` | Migration-ууд (59) |
 | `scripts/` | `create-api-token.mjs`, `create-game-server.mjs`, `ingest-skinchanger-catalog.mjs`, build тусламж |
 | `ops/deploy.sh` | VPS дээр нэг командаар deploy |
 | `ecosystem.config.cjs` | pm2 тохиргоо |
