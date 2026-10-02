@@ -19,3 +19,12 @@ STEAM_OPENID_ORIGIN=https://legacyx.cc
 FRONTEND_ORIGIN=https://legacyx.cc
 AUTH_COOKIE_DOMAIN=.legacyx.cc
 POST_LOGIN_REDIRECT=https://legacyx.cc/
+
+# Skinchanger catalog images are served from this origin (required in production).
+STATIC_ASSET_BASE_URL=https://static.legacyx.cc
+
+# Optional
+# FACEIT_DATA_API_KEY=            # FACEIT level on profiles
+# Deferred features stay hidden unless set to the literal string true (docs/FEATURE_FLAGS.md):
+# STAFF_PANEL_ENABLED=false
+# CLAN_ENABLED=false
