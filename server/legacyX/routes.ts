@@ -28,6 +28,7 @@ import { RANK_CALCULATION_VERSION, calculateMatchExp, expLimitUsage, limitWindow
 import { buildRankedInput, rankedResultSchema, type MatchParticipant, type PlayerProgression } from "./rankedMatch";
 import { ANNOUNCEMENT_MAX_AGE_HOURS, ANNOUNCEMENT_PAGE, announcementRow, announcementSchema, announcementView, type AnnouncementRecord } from "./announcements";
 import { ADMIN_CALL_COOLDOWN_SECONDS, ADMIN_CALL_MAX_AGE_HOURS, ADMIN_CALL_PAGE, adminCallRow, adminCallSchema, adminCallView, parseAfter, type AdminCallRecord } from "./adminCalls";
+import { isMissingTableError, ownerLinks, ownerProfileSchema, ownerTeam, ownerUpdates } from "./ownerProfile";
 import { PROFILE_SECTIONS, hiddenForViewer, loadoutShowcase, mapWinRates, normalizeHiddenSections, profileStats, staffCard, type ProfileSection } from "./profileOverview";
 import { activeBans, bannedPlayer, checkBansSchema, issueBan, issueBanSchema, revokeAllBans, revokeAllBansSchema, revokeBans, revokeBanSchema } from "./bans";
 import { authorizationRequestSchema, resolveAuthorizations } from "./adminAuthorization";
@@ -1195,6 +1196,7 @@ export function createLegacyXRouter() {
       if (live) presence = { serverId: live.id, serverName: live.name, connectAddress: live.connectAddress, map: live.map };
     }
 
+    const ownerExtras = role === "Owner" ? await loadOwnerProfileExtras(userId, viewer?.id ?? null) : {};
     const penalties = await mapPenaltiesWithProfileIdentities((penaltiesResult.data ?? []) as DbRow[], db());
     const activePenalty = penalties.find((penalty) => !penalty.isUnbanned && (penalty.isPermanent || !penalty.expiresAt || Date.parse(String(penalty.expiresAt)) > Date.now()));
     res.json({
@@ -1235,7 +1237,68 @@ export function createLegacyXRouter() {
       loadout: loadout ? loadoutShowcase(loadout.entries as DbRow[]) : null,
       staff: staffCard(role, penaltyCount.count ?? 0),
       presence,
+      ...ownerExtras,
     });
+  }));
+  /** Respect count and whether the viewer gave one. Null while the migration is not applied, so the button stays hidden. */
+  const respectState = async (targetId: string, viewerId: string | null) => {
+    const [count, given] = await Promise.all([
+      db().from("profile_respect").select("giver_user_id", { count: "exact", head: true }).eq("target_user_id", targetId),
+      viewerId ? db().from("profile_respect").select("giver_user_id").eq("target_user_id", targetId).eq("giver_user_id", viewerId).maybeSingle() : Promise.resolve({ data: null, error: null }),
+    ]);
+    if (isMissingTableError(count.error) || isMissingTableError(given.error)) return null;
+    legacyXError(count.error || given.error, "Unable to load respect");
+    return { count: count.count ?? 0, given: Boolean(given.data) };
+  };
+  /** What only the Owner's profile shows. Each part is left out (not faked) when it has no data or its table is missing. */
+  const loadOwnerProfileExtras = async (ownerId: string, viewerId: string | null) => {
+    const [respect, extras, team, updates] = await Promise.all([
+      respectState(ownerId, viewerId),
+      db().from("owner_profile").select("links,message").eq("user_id", ownerId).maybeSingle(),
+      db().from("staff").select("role,users(steam_id,username,avatar)").eq("status", "active").limit(50),
+      db().from("announcements").select("id,title,created_at").order("created_at", { ascending: false }).limit(5),
+    ]);
+    const extrasRow = isMissingTableError(extras.error) ? null : extras.data as DbRow | null;
+    if (!isMissingTableError(extras.error)) legacyXError(extras.error, "Unable to load the owner profile");
+    legacyXError(team.error || (isMissingTableError(updates.error) ? null : updates.error), "Unable to load the owner profile");
+    const links = ownerLinks(extrasRow?.links);
+    const message = textValue(extrasRow?.message).trim();
+    const teamList = ownerTeam((team.data ?? []) as DbRow[]);
+    const updateList = isMissingTableError(updates.error) ? [] : ownerUpdates((updates.data ?? []) as DbRow[]);
+    return {
+      ...(respect ? { respect } : {}),
+      ...(links.length ? { links } : {}),
+      ...(message ? { message } : {}),
+      ...(teamList.length ? { team: teamList } : {}),
+      ...(updateList.length ? { updates: updateList } : {}),
+    };
+  };
+  const setRespect = (give: boolean) => userRoute(async (req, res, user) => {
+    const targetId = await resolveUserId(req.params.userId, user);
+    if (targetId === user.id) apiError(400, "You cannot give respect to yourself");
+    if (await profileRoleFor(targetId) !== "Owner") apiError(404, "Respect can only be given to the Owner");
+    const result = give
+      ? await db().from("profile_respect").upsert({ target_user_id: targetId, giver_user_id: user.id }, { onConflict: "target_user_id,giver_user_id", ignoreDuplicates: true })
+      : await db().from("profile_respect").delete().eq("target_user_id", targetId).eq("giver_user_id", user.id);
+    if (isMissingTableError(result.error)) apiError(503, "Respect is not available yet");
+    legacyXError(result.error, "Unable to save respect");
+    res.json(await respectState(targetId, user.id) ?? { count: 0, given: false });
+  });
+  router.post("/profile/:userId/respect", sensitiveMutationRateLimit, setRespect(true));
+  router.delete("/profile/:userId/respect", sensitiveMutationRateLimit, setRespect(false));
+  /** The Owner writes their own links and message. */
+  router.put("/profile/me/owner", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
+    if (await profileRoleFor(user.id) !== "Owner") apiError(403, "Only the Owner can edit this");
+    const input = ownerProfileSchema.parse(req.body);
+    const row: Record<string, unknown> = { user_id: user.id, updated_at: new Date().toISOString() };
+    if (input.links !== undefined) row.links = input.links.map((link) => (link.label ? { url: link.url, label: link.label } : { url: link.url }));
+    if (input.message !== undefined) row.message = input.message || null;
+    const { error } = await db().from("owner_profile").upsert(row, { onConflict: "user_id" });
+    if (isMissingTableError(error)) apiError(503, "The owner profile is not available yet");
+    legacyXError(error, "Unable to save the owner profile");
+    const saved = await db().from("owner_profile").select("links,message").eq("user_id", user.id).maybeSingle();
+    legacyXError(saved.error, "Unable to load the owner profile");
+    res.json({ links: ownerLinks((saved.data as DbRow | null)?.links), message: textValue((saved.data as DbRow | null)?.message) || null });
   }));
   router.put("/profile/me", userRoute(async (req, res, user) => {
     const { hiddenSections, ...fields } = profileUpdateSchema.parse(req.body);
