@@ -1260,11 +1260,11 @@ export function createLegacyXRouter() {
     ]);
     const extrasRow = isMissingTableError(extras.error) ? null : extras.data as DbRow | null;
     if (!isMissingTableError(extras.error)) legacyXError(extras.error, "Unable to load the owner profile");
-    legacyXError(team.error || (isMissingTableError(updates.error) ? null : updates.error), "Unable to load the owner profile");
+    // Team and updates are extras: if either cannot be read the card is left out, the profile still loads.
     const links = ownerLinks(extrasRow?.links);
     const message = textValue(extrasRow?.message).trim();
-    const teamList = ownerTeam((team.data ?? []) as DbRow[]);
-    const updateList = isMissingTableError(updates.error) ? [] : ownerUpdates((updates.data ?? []) as DbRow[]);
+    const teamList = team.error ? [] : ownerTeam((team.data ?? []) as DbRow[]);
+    const updateList = updates.error ? [] : ownerUpdates((updates.data ?? []) as DbRow[]);
     return {
       ...(respect ? { respect } : {}),
       ...(links.length ? { links } : {}),
