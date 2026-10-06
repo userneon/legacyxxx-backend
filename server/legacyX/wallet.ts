@@ -120,6 +120,7 @@ export const COIN_RULES = {
   match: 20,
   win: 30,
   clanFee: 500,
+  clanMinMatches: 15,
   /** Every new wallet starts with this. */
   welcome: 50,
   /** The daily EXP limit pays this share of the coins, like it does for EXP. */

@@ -28,7 +28,7 @@ import { RANK_CALCULATION_VERSION, calculateMatchExp, expLimitUsage, limitWindow
 import { buildRankedInput, rankedResultSchema, type MatchParticipant, type PlayerProgression } from "./rankedMatch";
 import { ANNOUNCEMENT_MAX_AGE_HOURS, ANNOUNCEMENT_PAGE, announcementRow, announcementSchema, announcementView, type AnnouncementRecord } from "./announcements";
 import { ADMIN_CALL_COOLDOWN_SECONDS, ADMIN_CALL_MAX_AGE_HOURS, ADMIN_CALL_PAGE, adminCallRow, adminCallSchema, adminCallView, parseAfter, type AdminCallRecord } from "./adminCalls";
-import { NotEnoughCoinsError, applyWalletChange, awardMatchCoins, loadWallet, penalizeWallet, walletGrantSchema, walletPenaltySchema } from "./wallet";
+import { COIN_RULES, NotEnoughCoinsError, applyWalletChange, awardMatchCoins, loadWallet, penalizeWallet, walletGrantSchema, walletPenaltySchema } from "./wallet";
 import { isMissingTableError, ownerLinks, ownerProfileSchema, ownerTeam, ownerUpdates } from "./ownerProfile";
 import { PROFILE_NAME_MAX, PROFILE_SECTIONS, bestNameMatch, escapeLike, hiddenForViewer, loadoutShowcase, mapWinRates, normalizeHiddenSections, profileStats, staffCard, type ProfileSection } from "./profileOverview";
 import { activeBans, bannedPlayer, checkBansSchema, issueBan, issueBanSchema, revokeAllBans, revokeAllBansSchema, revokeBans, revokeBanSchema } from "./bans";
@@ -348,7 +348,7 @@ function isMissingColumnError(error: unknown) {
 const STAFF_PROFILE_ROLES: Record<string, string> = { OWNER: "Owner", MANAGER: "Manager", ADMIN: "Admin", DEVELOPER: "Developer", DESIGNER: "Designer" };
 const faceitLinkSchema = z.object({ nickname: z.string().trim().min(1).max(64).regex(/^[A-Za-z0-9_.-]+$/, "FACEIT nickname contains unsupported characters") });
 const linksSchema = z.object({ links: z.array(z.string().url().max(2048)).max(20) });
-const clanSchema = z.object({ name: z.string().trim().min(2).max(64), tag: z.string().trim().min(1).max(6), logo: z.string().max(2048).optional(), thumbnail: z.string().url().max(2048).optional(), description: z.string().max(2000).optional(), region: z.string().trim().min(2).max(64).optional(), maxPlayers: z.number().int().min(1).max(100).optional() });
+const clanSchema = z.object({ name: z.string().trim().min(3).max(24), tag: z.string().trim().toUpperCase().regex(/^[A-Z0-9]{2,5}$/, "Tag is 2-5 letters or numbers"), region: z.string().trim().min(2).max(64).optional() }).strict();
 const feedbackSchema = z.object({ name: z.string().trim().min(1).max(64).optional(), rating: z.number().int().min(1).max(5), message: z.string().trim().min(1).max(4000) });
 const pluginServerSchema = z.object({ id: z.string().uuid().optional(), name: z.string().trim().min(1).max(100), map: z.string().trim().min(1).max(64), mode: z.string().trim().min(1).max(64), max_players: z.number().int().min(0).max(256), current_players: z.number().int().min(0).max(256), ping: z.number().int().min(0).max(10000).default(0), status: z.enum(["online", "offline", "full"]), ip_address: z.string().max(255).optional(), port: z.number().int().min(1).max(65535).optional() });
 const pluginEventIdSchema = z.string().trim().min(8).max(220).regex(/^[A-Za-z0-9:_-]+$/, "event_id contains unsupported characters");
@@ -1859,6 +1859,11 @@ export function createLegacyXRouter() {
     legacyXError(error, "Unable to load clans");
     res.json(((data ?? []) as DbRow[]).map(mapClanCard));
   }));
+  router.get("/clans/me", userRoute(async (_req, res, user) => {
+    const { data, error } = await db().from("clan_members").select("role,clans(*)").eq("user_id", user.id).maybeSingle();
+    legacyXError(error, "Unable to load current clan");
+    res.json({ membership: data ?? null });
+  }));
   router.get("/clans/:clanId", userRoute(async (req, res) => {
     res.json(await loadClanDetail(userIdSchema.parse(req.params.clanId)));
   }));
@@ -1871,16 +1876,19 @@ export function createLegacyXRouter() {
     legacyXError(error, "Unable to load clan members");
     res.json(((data ?? []) as DbRow[]).map(mapClanMember));
   }));
-  router.post("/clans", userRoute(async (req, res, user) => {
-    const input = z.object({ name: z.string().trim().min(2).max(64), tag: z.string().trim().min(1).max(6), logo: z.string().max(2048), thumbnail: z.string().max(2048).nullable().optional(), region: z.string().trim().min(2).max(64).optional() }).parse(req.body);
-    const { data, error } = await db().rpc("create_clan_with_leader", { p_owner_id: user.id, p_name: input.name, p_tag: input.tag, p_logo: input.logo, p_thumbnail: input.thumbnail ?? null, p_description: null, p_region: input.region ?? "Mongolia", p_max_players: 10 });
+  router.post("/clans", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
+    const input = clanSchema.parse(req.body);
+    const { data, error } = await legacyXDb().rpc("create_clan_paid", { p_owner_id: user.id, p_name: input.name, p_tag: input.tag, p_region: input.region ?? "Mongolia", p_fee: COIN_RULES.clanFee, p_min_matches: COIN_RULES.clanMinMatches, p_welcome: COIN_RULES.welcome });
+    if (error && /insufficient coins/i.test(String(error.message))) apiError(402, `A clan costs ${COIN_RULES.clanFee} coins`);
+    if (error && error.code === "23505") apiError(409, "That clan name or tag is already taken");
+    if (error && error.code === "P0001") apiError(409, error.message);
     legacyXError(error, "Unable to create clan");
     if (!data) apiError(500, "Clan was not created");
     res.status(201).json(await loadClanDetail(String(data)));
   }));
   router.put("/clans/:clanId", userRoute(async (req, res, user) => {
     const clanId = userIdSchema.parse(req.params.clanId);
-    const input = z.object({ name: z.string().trim().min(2).max(64).optional(), tag: z.string().trim().min(1).max(6).optional(), logo: z.string().max(2048).optional(), thumbnail: z.string().max(2048).nullable().optional(), region: z.string().trim().min(2).max(64).optional() }).refine(value => Object.keys(value).length > 0, "At least one clan field is required").parse(req.body);
+    const input = z.object({ description: z.string().trim().max(200) }).strict().parse(req.body);
     const { data: clan, error: clanError } = await db().from("clans").select("id").eq("id", clanId).eq("owner_id", user.id).maybeSingle();
     legacyXError(clanError, "Unable to validate clan ownership");
     if (!clan) apiError(403, "Clan leader access is required");
@@ -2365,11 +2373,6 @@ export function createLegacyXRouter() {
 
 
 
-  router.get("/clans/me", userRoute(async (_req, res, user) => {
-    const { data, error } = await db().from("clan_members").select("role,clans(*)").eq("user_id", user.id).maybeSingle();
-    legacyXError(error, "Unable to load current clan");
-    res.json({ membership: data ?? null });
-  }));
   router.post("/clans/:clanId/join", userRoute(async (req, res, user) => {
     const { error } = await db().rpc("join_clan", { p_user_id: user.id, p_clan_id: req.params.clanId });
     legacyXError(error, "Unable to join clan");
@@ -2382,6 +2385,18 @@ export function createLegacyXRouter() {
     if (clan.owner_id === user.id) apiError(409, "Clan owner must delete the clan or transfer ownership before leaving");
     const { error } = await db().from("clan_members").delete().eq("clan_id", req.params.clanId).eq("user_id", user.id);
     legacyXError(error, "Unable to leave clan");
+    res.status(204).end();
+  }));
+  router.delete("/clans/:clanId/members/:userId", userRoute(async (req, res, user) => {
+    const clanId = userIdSchema.parse(req.params.clanId);
+    const memberId = userIdSchema.parse(req.params.userId);
+    const { data: clan, error: clanError } = await db().from("clans").select("owner_id").eq("id", clanId).maybeSingle();
+    legacyXError(clanError, "Unable to load clan");
+    if (!clan) apiError(404, "Clan was not found");
+    if (clan.owner_id !== user.id) apiError(403, "Clan leader access is required");
+    if (memberId === user.id) apiError(409, "The leader cannot remove themselves");
+    const { error } = await db().from("clan_members").delete().eq("clan_id", clanId).eq("user_id", memberId);
+    legacyXError(error, "Unable to remove member");
     res.status(204).end();
   }));
   router.delete("/clans/:clanId", userRoute(async (req, res, user) => {
