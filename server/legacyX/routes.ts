@@ -348,7 +348,9 @@ function isMissingColumnError(error: unknown) {
 const STAFF_PROFILE_ROLES: Record<string, string> = { OWNER: "Owner", MANAGER: "Manager", ADMIN: "Admin", DEVELOPER: "Developer", DESIGNER: "Designer" };
 const faceitLinkSchema = z.object({ nickname: z.string().trim().min(1).max(64).regex(/^[A-Za-z0-9_.-]+$/, "FACEIT nickname contains unsupported characters") });
 const linksSchema = z.object({ links: z.array(z.string().url().max(2048)).max(20) });
-const clanSchema = z.object({ name: z.string().trim().min(3).max(24), tag: z.string().trim().toUpperCase().regex(/^[A-Z0-9]{2,5}$/, "Tag is 2-5 letters or numbers"), region: z.string().trim().min(2).max(64).optional() }).strict();
+const CLAN_ICONS = ["swords", "shield", "skull", "crown", "flame", "zap", "crosshair", "ghost", "star", "rocket", "bird", "gem"] as const;
+const CLAN_BANNERS = ["de_ancient", "de_anubis", "de_cache", "de_dust2", "de_inferno", "de_mirage", "de_nuke", "de_overpass", "de_train", "de_vertigo"] as const;
+const clanSchema = z.object({ icon: z.enum(CLAN_ICONS).optional(), banner: z.enum(CLAN_BANNERS).optional(), name: z.string().trim().min(3).max(24), tag: z.string().trim().toUpperCase().regex(/^[A-Z0-9]{2,5}$/, "Tag is 2-5 letters or numbers"), region: z.string().trim().min(2).max(64).optional() }).strict();
 const feedbackSchema = z.object({ name: z.string().trim().min(1).max(64).optional(), rating: z.number().int().min(1).max(5), message: z.string().trim().min(1).max(4000) });
 const pluginServerSchema = z.object({ id: z.string().uuid().optional(), name: z.string().trim().min(1).max(100), map: z.string().trim().min(1).max(64), mode: z.string().trim().min(1).max(64), max_players: z.number().int().min(0).max(256), current_players: z.number().int().min(0).max(256), ping: z.number().int().min(0).max(10000).default(0), status: z.enum(["online", "offline", "full"]), ip_address: z.string().max(255).optional(), port: z.number().int().min(1).max(65535).optional() });
 const pluginEventIdSchema = z.string().trim().min(8).max(220).regex(/^[A-Za-z0-9:_-]+$/, "event_id contains unsupported characters");
@@ -1885,15 +1887,20 @@ export function createLegacyXRouter() {
     if (error && error.code === "P0001") apiError(409, error.message);
     legacyXError(error, "Unable to create clan");
     if (!data) apiError(500, "Clan was not created");
+    if (input.icon || input.banner) {
+      const look = await db().from("clans").update({ logo: input.icon ?? "", thumbnail: input.banner ?? null }).eq("id", String(data));
+      if (look.error) console.warn("[legacy-x-api] clan look not saved", look.error.message);
+    }
     res.status(201).json(await loadClanDetail(String(data)));
   }));
   router.put("/clans/:clanId", userRoute(async (req, res, user) => {
     const clanId = userIdSchema.parse(req.params.clanId);
-    const input = z.object({ description: z.string().trim().max(200) }).strict().parse(req.body);
+    const input = z.object({ description: z.string().trim().max(200), icon: z.enum(CLAN_ICONS), banner: z.enum(CLAN_BANNERS).nullable() }).partial().strict().refine(value => Object.keys(value).length > 0, "At least one clan field is required").parse(req.body);
     const { data: clan, error: clanError } = await db().from("clans").select("id").eq("id", clanId).eq("owner_id", user.id).maybeSingle();
     legacyXError(clanError, "Unable to validate clan ownership");
     if (!clan) apiError(403, "Clan leader access is required");
-    const { error } = await db().from("clans").update(input).eq("id", clanId);
+    const { icon, banner, ...rest } = input;
+    const { error } = await db().from("clans").update({ ...rest, ...(icon ? { logo: icon } : {}), ...(banner !== undefined ? { thumbnail: banner } : {}) }).eq("id", clanId);
     legacyXError(error, "Unable to update clan");
     res.json(await loadClanDetail(clanId));
   }));
