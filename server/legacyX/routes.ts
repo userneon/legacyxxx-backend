@@ -1,7 +1,8 @@
-import { Router, type NextFunction, type Request, type Response } from "express";
+import express, { Router, type NextFunction, type Request, type Response } from "express";
 import { randomBytes } from "node:crypto";
 import rateLimit from "express-rate-limit";
 import { z } from "zod";
+import { CLAN_ART_LIMITS, artMarker, artUrl, checkClanArt, type ClanArtKind } from "./clanArt";
 import { parseCookieHeader } from "../_core/cookieHeader";
 import {
   authenticatePlugin,
@@ -348,9 +349,7 @@ function isMissingColumnError(error: unknown) {
 const STAFF_PROFILE_ROLES: Record<string, string> = { OWNER: "Owner", MANAGER: "Manager", ADMIN: "Admin", DEVELOPER: "Developer", DESIGNER: "Designer" };
 const faceitLinkSchema = z.object({ nickname: z.string().trim().min(1).max(64).regex(/^[A-Za-z0-9_.-]+$/, "FACEIT nickname contains unsupported characters") });
 const linksSchema = z.object({ links: z.array(z.string().url().max(2048)).max(20) });
-const CLAN_ICONS = ["swords", "shield", "skull", "crown", "flame", "zap", "crosshair", "ghost", "star", "rocket", "bird", "gem"] as const;
-const CLAN_BANNERS = ["de_ancient", "de_anubis", "de_cache", "de_dust2", "de_inferno", "de_mirage", "de_nuke", "de_overpass", "de_train", "de_vertigo"] as const;
-const clanSchema = z.object({ icon: z.enum(CLAN_ICONS).optional(), banner: z.enum(CLAN_BANNERS).optional(), name: z.string().trim().min(3).max(24), tag: z.string().trim().toUpperCase().regex(/^[A-Z0-9]{2,5}$/, "Tag is 2-5 letters or numbers"), region: z.string().trim().min(2).max(64).optional() }).strict();
+const clanSchema = z.object({ name: z.string().trim().min(3).max(24), tag: z.string().trim().toUpperCase().regex(/^[A-Z0-9]{2,5}$/, "Tag is 2-5 letters or numbers"), region: z.string().trim().min(2).max(64).optional() }).strict();
 const feedbackSchema = z.object({ name: z.string().trim().min(1).max(64).optional(), rating: z.number().int().min(1).max(5), message: z.string().trim().min(1).max(4000) });
 const pluginServerSchema = z.object({ id: z.string().uuid().optional(), name: z.string().trim().min(1).max(100), map: z.string().trim().min(1).max(64), mode: z.string().trim().min(1).max(64), max_players: z.number().int().min(0).max(256), current_players: z.number().int().min(0).max(256), ping: z.number().int().min(0).max(10000).default(0), status: z.enum(["online", "offline", "full"]), ip_address: z.string().max(255).optional(), port: z.number().int().min(1).max(65535).optional() });
 const pluginEventIdSchema = z.string().trim().min(8).max(220).regex(/^[A-Za-z0-9:_-]+$/, "event_id contains unsupported characters");
@@ -581,7 +580,7 @@ function memberCount(clan: DbRow) {
 }
 
 function mapClanCard(clan: DbRow, currentPlayers = memberCount(clan)) {
-  return { id: textValue(clan.id), name: textValue(clan.name), tag: textValue(clan.tag), logo: textValue(clan.logo), thumbnail: clan.thumbnail == null ? null : textValue(clan.thumbnail), currentPlayers, maxPlayers: numberValue(clan.max_players), region: textValue(clan.region) };
+  return { id: textValue(clan.id), name: textValue(clan.name), tag: textValue(clan.tag), logo: artUrl(textValue(clan.id), "logo", clan.logo) ?? "", thumbnail: artUrl(textValue(clan.id), "banner", clan.thumbnail), currentPlayers, maxPlayers: numberValue(clan.max_players), region: textValue(clan.region) };
 }
 
 function mapClanMember(member: DbRow) {
@@ -1867,6 +1866,44 @@ export function createLegacyXRouter() {
     const clan = firstRow(data?.clans);
     res.json({ membership: data && clan ? { role: textValue(data.role), clan: mapClanCard(clan, 0) } : null });
   }));
+  // Clan pictures. Anyone may look (an <img> cannot send a token); only the leader may change them.
+  for (const [kind, column] of [["logo", "logo"], ["banner", "thumbnail"]] as Array<[ClanArtKind, string]>) {
+    router.get(`/clans/:clanId/${kind}`, asyncRoute(async (req, res) => {
+      const clanId = userIdSchema.parse(req.params.clanId);
+      const { data, error } = await db().from("clan_images").select("mime,data").eq("clan_id", clanId).eq("kind", kind).maybeSingle();
+      legacyXError(error, "Unable to load the picture");
+      if (!data) apiError(404, "No picture");
+      const hex = String(data.data);
+      res.set({ "Content-Type": String(data.mime), "Cache-Control": "public, max-age=31536000, immutable", "Content-Disposition": "inline" }).send(Buffer.from(hex.startsWith("\\x") ? hex.slice(2) : hex, "hex"));
+    }));
+    router.put(`/clans/:clanId/${kind}`, sensitiveMutationRateLimit, express.raw({ type: () => true, limit: CLAN_ART_LIMITS[kind].maxBytes + 1 }), userRoute(async (req, res, user) => {
+      const clanId = userIdSchema.parse(req.params.clanId);
+      const { data: clan, error: clanError } = await db().from("clans").select("owner_id").eq("id", clanId).maybeSingle();
+      legacyXError(clanError, "Unable to load clan");
+      if (!clan) apiError(404, "Clan was not found");
+      if (clan.owner_id !== user.id) apiError(403, "Clan leader access is required");
+      const bytes = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+      const verdict = checkClanArt(kind, bytes);
+      if (!verdict.ok) apiError(verdict.status, verdict.message);
+      const saved = await db().from("clan_images").upsert({ clan_id: clanId, kind, mime: verdict.mime, data: `\\x${bytes.toString("hex")}`, updated_at: new Date().toISOString() });
+      legacyXError(saved.error, "Unable to save the picture");
+      const marker = await db().from("clans").update({ [column]: artMarker(Date.now()) }).eq("id", clanId);
+      legacyXError(marker.error, "Unable to save the picture");
+      res.json(await loadClanDetail(clanId));
+    }));
+    router.delete(`/clans/:clanId/${kind}`, sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
+      const clanId = userIdSchema.parse(req.params.clanId);
+      const { data: clan, error: clanError } = await db().from("clans").select("owner_id").eq("id", clanId).maybeSingle();
+      legacyXError(clanError, "Unable to load clan");
+      if (!clan) apiError(404, "Clan was not found");
+      if (clan.owner_id !== user.id) apiError(403, "Clan leader access is required");
+      const removed = await db().from("clan_images").delete().eq("clan_id", clanId).eq("kind", kind);
+      legacyXError(removed.error, "Unable to remove the picture");
+      const marker = await db().from("clans").update({ [column]: kind === "logo" ? "" : null }).eq("id", clanId);
+      legacyXError(marker.error, "Unable to remove the picture");
+      res.status(204).end();
+    }));
+  }
   router.get("/clans/:clanId", userRoute(async (req, res) => {
     res.json(await loadClanDetail(userIdSchema.parse(req.params.clanId)));
   }));
@@ -1887,20 +1924,15 @@ export function createLegacyXRouter() {
     if (error && error.code === "P0001") apiError(409, error.message);
     legacyXError(error, "Unable to create clan");
     if (!data) apiError(500, "Clan was not created");
-    if (input.icon || input.banner) {
-      const look = await db().from("clans").update({ logo: input.icon ?? "", thumbnail: input.banner ?? null }).eq("id", String(data));
-      if (look.error) console.warn("[legacy-x-api] clan look not saved", look.error.message);
-    }
     res.status(201).json(await loadClanDetail(String(data)));
   }));
   router.put("/clans/:clanId", userRoute(async (req, res, user) => {
     const clanId = userIdSchema.parse(req.params.clanId);
-    const input = z.object({ description: z.string().trim().max(200), icon: z.enum(CLAN_ICONS), banner: z.enum(CLAN_BANNERS).nullable() }).partial().strict().refine(value => Object.keys(value).length > 0, "At least one clan field is required").parse(req.body);
+    const input = z.object({ description: z.string().trim().max(200) }).strict().parse(req.body);
     const { data: clan, error: clanError } = await db().from("clans").select("id").eq("id", clanId).eq("owner_id", user.id).maybeSingle();
     legacyXError(clanError, "Unable to validate clan ownership");
     if (!clan) apiError(403, "Clan leader access is required");
-    const { icon, banner, ...rest } = input;
-    const { error } = await db().from("clans").update({ ...rest, ...(icon ? { logo: icon } : {}), ...(banner !== undefined ? { thumbnail: banner } : {}) }).eq("id", clanId);
+    const { error } = await db().from("clans").update(input).eq("id", clanId);
     legacyXError(error, "Unable to update clan");
     res.json(await loadClanDetail(clanId));
   }));
