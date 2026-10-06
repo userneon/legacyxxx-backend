@@ -28,6 +28,7 @@ import { RANK_CALCULATION_VERSION, calculateMatchExp, expLimitUsage, limitWindow
 import { buildRankedInput, rankedResultSchema, type MatchParticipant, type PlayerProgression } from "./rankedMatch";
 import { ANNOUNCEMENT_MAX_AGE_HOURS, ANNOUNCEMENT_PAGE, announcementRow, announcementSchema, announcementView, type AnnouncementRecord } from "./announcements";
 import { ADMIN_CALL_COOLDOWN_SECONDS, ADMIN_CALL_MAX_AGE_HOURS, ADMIN_CALL_PAGE, adminCallRow, adminCallSchema, adminCallView, parseAfter, type AdminCallRecord } from "./adminCalls";
+import { NotEnoughCoinsError, applyWalletChange, loadWallet, walletGrantSchema } from "./wallet";
 import { isMissingTableError, ownerLinks, ownerProfileSchema, ownerTeam, ownerUpdates } from "./ownerProfile";
 import { PROFILE_NAME_MAX, PROFILE_SECTIONS, bestNameMatch, escapeLike, hiddenForViewer, loadoutShowcase, mapWinRates, normalizeHiddenSections, profileStats, staffCard, type ProfileSection } from "./profileOverview";
 import { activeBans, bannedPlayer, checkBansSchema, issueBan, issueBanSchema, revokeAllBans, revokeAllBansSchema, revokeBans, revokeBanSchema } from "./bans";
@@ -1301,6 +1302,47 @@ export function createLegacyXRouter() {
   });
   router.post("/profile/:userId/respect", sensitiveMutationRateLimit, setRespect(true));
   router.delete("/profile/:userId/respect", sensitiveMutationRateLimit, setRespect(false));
+  // Coin wallet. A player sees only their own balance and ledger; coins are added by an Owner (or later by game events)
+  // and taken only by the thing they pay for (e.g. a clan fee), always through wallet_apply.
+  router.get("/wallet/me", userRoute(async (_req, res, user) => {
+    try {
+      res.set("Cache-Control", "no-store");
+      res.json(await loadWallet(db(), user.id));
+    } catch (error) {
+      if (isMissingTableError(error)) apiError(503, "The wallet is not available yet");
+      throw error;
+    }
+  }));
+  router.post("/wallet/grant", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
+    await requireOwnerStaffRole(user.id);
+    const input = walletGrantSchema.parse(req.body);
+    let targetId = input.userId ?? "";
+    if (!targetId) {
+      const { data, error } = await db().from("users").select("id").eq("steam_id", input.steamId ?? "").maybeSingle();
+      legacyXError(error, "Unable to find the player");
+      if (!data) apiError(404, "Player was not found");
+      targetId = textValue((data as DbRow).id);
+    }
+    try {
+      const result = await applyWalletChange(db(), { userId: targetId, amount: input.amount, kind: "grant", reason: input.reason, ref: input.ref ?? null, actor: user.id });
+      if (result.applied) {
+        const { error: auditError } = await db().from("audit_logs").insert({
+          actor_type: "user",
+          actor_id: user.id,
+          action: "wallet.grant",
+          target_type: "wallet",
+          target_id: targetId,
+          metadata: { amount: input.amount, reason: input.reason, balance: result.balance },
+        });
+        if (auditError) console.error("Unable to audit wallet grant", auditError);
+      }
+      res.status(result.applied ? 201 : 200).json({ userId: targetId, balance: result.balance, applied: result.applied });
+    } catch (error) {
+      if (error instanceof NotEnoughCoinsError) apiError(402, "Not enough coins");
+      if (isMissingTableError(error)) apiError(503, "The wallet is not available yet");
+      throw error;
+    }
+  }));
   /** The Owner writes their own links and message. */
   router.put("/profile/me/owner", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
     if (await profileRoleFor(user.id) !== "Owner") apiError(403, "Only the Owner can edit this");
