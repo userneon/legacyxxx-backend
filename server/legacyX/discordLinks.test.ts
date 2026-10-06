@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { sha256 } from "./auth";
-import { completeLink, createLinkRequest, isLinkToken, linkCallbackUrl, linkRequestSchema, linkResultPage, listLinks, pendingLinkRequest, returnToMatches, unlink } from "./discordLinks";
+import { completeLink, createLinkRequest, isLinkToken, linkCallbackUrl, linkRequestSchema, linkResultPage, linkStartUrl, listLinks, pendingLinkRequest, returnToMatches, unlink } from "./discordLinks";
 
 type Call = { table: string; op: string; payload?: unknown; filters: Array<[string, string, unknown]> };
 
@@ -70,6 +70,10 @@ describe("Discord links", () => {
     expect(await completeLink(db, "t".repeat(32), "user-1")).toBe("123456789012345678");
     expect(rpcCalls).toEqual([["complete_discord_link", { p_token_hash: sha256("t".repeat(32)), p_user_id: "user-1" }]]);
     expect(await completeLink(fakeDb({}, { data: null, error: null }).db, "t".repeat(32), "user-1")).toBeNull();
+  });
+
+  it("hands the member a link on the website address, not the API's", () => {
+    expect(linkStartUrl("https://legacyx.cc", "t".repeat(32))).toBe(`https://legacyx.cc/api/v1/auth/steam/discord/${"t".repeat(32)}`);
   });
 
   it("accepts only a Steam response issued for this exact link callback", () => {

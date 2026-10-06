@@ -28,6 +28,11 @@ export function isLinkToken(value: unknown): value is string {
   return typeof value === "string" && /^[A-Za-z0-9_-]{32}$/.test(value);
 }
 
+/** The link the member opens: on the website's own address, so the API's host name is not what they see (legacyx.cc proxies /api/v1/auth/steam to the API). */
+export function linkStartUrl(origin: string, token: string) {
+  return `${origin}/api/v1/auth/steam/discord/${token}`;
+}
+
 export function linkCallbackUrl(origin: string, token: string) {
   return `${origin}/api/v1/auth/steam/discord/${token}/callback`;
 }
