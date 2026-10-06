@@ -5,10 +5,13 @@ CREATE TABLE IF NOT EXISTS legacy_x.clan_images (
   clan_id uuid NOT NULL REFERENCES legacy_x.clans(id) ON DELETE CASCADE,
   kind text NOT NULL CHECK (kind IN ('logo', 'banner')),
   mime text NOT NULL CHECK (mime IN ('image/png', 'image/jpeg', 'image/gif')),
-  data bytea NOT NULL CHECK (octet_length(data) BETWEEN 1 AND 1048576),
+  data bytea NOT NULL CHECK (octet_length(data) BETWEEN 1 AND 6291456),
   updated_at timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (clan_id, kind)
 );
 ALTER TABLE legacy_x.clan_images ENABLE ROW LEVEL SECURITY;
 REVOKE ALL ON legacy_x.clan_images FROM PUBLIC, anon, authenticated;
 GRANT SELECT, INSERT, UPDATE, DELETE ON legacy_x.clan_images TO service_role;
+-- Raising the limit on an existing table (banners up to 5 MB, logos up to 1 MB):
+ALTER TABLE legacy_x.clan_images DROP CONSTRAINT IF EXISTS clan_images_data_check;
+ALTER TABLE legacy_x.clan_images ADD CONSTRAINT clan_images_data_check CHECK (octet_length(data) BETWEEN 1 AND 6291456);

@@ -3,10 +3,10 @@
 export type ClanArtKind = "logo" | "banner";
 export type ClanArtMime = "image/png" | "image/jpeg" | "image/gif";
 
-/** The nginx in front of the API allows 1 MB bodies, so the banner stays just under it. */
+/** nginx in front of the API must allow bodies of at least 6 MB (client_max_body_size 6m) for these to arrive. */
 export const CLAN_ART_LIMITS: Record<ClanArtKind, { maxBytes: number; mimes: ClanArtMime[] }> = {
-  logo: { maxBytes: 256 * 1024, mimes: ["image/png"] },
-  banner: { maxBytes: 900 * 1024, mimes: ["image/png", "image/jpeg", "image/gif"] },
+  logo: { maxBytes: 1024 * 1024, mimes: ["image/png"] },
+  banner: { maxBytes: 5 * 1024 * 1024, mimes: ["image/png", "image/jpeg", "image/gif"] },
 };
 
 /** The picture's real type from its first bytes, or null when it is not a PNG, JPEG or GIF. */
@@ -23,7 +23,7 @@ export type ClanArtCheck = { ok: true; mime: ClanArtMime } | { ok: false; status
 export function checkClanArt(kind: ClanArtKind, bytes: Buffer): ClanArtCheck {
   const rule = CLAN_ART_LIMITS[kind];
   if (bytes.length === 0) return { ok: false, status: 400, message: "Send the picture as the request body" };
-  if (bytes.length > rule.maxBytes) return { ok: false, status: 413, message: `The ${kind} is larger than ${Math.round(rule.maxBytes / 1024)} KB` };
+  if (bytes.length > rule.maxBytes) return { ok: false, status: 413, message: `The ${kind} is larger than ${Math.round(rule.maxBytes / 1024 / 1024)} MB` };
   const mime = detectImage(bytes);
   if (!mime || !rule.mimes.includes(mime)) return { ok: false, status: 415, message: kind === "logo" ? "The logo must be a PNG" : "The banner must be a PNG, JPEG or GIF" };
   return { ok: true, mime };

@@ -21,7 +21,7 @@ describe("clan pictures", () => {
   });
   it("refuses empty and oversized files", () => {
     expect(checkClanArt("logo", Buffer.alloc(0))).toMatchObject({ ok: false, status: 400 });
-    expect(checkClanArt("logo", Buffer.concat([png, Buffer.alloc(300 * 1024)]))).toMatchObject({ ok: false, status: 413 });
+    expect(checkClanArt("logo", Buffer.concat([png, Buffer.alloc(1100 * 1024)]))).toMatchObject({ ok: false, status: 413 });
   });
   it("only turns our own marker into a picture address", () => {
     expect(artUrl("c1", "logo", artMarker(42))).toBe("/api/v1/clans/c1/logo?v=42");
