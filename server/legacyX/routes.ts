@@ -28,7 +28,7 @@ import { RANK_CALCULATION_VERSION, calculateMatchExp, expLimitUsage, limitWindow
 import { buildRankedInput, rankedResultSchema, type MatchParticipant, type PlayerProgression } from "./rankedMatch";
 import { ANNOUNCEMENT_MAX_AGE_HOURS, ANNOUNCEMENT_PAGE, announcementRow, announcementSchema, announcementView, type AnnouncementRecord } from "./announcements";
 import { ADMIN_CALL_COOLDOWN_SECONDS, ADMIN_CALL_MAX_AGE_HOURS, ADMIN_CALL_PAGE, adminCallRow, adminCallSchema, adminCallView, parseAfter, type AdminCallRecord } from "./adminCalls";
-import { NotEnoughCoinsError, applyWalletChange, awardMatchCoins, loadWallet, walletGrantSchema } from "./wallet";
+import { NotEnoughCoinsError, applyWalletChange, awardMatchCoins, loadWallet, penalizeWallet, walletGrantSchema, walletPenaltySchema } from "./wallet";
 import { isMissingTableError, ownerLinks, ownerProfileSchema, ownerTeam, ownerUpdates } from "./ownerProfile";
 import { PROFILE_NAME_MAX, PROFILE_SECTIONS, bestNameMatch, escapeLike, hiddenForViewer, loadoutShowcase, mapWinRates, normalizeHiddenSections, profileStats, staffCard, type ProfileSection } from "./profileOverview";
 import { activeBans, bannedPlayer, checkBansSchema, issueBan, issueBanSchema, revokeAllBans, revokeAllBansSchema, revokeBans, revokeBanSchema } from "./bans";
@@ -1341,6 +1341,36 @@ export function createLegacyXRouter() {
       res.status(result.applied ? 201 : 200).json({ userId: targetId, balance: result.balance, applied: result.applied });
     } catch (error) {
       if (error instanceof NotEnoughCoinsError) apiError(402, "Not enough coins");
+      if (isMissingTableError(error)) apiError(503, "The wallet is not available yet");
+      throw error;
+    }
+  }));
+  router.post("/wallet/penalty", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
+    await requireOwnerStaffRole(user.id);
+    const input = walletPenaltySchema.parse(req.body);
+    let targetId = input.userId ?? "";
+    if (!targetId) {
+      const { data, error } = await db().from("users").select("id").eq("steam_id", input.steamId ?? "").maybeSingle();
+      legacyXError(error, "Unable to find the player");
+      if (!data) apiError(404, "Player was not found");
+      targetId = textValue((data as DbRow).id);
+    }
+    try {
+      const result = await penalizeWallet(db(), { userId: targetId, amount: input.amount, reason: input.reason, ref: input.ref ?? null, actor: user.id });
+      if (result.applied) {
+        const { error: auditError } = await db().from("audit_logs").insert({
+          actor_type: "user",
+          actor_id: user.id,
+          action: "wallet.penalty",
+          target_type: "wallet",
+          target_id: targetId,
+          metadata: { requested: input.amount, taken: result.taken, reason: input.reason, balance: result.balance },
+        });
+        if (auditError) console.error("Unable to audit wallet penalty", auditError);
+      }
+      // `taken` can be less than asked: a wallet never goes below zero.
+      res.status(result.applied ? 201 : 200).json({ userId: targetId, balance: result.balance, taken: result.taken, applied: result.applied });
+    } catch (error) {
       if (isMissingTableError(error)) apiError(503, "The wallet is not available yet");
       throw error;
     }

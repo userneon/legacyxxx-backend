@@ -19,10 +19,23 @@ export const walletGrantSchema = z.object({
   ref: z.string().trim().min(1).max(120).optional(),
 }).strict().refine((value) => Boolean(value.userId) !== Boolean(value.steamId), "Send either userId or steamId");
 
+/** A penalty takes coins away; same fields as a grant (who, how many, why). */
+export const walletPenaltySchema = walletGrantSchema;
+
 export class NotEnoughCoinsError extends Error {
   constructor() {
     super("Not enough coins");
   }
+}
+
+/**
+ * Opens the wallet if it does not exist yet, with the welcome bonus (once, in the same step). Every way into the wallet
+ * goes through here first, so a player's first touch always starts them at the welcome amount.
+ */
+export async function ensureWallet(db: Db, userId: string): Promise<number> {
+  const { data, error } = await db.rpc("wallet_ensure", { p_user_id: userId, p_welcome: COIN_RULES.welcome });
+  if (error) throw error;
+  return Number(data ?? 0);
 }
 
 export interface WalletChange {
@@ -36,6 +49,7 @@ export interface WalletChange {
 
 /** Applies one change; resolves to the new balance and whether it was applied (false: this ref was already used). */
 export async function applyWalletChange(db: Db, change: WalletChange): Promise<{ balance: number; applied: boolean }> {
+  await ensureWallet(db, change.userId);
   const { data, error } = await db.rpc("wallet_apply", {
     p_user_id: change.userId,
     p_amount: change.amount,
@@ -52,13 +66,32 @@ export async function applyWalletChange(db: Db, change: WalletChange): Promise<{
   return { balance: Number(row?.new_balance ?? 0), applied: Boolean(row?.applied) };
 }
 
+/** Takes up to `amount` coins (never more than the player has) and says how many it really took. */
+export async function penalizeWallet(
+  db: Db,
+  penalty: { userId: string; amount: number; reason: string; ref?: string | null; actor?: string | null },
+): Promise<{ balance: number; taken: number; applied: boolean }> {
+  await ensureWallet(db, penalty.userId);
+  const { data, error } = await db.rpc("wallet_penalize", {
+    p_user_id: penalty.userId,
+    p_amount: penalty.amount,
+    p_reason: penalty.reason,
+    p_ref: penalty.ref ?? null,
+    p_actor: penalty.actor ?? null,
+  });
+  if (error) throw error;
+  const row = Array.isArray(data) ? data[0] : data;
+  return { balance: Number(row?.new_balance ?? 0), taken: Number(row?.taken ?? 0), applied: Boolean(row?.applied) };
+}
+
 export interface WalletView {
   balance: number;
   transactions: { id: string; amount: number; kind: string; reason: string; balanceAfter: number; at: string }[];
 }
 
-/** The player's balance and their latest ledger lines (their own only). A player with no wallet row has 0. */
+/** The player's balance and their latest ledger lines (their own only). Opening the wallet gives the welcome bonus once. */
 export async function loadWallet(db: Db, userId: string, limit = 20): Promise<WalletView> {
+  await ensureWallet(db, userId);
   const [wallet, ledger] = await Promise.all([
     db.from("wallets").select("balance").eq("user_id", userId).maybeSingle(),
     db.from("wallet_transactions").select("id,amount,kind,reason,balance_after,created_at").eq("user_id", userId).order("id", { ascending: false }).limit(limit),
@@ -87,6 +120,8 @@ export const COIN_RULES = {
   match: 20,
   win: 30,
   clanFee: 500,
+  /** Every new wallet starts with this. */
+  welcome: 50,
   /** The daily EXP limit pays this share of the coins, like it does for EXP. */
   overDailyLimitShare: 0.25,
 } as const;
