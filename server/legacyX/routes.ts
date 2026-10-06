@@ -1862,7 +1862,8 @@ export function createLegacyXRouter() {
   router.get("/clans/me", userRoute(async (_req, res, user) => {
     const { data, error } = await db().from("clan_members").select("role,clans(*)").eq("user_id", user.id).maybeSingle();
     legacyXError(error, "Unable to load current clan");
-    res.json({ membership: data ?? null });
+    const clan = firstRow(data?.clans);
+    res.json({ membership: data && clan ? { role: textValue(data.role), clan: mapClanCard(clan, 0) } : null });
   }));
   router.get("/clans/:clanId", userRoute(async (req, res) => {
     res.json(await loadClanDetail(userIdSchema.parse(req.params.clanId)));
