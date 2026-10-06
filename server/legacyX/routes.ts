@@ -349,7 +349,7 @@ function isMissingColumnError(error: unknown) {
 const STAFF_PROFILE_ROLES: Record<string, string> = { OWNER: "Owner", MANAGER: "Manager", ADMIN: "Admin", DEVELOPER: "Developer", DESIGNER: "Designer" };
 const faceitLinkSchema = z.object({ nickname: z.string().trim().min(1).max(64).regex(/^[A-Za-z0-9_.-]+$/, "FACEIT nickname contains unsupported characters") });
 const linksSchema = z.object({ links: z.array(z.string().url().max(2048)).max(20) });
-const clanSchema = z.object({ name: z.string().trim().min(3).max(24), tag: z.string().trim().toUpperCase().regex(/^[A-Z0-9]{2,5}$/, "Tag is 2-5 letters or numbers"), region: z.string().trim().min(2).max(64).optional() }).strict();
+const clanSchema = z.object({ name: z.string().trim().min(3).max(24), tag: z.string().trim().toUpperCase().regex(/^[A-Z0-9]{2,5}$/, "Tag is 2-5 letters or numbers"), region: z.string().trim().min(2).max(64).optional(), joinMode: z.enum(["open", "request"]).default("open"), maxPlayers: z.number().int().min(2).max(50).default(10) }).strict();
 const feedbackSchema = z.object({ name: z.string().trim().min(1).max(64).optional(), rating: z.number().int().min(1).max(5), message: z.string().trim().min(1).max(4000) });
 const pluginServerSchema = z.object({ id: z.string().uuid().optional(), name: z.string().trim().min(1).max(100), map: z.string().trim().min(1).max(64), mode: z.string().trim().min(1).max(64), max_players: z.number().int().min(0).max(256), current_players: z.number().int().min(0).max(256), ping: z.number().int().min(0).max(10000).default(0), status: z.enum(["online", "offline", "full"]), ip_address: z.string().max(255).optional(), port: z.number().int().min(1).max(65535).optional() });
 const pluginEventIdSchema = z.string().trim().min(8).max(220).regex(/^[A-Za-z0-9:_-]+$/, "event_id contains unsupported characters");
@@ -580,7 +580,7 @@ function memberCount(clan: DbRow) {
 }
 
 function mapClanCard(clan: DbRow, currentPlayers = memberCount(clan)) {
-  return { id: textValue(clan.id), name: textValue(clan.name), tag: textValue(clan.tag), logo: artUrl(textValue(clan.id), "logo", clan.logo) ?? "", thumbnail: artUrl(textValue(clan.id), "banner", clan.thumbnail), currentPlayers, maxPlayers: numberValue(clan.max_players), region: textValue(clan.region) };
+  return { id: textValue(clan.id), name: textValue(clan.name), tag: textValue(clan.tag), logo: artUrl(textValue(clan.id), "logo", clan.logo) ?? "", thumbnail: artUrl(textValue(clan.id), "banner", clan.thumbnail), currentPlayers, maxPlayers: numberValue(clan.max_players), region: textValue(clan.region), joinMode: clan.join_mode === "request" ? "request" : "open" };
 }
 
 function mapClanMember(member: DbRow) {
@@ -1864,7 +1864,9 @@ export function createLegacyXRouter() {
     const { data, error } = await db().from("clan_members").select("role,clans(*)").eq("user_id", user.id).maybeSingle();
     legacyXError(error, "Unable to load current clan");
     const clan = firstRow(data?.clans);
-    res.json({ membership: data && clan ? { role: textValue(data.role), clan: mapClanCard(clan, 0) } : null });
+    const pending = await db().from("clan_join_requests").select("clan_id").eq("user_id", user.id);
+    legacyXError(pending.error, "Unable to load join requests");
+    res.json({ membership: data && clan ? { role: textValue(data.role), clan: mapClanCard(clan, 0) } : null, pendingClanIds: ((pending.data ?? []) as DbRow[]).map(row => textValue(row.clan_id)) });
   }));
   // Clan pictures. Anyone may look (an <img> cannot send a token); only the leader may change them.
   for (const [kind, column] of [["logo", "logo"], ["banner", "thumbnail"]] as Array<[ClanArtKind, string]>) {
@@ -1924,15 +1926,19 @@ export function createLegacyXRouter() {
     if (error && error.code === "P0001") apiError(409, error.message);
     legacyXError(error, "Unable to create clan");
     if (!data) apiError(500, "Clan was not created");
+    const settings = await db().from("clans").update({ join_mode: input.joinMode, max_players: input.maxPlayers }).eq("id", String(data));
+    if (settings.error) console.warn("[legacy-x-api] clan settings not saved", settings.error.message);
     res.status(201).json(await loadClanDetail(String(data)));
   }));
   router.put("/clans/:clanId", userRoute(async (req, res, user) => {
     const clanId = userIdSchema.parse(req.params.clanId);
-    const input = z.object({ description: z.string().trim().max(200) }).strict().parse(req.body);
-    const { data: clan, error: clanError } = await db().from("clans").select("id").eq("id", clanId).eq("owner_id", user.id).maybeSingle();
+    const input = z.object({ description: z.string().trim().max(200), joinMode: z.enum(["open", "request"]), maxPlayers: z.number().int().min(2).max(50) }).partial().strict().refine(value => Object.keys(value).length > 0, "At least one clan field is required").parse(req.body);
+    const { data: clan, error: clanError } = await db().from("clans").select("id,clan_members(count)").eq("id", clanId).eq("owner_id", user.id).maybeSingle();
     legacyXError(clanError, "Unable to validate clan ownership");
     if (!clan) apiError(403, "Clan leader access is required");
-    const { error } = await db().from("clans").update(input).eq("id", clanId);
+    if (input.maxPlayers !== undefined && input.maxPlayers < memberCount(clan as DbRow)) apiError(409, "The clan already has more members than that");
+    const { description, joinMode, maxPlayers } = input;
+    const { error } = await db().from("clans").update({ ...(description !== undefined ? { description } : {}), ...(joinMode ? { join_mode: joinMode } : {}), ...(maxPlayers !== undefined ? { max_players: maxPlayers } : {}) }).eq("id", clanId);
     legacyXError(error, "Unable to update clan");
     res.json(await loadClanDetail(clanId));
   }));
@@ -2413,9 +2419,61 @@ export function createLegacyXRouter() {
 
 
 
-  router.post("/clans/:clanId/join", userRoute(async (req, res, user) => {
-    const { error } = await db().rpc("join_clan", { p_user_id: user.id, p_clan_id: req.params.clanId });
+  router.post("/clans/:clanId/join", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
+    const clanId = userIdSchema.parse(req.params.clanId);
+    const { data: clan, error: clanError } = await db().from("clans").select("join_mode").eq("id", clanId).maybeSingle();
+    legacyXError(clanError, "Unable to load clan");
+    if (!clan) apiError(404, "Clan was not found");
+    if (clan.join_mode === "request") {
+      const { data: already } = await db().from("clan_members").select("clan_id").eq("user_id", user.id).maybeSingle();
+      if (already) apiError(409, "User already belongs to a clan");
+      const { error } = await db().from("clan_join_requests").upsert({ clan_id: clanId, user_id: user.id }, { onConflict: "clan_id,user_id", ignoreDuplicates: true });
+      legacyXError(error, "Unable to send the request");
+      res.status(202).json({ status: "requested" });
+      return;
+    }
+    const { error } = await db().rpc("join_clan", { p_user_id: user.id, p_clan_id: clanId });
+    if (error?.code === "P0001") apiError(409, error.message);
     legacyXError(error, "Unable to join clan");
+    res.json({ status: "joined" });
+  }));
+  // Withdraw your own request.
+  router.delete("/clans/:clanId/join-request", userRoute(async (req, res, user) => {
+    const { error } = await db().from("clan_join_requests").delete().eq("clan_id", userIdSchema.parse(req.params.clanId)).eq("user_id", user.id);
+    legacyXError(error, "Unable to withdraw the request");
+    res.status(204).end();
+  }));
+  const requireClanLeader = async (clanId: string, userId: string) => {
+    const { data: clan, error } = await db().from("clans").select("owner_id").eq("id", clanId).maybeSingle();
+    legacyXError(error, "Unable to load clan");
+    if (!clan) apiError(404, "Clan was not found");
+    if (clan.owner_id !== userId) apiError(403, "Clan leader access is required");
+  };
+  router.get("/clans/:clanId/requests", userRoute(async (req, res, user) => {
+    const clanId = userIdSchema.parse(req.params.clanId);
+    await requireClanLeader(clanId, user.id);
+    const { data, error } = await db().from("clan_join_requests").select("user_id,created_at,users(id,username,avatar)").eq("clan_id", clanId).order("created_at");
+    legacyXError(error, "Unable to load requests");
+    res.json(((data ?? []) as DbRow[]).map(row => { const player = recordValue(row.users); return { id: textValue(row.user_id), name: textValue(player.username), avatar: textValue(player.avatar), at: textValue(row.created_at) }; }));
+  }));
+  router.post("/clans/:clanId/requests/:userId/accept", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
+    const clanId = userIdSchema.parse(req.params.clanId);
+    const applicant = userIdSchema.parse(req.params.userId);
+    await requireClanLeader(clanId, user.id);
+    const { data: request, error: lookupError } = await db().from("clan_join_requests").select("user_id").eq("clan_id", clanId).eq("user_id", applicant).maybeSingle();
+    legacyXError(lookupError, "Unable to load the request");
+    if (!request) apiError(404, "There is no such request");
+    const { error } = await db().rpc("join_clan", { p_user_id: applicant, p_clan_id: clanId });
+    if (error?.code === "P0001") apiError(409, error.message);
+    legacyXError(error, "Unable to accept the request");
+    await db().from("clan_join_requests").delete().eq("user_id", applicant);
+    res.status(204).end();
+  }));
+  router.delete("/clans/:clanId/requests/:userId", userRoute(async (req, res, user) => {
+    const clanId = userIdSchema.parse(req.params.clanId);
+    await requireClanLeader(clanId, user.id);
+    const { error } = await db().from("clan_join_requests").delete().eq("clan_id", clanId).eq("user_id", userIdSchema.parse(req.params.userId));
+    legacyXError(error, "Unable to decline the request");
     res.status(204).end();
   }));
   router.post("/clans/:clanId/leave", userRoute(async (req, res, user) => {
