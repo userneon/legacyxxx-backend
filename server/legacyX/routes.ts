@@ -1879,7 +1879,7 @@ export function createLegacyXRouter() {
   }));
   router.post("/clans", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
     const input = clanSchema.parse(req.body);
-    const { data, error } = await legacyXDb().rpc("create_clan_paid", { p_owner_id: user.id, p_name: input.name, p_tag: input.tag, p_region: input.region ?? "Mongolia", p_fee: COIN_RULES.clanFee, p_min_matches: COIN_RULES.clanMinMatches, p_welcome: COIN_RULES.welcome });
+    const { data, error } = await legacyXDb().rpc("create_clan_paid", { p_owner_id: user.id, p_name: input.name, p_tag: input.tag, p_region: input.region ?? "Mongolia", p_fee: COIN_RULES.clanFee, p_min_matches: 0, p_welcome: COIN_RULES.welcome });
     if (error && /insufficient coins/i.test(String(error.message))) apiError(402, `A clan costs ${COIN_RULES.clanFee} coins`);
     if (error && error.code === "23505") apiError(409, "That clan name or tag is already taken");
     if (error && error.code === "P0001") apiError(409, error.message);
