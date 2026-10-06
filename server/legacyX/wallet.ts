@@ -77,3 +77,63 @@ export async function loadWallet(db: Db, userId: string, limit = 20): Promise<Wa
     })),
   };
 }
+
+/**
+ * What the coins are worth, in one place. A finished ranked match pays `match`, a win adds `win`; the EXP limits
+ * apply to coins too (past the daily limit a quarter, past the weekly limit nothing), so farming does not pay.
+ * Creating a clan costs `clanFee`: about 10 wins or 25 losses.
+ */
+export const COIN_RULES = {
+  match: 20,
+  win: 30,
+  clanFee: 500,
+  /** The daily EXP limit pays this share of the coins, like it does for EXP. */
+  overDailyLimitShare: 0.25,
+} as const;
+
+export interface MatchCoinInput {
+  outcome: "win" | "draw" | "loss";
+  /** A valid match the player stayed in (not a leaver, not a short or invalid match). */
+  countsAsRankedMatch: boolean;
+  limited?: "daily" | "weekly";
+}
+
+/** Coins one player earns from one finished ranked match. */
+export function matchCoins(player: MatchCoinInput): number {
+  if (!player.countsAsRankedMatch) return 0;
+  if (player.limited === "weekly") return 0;
+  const full = COIN_RULES.match + (player.outcome === "win" ? COIN_RULES.win : 0);
+  return player.limited === "daily" ? Math.floor(full * COIN_RULES.overDailyLimitShare) : full;
+}
+
+/**
+ * Pays everyone in a finished match, once: the ref is the match, so a replayed result (or a retry after a failure)
+ * pays nobody twice. A wallet problem is logged and never fails the ranking that already happened. Resolves to
+ * how many players were paid just now.
+ */
+export async function awardMatchCoins(
+  db: Db,
+  matchId: string,
+  players: { userId: string; outcome: "win" | "draw" | "loss"; countsAsRankedMatch: boolean; breakdown: { limited?: "daily" | "weekly" } }[],
+  log: (message: string, error: unknown) => void = () => undefined,
+): Promise<number> {
+  let paid = 0;
+  for (const player of players) {
+    const amount = matchCoins({ outcome: player.outcome, countsAsRankedMatch: player.countsAsRankedMatch, limited: player.breakdown.limited });
+    if (amount <= 0) continue;
+    try {
+      const result = await applyWalletChange(db, {
+        userId: player.userId,
+        amount,
+        kind: "grant",
+        reason: player.outcome === "win" ? "Ranked match won" : "Ranked match played",
+        ref: `match:${matchId}`,
+      });
+      if (result.applied) paid += 1;
+    } catch (error) {
+      // The wallet tables may not exist yet; either way the match result stands.
+      log(`Unable to pay coins for match ${matchId} to ${player.userId}`, error);
+    }
+  }
+  return paid;
+}

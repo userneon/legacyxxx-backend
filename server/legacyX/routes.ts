@@ -28,7 +28,7 @@ import { RANK_CALCULATION_VERSION, calculateMatchExp, expLimitUsage, limitWindow
 import { buildRankedInput, rankedResultSchema, type MatchParticipant, type PlayerProgression } from "./rankedMatch";
 import { ANNOUNCEMENT_MAX_AGE_HOURS, ANNOUNCEMENT_PAGE, announcementRow, announcementSchema, announcementView, type AnnouncementRecord } from "./announcements";
 import { ADMIN_CALL_COOLDOWN_SECONDS, ADMIN_CALL_MAX_AGE_HOURS, ADMIN_CALL_PAGE, adminCallRow, adminCallSchema, adminCallView, parseAfter, type AdminCallRecord } from "./adminCalls";
-import { NotEnoughCoinsError, applyWalletChange, loadWallet, walletGrantSchema } from "./wallet";
+import { NotEnoughCoinsError, applyWalletChange, awardMatchCoins, loadWallet, walletGrantSchema } from "./wallet";
 import { isMissingTableError, ownerLinks, ownerProfileSchema, ownerTeam, ownerUpdates } from "./ownerProfile";
 import { PROFILE_NAME_MAX, PROFILE_SECTIONS, bestNameMatch, escapeLike, hiddenForViewer, loadoutShowcase, mapWinRates, normalizeHiddenSections, profileStats, staffCard, type ProfileSection } from "./profileOverview";
 import { activeBans, bannedPlayer, checkBansSchema, issueBan, issueBanSchema, revokeAllBans, revokeAllBansSchema, revokeBans, revokeBanSchema } from "./bans";
@@ -733,6 +733,8 @@ async function applyRankedMatchResult(pluginId: string, eventId: string, matchId
     // Someone's EXP moved between reading and applying: recalculate once from fresh values.
     if (applied.error?.code === "40001" && attempt === 0) continue;
     legacyXError(applied.error, "Unable to apply competitive EXP");
+    // Coins follow the EXP just applied (and the same limits). A replayed result pays nobody twice (ref = the match).
+    await awardMatchCoins(legacyXDb(), matchId, outcome.players, (message, error) => console.error(`[legacy-x-api] ${message}`, error));
     return { ...recordValue(applied.data), ...summary };
   }
   return { status: "not_ranked", reasons: ["exp_changed_concurrently"] };
