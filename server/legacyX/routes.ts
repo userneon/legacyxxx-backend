@@ -29,7 +29,7 @@ import { buildRankedInput, rankedResultSchema, type MatchParticipant, type Playe
 import { ANNOUNCEMENT_MAX_AGE_HOURS, ANNOUNCEMENT_PAGE, announcementRow, announcementSchema, announcementView, type AnnouncementRecord } from "./announcements";
 import { ADMIN_CALL_COOLDOWN_SECONDS, ADMIN_CALL_MAX_AGE_HOURS, ADMIN_CALL_PAGE, adminCallRow, adminCallSchema, adminCallView, parseAfter, type AdminCallRecord } from "./adminCalls";
 import { isMissingTableError, ownerLinks, ownerProfileSchema, ownerTeam, ownerUpdates } from "./ownerProfile";
-import { PROFILE_SECTIONS, hiddenForViewer, loadoutShowcase, mapWinRates, normalizeHiddenSections, profileStats, staffCard, type ProfileSection } from "./profileOverview";
+import { PROFILE_NAME_MAX, PROFILE_SECTIONS, bestNameMatch, escapeLike, hiddenForViewer, loadoutShowcase, mapWinRates, normalizeHiddenSections, profileStats, staffCard, type ProfileSection } from "./profileOverview";
 import { activeBans, bannedPlayer, checkBansSchema, issueBan, issueBanSchema, revokeAllBans, revokeAllBansSchema, revokeBans, revokeBanSchema } from "./bans";
 import { authorizationRequestSchema, resolveAuthorizations } from "./adminAuthorization";
 import { completeLink, createLinkRequest, discordLinkedUserIds, discordIdSchema, isLinkToken, linkCallbackUrl, linkRequestSchema, linkStartUrl, linkResultPage, listLinks, pendingLinkRequest, returnToMatches, unlink } from "./discordLinks";
@@ -812,6 +812,19 @@ export function createLegacyXRouter() {
       legacyXError(error, "Unable to resolve SteamID64 profile");
       if (!data) apiError(404, "Player was not found");
       return textValue(data.id);
+    }
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(rawIdentity)) {
+      // A player's name: /profile/Temuulen opens that profile.
+      const name = rawIdentity.trim();
+      if (!name || name.length > PROFILE_NAME_MAX) apiError(404, "Player was not found");
+      const { data, error } = await db().from("users").select("id,created_at").ilike("username", escapeLike(name)).limit(10);
+      legacyXError(error, "Unable to resolve the player name");
+      const rows = (data ?? []) as DbRow[];
+      if (rows.length === 0) apiError(404, "Player was not found");
+      const ladder = rows.length > 1 ? await db().from("competitive_leaderboard").select("user_id,position").in("user_id", rows.map((row) => textValue(row.id))) : { data: [], error: null };
+      legacyXError(ladder.error, "Unable to resolve the player name");
+      const positions = new Map(((ladder.data ?? []) as DbRow[]).map((row) => [textValue(row.user_id), numberValue(row.position)]));
+      return bestNameMatch(rows, positions) ?? apiError(404, "Player was not found");
     }
     return userIdSchema.parse(rawIdentity);
   };

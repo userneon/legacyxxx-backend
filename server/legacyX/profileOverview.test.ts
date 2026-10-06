@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { hiddenForViewer, loadoutShowcase, mapWinRates, normalizeHiddenSections, profileStats, staffCard } from "./profileOverview";
+import { bestNameMatch, escapeLike, hiddenForViewer, loadoutShowcase, mapWinRates, normalizeHiddenSections, profileStats, staffCard } from "./profileOverview";
 
 describe("profile visibility", () => {
   it("normalizes new and legacy section names", () => {
@@ -60,5 +60,18 @@ describe("staffCard", () => {
   it("only exists for staff roles", () => {
     expect(staffCard("Player", 0)).toBeNull();
     expect(staffCard("Owner", 12)).toMatchObject({ role: "Owner", penaltiesIssued: 12 });
+  });
+});
+
+describe("profile by name", () => {
+  it("escapes the characters ILIKE treats as patterns", () => {
+    expect(escapeLike("Tem_uu%len\\x")).toBe("Tem\\_uu\\%len\\\\x");
+    expect(escapeLike("plain")).toBe("plain");
+  });
+  it("opens the best-ranked player of a shared name, else the oldest account", () => {
+    const rows = [{ id: "a", created_at: "2026-03-01" }, { id: "b", created_at: "2026-01-01" }, { id: "c", created_at: "2026-02-01" }];
+    expect(bestNameMatch(rows, new Map([["a", 12], ["c", 3]]))).toBe("c");
+    expect(bestNameMatch(rows, new Map())).toBe("b");
+    expect(bestNameMatch([], new Map())).toBeNull();
   });
 });

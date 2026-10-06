@@ -110,3 +110,21 @@ export function staffCard(role: string, penaltiesIssued: number) {
   if (!role || role === "Player") return null;
   return { role, description: ROLE_BLURB[role] ?? "Part of the Legacy-X team.", penaltiesIssued };
 }
+
+/** A profile address that is a player's name: not "me", not a SteamID64, not a user ID. */
+export const PROFILE_NAME_MAX = 64;
+
+/** `%`, `_` and `\` mean something to ILIKE; a name has to match literally. */
+export function escapeLike(value: string) {
+  return value.replace(/[\\%_]/g, "\\$&");
+}
+
+/**
+ * Names are not unique (they come from Steam), so a name address opens the best-ranked player of that name, and
+ * among unranked ones the oldest account. `positions` maps user ID → leaderboard position.
+ */
+export function bestNameMatch(rows: Row[], positions: Map<string, number>): string | null {
+  const ranked = (row: Row) => positions.get(String(row.id)) ?? Number.POSITIVE_INFINITY;
+  const sorted = [...rows].sort((a, b) => ranked(a) - ranked(b) || String(a.created_at ?? "").localeCompare(String(b.created_at ?? "")));
+  return sorted[0] ? String(sorted[0].id) : null;
+}
