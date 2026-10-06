@@ -161,3 +161,14 @@ h1{margin:0 0 8px;font-size:20px;color:${accent}}p{margin:0;color:#9ca3af}`;
   const csp = `default-src 'none'; style-src 'sha256-${styleHash}'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'`;
   return { html, csp };
 }
+
+/**
+ * Which users have a Discord account linked, as a set of user IDs. Only the fact is public (a small "Discord linked"
+ * mark on profiles and the leaderboard), never the Discord name or ID. If the table cannot be read the marks are
+ * simply left off: this must never break the page it decorates.
+ */
+export async function discordLinkedUserIds(db: Db): Promise<Set<string>> {
+  const { data, error } = await db.from("discord_links").select("user_id").limit(10000);
+  if (error) return new Set();
+  return new Set((data ?? []).map((row: { user_id: unknown }) => String(row.user_id)));
+}

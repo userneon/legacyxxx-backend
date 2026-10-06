@@ -32,7 +32,7 @@ import { isMissingTableError, ownerLinks, ownerProfileSchema, ownerTeam, ownerUp
 import { PROFILE_SECTIONS, hiddenForViewer, loadoutShowcase, mapWinRates, normalizeHiddenSections, profileStats, staffCard, type ProfileSection } from "./profileOverview";
 import { activeBans, bannedPlayer, checkBansSchema, issueBan, issueBanSchema, revokeAllBans, revokeAllBansSchema, revokeBans, revokeBanSchema } from "./bans";
 import { authorizationRequestSchema, resolveAuthorizations } from "./adminAuthorization";
-import { completeLink, createLinkRequest, discordIdSchema, isLinkToken, linkCallbackUrl, linkRequestSchema, linkStartUrl, linkResultPage, listLinks, pendingLinkRequest, returnToMatches, unlink } from "./discordLinks";
+import { completeLink, createLinkRequest, discordLinkedUserIds, discordIdSchema, isLinkToken, linkCallbackUrl, linkRequestSchema, linkStartUrl, linkResultPage, listLinks, pendingLinkRequest, returnToMatches, unlink } from "./discordLinks";
 import { issueCommPenalty, issueCommPenaltySchema, liftCommPenalties, liftCommPenaltySchema } from "./gamePenalties";
 import { killEventSchema, killFeed } from "./killfeed";
 import { heartbeatSchema, ingestHeartbeat } from "./serverHeartbeat";
@@ -887,7 +887,8 @@ export function createLegacyXRouter() {
     const limit = readLadderLimit(req.query.limit);
     const { data, error } = await db().from("competitive_leaderboard").select("position,user_id,steam_id,username,avatar,current_exp,rank_id,rank_slug,rank_name,rank_image_key,pro_league_unlocked,matches_completed,wins,losses,kills,assists,headshot_kills,deaths,kd_ratio,win_rate,played_hours,last_match_at").order("position").limit(sort === "exp" ? limit : 1000);
     legacyXError(error, "Unable to load competitive leaderboard");
-    const rows = (data ?? []) as DbRow[];
+    const linked = await discordLinkedUserIds(db());
+    const rows = ((data ?? []) as DbRow[]).map((row): DbRow => ({ ...row, discord_linked: linked.has(textValue(row.user_id)) }));
     if (sort === "exp") {
       res.json({ sort, minimumMatches: 0, entries: rows });
       return;
@@ -1237,6 +1238,7 @@ export function createLegacyXRouter() {
       loadout: loadout ? loadoutShowcase(loadout.entries as DbRow[]) : null,
       staff: staffCard(role, penaltyCount.count ?? 0),
       presence,
+      discordLinked: (await discordLinkedUserIds(db())).has(userId),
       ...ownerExtras,
     });
   }));

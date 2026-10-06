@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { sha256 } from "./auth";
-import { completeLink, createLinkRequest, isLinkToken, linkCallbackUrl, linkRequestSchema, linkResultPage, linkStartUrl, listLinks, pendingLinkRequest, returnToMatches, unlink } from "./discordLinks";
+import { completeLink, createLinkRequest, discordLinkedUserIds, isLinkToken, linkCallbackUrl, linkRequestSchema, linkResultPage, linkStartUrl, listLinks, pendingLinkRequest, returnToMatches, unlink } from "./discordLinks";
 
 type Call = { table: string; op: string; payload?: unknown; filters: Array<[string, string, unknown]> };
 
@@ -70,6 +70,13 @@ describe("Discord links", () => {
     expect(await completeLink(db, "t".repeat(32), "user-1")).toBe("123456789012345678");
     expect(rpcCalls).toEqual([["complete_discord_link", { p_token_hash: sha256("t".repeat(32)), p_user_id: "user-1" }]]);
     expect(await completeLink(fakeDb({}, { data: null, error: null }).db, "t".repeat(32), "user-1")).toBeNull();
+  });
+
+  it("lists which users are linked, as a set, and never breaks the page when it cannot read", async () => {
+    const ok = { from: () => ({ select: () => ({ limit: async () => ({ data: [{ user_id: "u1" }, { user_id: "u2" }], error: null }) }) }) } as any;
+    expect([...(await discordLinkedUserIds(ok))]).toEqual(["u1", "u2"]);
+    const broken = { from: () => ({ select: () => ({ limit: async () => ({ data: null, error: { message: "down" } }) }) }) } as any;
+    expect((await discordLinkedUserIds(broken)).size).toBe(0);
   });
 
   it("hands the member a link on the website address, not the API's", () => {
