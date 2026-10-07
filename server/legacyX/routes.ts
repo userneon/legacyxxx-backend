@@ -1627,6 +1627,156 @@ export function createLegacyXRouter() {
     return { loadout, entries: enrichedEntries };
   };
 
+  // Community collections: a snapshot of someone's loadout that anyone can apply. Free; likes and applies count once per account.
+  const MAX_COLLECTIONS_PER_PLAYER = 5;
+  const collectionRateLimit = rateLimit({
+    windowMs: 60_000,
+    limit: process.env.NODE_ENV === "test" ? 1_000 : 20,
+    skip: (req) => req.method === "GET",
+    standardHeaders: "draft-8",
+    legacyHeaders: false,
+    message: { error: "Too many collection requests. Please retry shortly." },
+  });
+  router.use("/skinchanger/collections", collectionRateLimit);
+  const collectionShareSchema = z.object({
+    name: z.string().trim().min(3).max(40),
+    description: z.string().trim().max(120).default(""),
+  }).strict();
+  const collectionIdSchema = z.string().uuid();
+
+  router.get("/skinchanger/collections", userRoute(async (req, res, user) => {
+    const input = z.object({
+      sort: z.enum(["popular", "new", "mine"]).default("popular"),
+      query: z.string().trim().max(40).optional(),
+    }).parse(req.query);
+    let rowsQuery = db().from("skin_collections")
+      .select("id,owner_user_id,name,description,entries,item_count,likes_count,applies_count,created_at")
+      .is("deleted_at", null)
+      .limit(60);
+    if (input.sort === "mine") rowsQuery = rowsQuery.eq("owner_user_id", user.id);
+    const search = (input.query ?? "").replace(/[%_\\,()]/g, " ").trim();
+    if (search) rowsQuery = rowsQuery.ilike("name", `%${search}%`);
+    rowsQuery = input.sort === "new"
+      ? rowsQuery.order("created_at", { ascending: false })
+      : rowsQuery.order("applies_count", { ascending: false }).order("likes_count", { ascending: false }).order("created_at", { ascending: false });
+    const { data, error } = await rowsQuery;
+    legacyXError(error, "Unable to load collections");
+    const rows = (data ?? []) as DbRow[];
+    const ownerIds = Array.from(new Set(rows.map((row) => textValue(row.owner_user_id))));
+    const owners = new Map<string, DbRow>();
+    if (ownerIds.length) {
+      const { data: users, error: usersError } = await db().from("users").select("id,steam_id,username,avatar").in("id", ownerIds);
+      legacyXError(usersError, "Unable to load collection authors");
+      for (const owner of (users ?? []) as DbRow[]) owners.set(textValue(owner.id), owner);
+    }
+    const previewEntries = new Map<string, DbRow[]>(rows.map((row) => [textValue(row.id), (Array.isArray(row.entries) ? row.entries as DbRow[] : []).slice(0, 8)]));
+    const previewIds = Array.from(new Set(Array.from(previewEntries.values()).flat().map((entry) => textValue(entry.catalog_item_id)).filter(Boolean)));
+    const catalog = new Map<string, DbRow>();
+    if (previewIds.length) {
+      const { data: items, error: itemsError } = await db().from("skinchanger_catalog_items").select("id,weapon_class,display_name,image_key,metadata").in("id", previewIds);
+      legacyXError(itemsError, "Unable to load collection items");
+      for (const item of (items ?? []) as DbRow[]) catalog.set(textValue(item.id), item);
+    }
+    const liked = new Set<string>();
+    if (rows.length) {
+      const { data: likes, error: likesError } = await db().from("skin_collection_likes").select("collection_id").eq("user_id", user.id).in("collection_id", rows.map((row) => textValue(row.id)));
+      legacyXError(likesError, "Unable to load likes");
+      for (const like of (likes ?? []) as DbRow[]) liked.add(textValue(like.collection_id));
+    }
+    res.json({
+      collections: rows.map((row) => {
+        const owner = owners.get(textValue(row.owner_user_id)) ?? {};
+        return {
+          id: textValue(row.id),
+          name: textValue(row.name),
+          description: textValue(row.description),
+          author: { steamId: textValue(owner.steam_id), username: textValue(owner.username), avatar: textValue(owner.avatar) },
+          createdAt: timestampValue(row.created_at),
+          applies: numberValue(row.applies_count),
+          likes: numberValue(row.likes_count),
+          liked: liked.has(textValue(row.id)),
+          mine: textValue(row.owner_user_id) === user.id,
+          itemCount: numberValue(row.item_count),
+          items: (previewEntries.get(textValue(row.id)) ?? []).map((entry) => {
+            const item = catalog.get(textValue(entry.catalog_item_id));
+            const rarity = item ? recordValue(item.metadata).rarity : null;
+            return item ? {
+              slot: textValue(entry.slot),
+              weaponClass: textValue(item.weapon_class) || null,
+              name: textValue(item.display_name),
+              imageUrl: staticStorageUrl(req, textValue(item.image_key) || null),
+              rarity: typeof rarity === "string" ? rarity : null,
+            } : null;
+          }).filter(Boolean),
+        };
+      }),
+    });
+  }));
+
+  // Shares what the player has equipped right now.
+  router.post("/skinchanger/collections", userRoute(async (req, res, user) => {
+    const input = collectionShareSchema.parse(req.body);
+    const current = await loadSkinchangerLoadout(req, user.id);
+    const entries = ((current?.entries ?? []) as DbRow[]).filter((entry) => entry.skinchanger_catalog_items);
+    if (!entries.length) apiError(400, "Equip something in your loadout before sharing it");
+    const { count, error: countError } = await db().from("skin_collections").select("id", { count: "exact", head: true }).eq("owner_user_id", user.id).is("deleted_at", null);
+    legacyXError(countError, "Unable to check your collections");
+    if ((count ?? 0) >= MAX_COLLECTIONS_PER_PLAYER) apiError(409, `You can share up to ${MAX_COLLECTIONS_PER_PLAYER} collections. Delete one first.`);
+    const snapshot = entries.map((entry) => ({ slot: entry.slot, slot_key: entry.slot_key, team_scope: entry.team_scope, catalog_item_id: entry.catalog_item_id, options: entry.options }));
+    const { data, error } = await db().from("skin_collections")
+      .insert({ owner_user_id: user.id, name: input.name, description: input.description, entries: snapshot, item_count: snapshot.length })
+      .select("id")
+      .single();
+    legacyXError(error, "Unable to share the collection");
+    await db().from("audit_logs").insert({ actor_type: "user", actor_id: user.id, action: "skinchanger.collection.share", target_type: "skin_collections", target_id: textValue((data as DbRow).id), metadata: { name: input.name, itemCount: snapshot.length } });
+    res.status(201).json({ id: textValue((data as DbRow).id) });
+  }));
+
+  router.delete("/skinchanger/collections/:collectionId", userRoute(async (req, res, user) => {
+    const collectionId = collectionIdSchema.parse(req.params.collectionId);
+    const { data, error } = await db().from("skin_collections").select("id,owner_user_id").eq("id", collectionId).is("deleted_at", null).maybeSingle();
+    legacyXError(error, "Unable to load the collection");
+    if (!data) apiError(404, "Collection not found");
+    const owner = textValue((data as DbRow).owner_user_id);
+    if (owner !== user.id) {
+      const staff = await loadModerator(user.id);
+      if (!staff || !mayModerateClans(textValue(staff.role), staff.permissions)) apiError(403, "Only the creator or a Manager can remove this collection");
+    }
+    const { error: deleteError } = await db().from("skin_collections").update({ deleted_at: new Date().toISOString() }).eq("id", collectionId);
+    legacyXError(deleteError, "Unable to remove the collection");
+    await db().from("audit_logs").insert({ actor_type: "user", actor_id: user.id, action: "skinchanger.collection.delete", target_type: "skin_collections", target_id: collectionId, metadata: { byOwner: owner === user.id } });
+    res.json({ removed: true });
+  }));
+
+  router.put("/skinchanger/collections/:collectionId/like", userRoute(async (req, res, user) => {
+    const collectionId = collectionIdSchema.parse(req.params.collectionId);
+    const input = z.object({ liked: z.boolean() }).strict().parse(req.body);
+    const { data, error } = await db().rpc("skin_collection_set_like", { p_collection_id: collectionId, p_user_id: user.id, p_liked: input.liked });
+    legacyXError(error, "Unable to save the like");
+    res.json({ likes: numberValue(data), liked: input.liked });
+  }));
+
+  // Replaces the player's whole loadout with the collection's look (the web asks first).
+  router.post("/skinchanger/collections/:collectionId/apply", userRoute(async (req, res, user) => {
+    const collectionId = collectionIdSchema.parse(req.params.collectionId);
+    const { data, error } = await db().from("skin_collections").select("id,entries").eq("id", collectionId).is("deleted_at", null).maybeSingle();
+    legacyXError(error, "Unable to load the collection");
+    if (!data) apiError(404, "Collection not found");
+    const stored = (Array.isArray((data as DbRow).entries) ? (data as DbRow).entries : []) as DbRow[];
+    const ids = Array.from(new Set(stored.map((entry) => textValue(entry.catalog_item_id)).filter(Boolean)));
+    const { data: active, error: activeError } = await db().from("skinchanger_catalog_items").select("id").eq("is_active", true).in("id", ids);
+    legacyXError(activeError, "Unable to check the collection's items");
+    const available = new Set(((active ?? []) as DbRow[]).map((item) => textValue(item.id)));
+    const entries = stored.filter((entry) => available.has(textValue(entry.catalog_item_id)));
+    if (!entries.length) apiError(409, "None of this collection's items are available any more");
+    const { data: version, error: saveError } = await db().rpc("save_skinchanger_loadout", { p_user_id: user.id, p_entries: entries });
+    legacyXError(saveError, "Unable to apply the collection");
+    const { data: counted, error: markError } = await db().rpc("skin_collection_mark_applied", { p_collection_id: collectionId, p_user_id: user.id });
+    if (markError) console.error("Unable to count a collection apply", markError);
+    await db().from("audit_logs").insert({ actor_type: "user", actor_id: user.id, action: "skinchanger.collection.apply", target_type: "skinchanger_loadouts", target_id: user.id, metadata: { collectionId, version, applied: entries.length, skipped: stored.length - entries.length } });
+    res.json({ version: numberValue(version), applied: entries.length, skipped: stored.length - entries.length, counted: counted === true });
+  }));
+
   router.get("/skinchanger/loadout", userRoute(async (req, res, user) => {
     const result = await loadSkinchangerLoadout(req, user.id);
     if (!result) {
