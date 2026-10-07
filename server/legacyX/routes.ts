@@ -2,6 +2,7 @@ import express, { Router, type NextFunction, type Request, type Response } from 
 import { randomBytes } from "node:crypto";
 import rateLimit from "express-rate-limit";
 import { z } from "zod";
+import { mayModerate, mayTouchBan, needsReview, termFields, type ModerationCapability } from "./moderation";
 import { CLAN_LIMITS, canManage, canRemove, clanRole, describeClanAction, leaveCooldownLeftMs } from "./clans";
 import { CLAN_ART_LIMITS, artMarker, artUrl, checkClanArt, type ClanArtKind } from "./clanArt";
 import { parseCookieHeader } from "../_core/cookieHeader";
@@ -2470,6 +2471,86 @@ export function createLegacyXRouter() {
     legacyXError(error, "Unable to load penalty statistics");
     const penalties = (data ?? []) as DbRow[];
     res.json({ totalBans: penalties.filter(row => row.type === "ban").length, activeBans: penalties.filter(row => row.type === "ban" && !row.is_unbanned).length, permanentBans: penalties.filter(row => row.type === "ban" && row.is_permanent).length, totalComms: penalties.filter(row => row.type === "comm").length, totalGags: penalties.filter(row => row.type === "gag").length });
+  }));
+  // ---- Penalties from the website -------------------------------------------------------------------------------
+  // Staff (Owner, Manager, Admin) lift, change or issue penalties on the same pages players read, with their normal
+  // sign-in. Every change is written to the audit log.
+  const loadModerator = async (userId: string) => {
+    const { data, error } = await db().from("staff").select("role,permissions,immunity").eq("user_id", userId).eq("status", "active").maybeSingle();
+    legacyXError(error, "Unable to verify staff access");
+    return (data ?? null) as DbRow | null;
+  };
+  const requireModerator = async (userId: string, capability: ModerationCapability) => {
+    const staff = await loadModerator(userId);
+    if (!staff || !mayModerate(textValue(staff.role), staff.permissions, capability)) apiError(403, "Staff access is required");
+    return staff;
+  };
+  const auditPenalty = async (actorId: string, action: string, targetId: string, metadata: Record<string, unknown>) => {
+    const { error } = await db().from("audit_logs").insert({ actor_type: "user", actor_id: actorId, action, target_type: "penalty", target_id: targetId, metadata });
+    if (error) console.error("[legacy-x-api] Unable to audit penalty change", error);
+  };
+  const loadChangeable = async (penaltyId: string) => {
+    const { data: penalty, error } = await db().from("penalties").select("id,user_id,type,reason,term,is_permanent,is_unbanned,expires_at").eq("id", penaltyId).maybeSingle();
+    legacyXError(error, "Unable to load the penalty");
+    if (!penalty) apiError(404, "Penalty was not found");
+    const { data: ban, error: banError } = await db().from("bans").select("id,issuer_immunity").eq("penalty_id", penaltyId).is("revoked_at", null).maybeSingle();
+    legacyXError(banError, "Unable to load the ban");
+    return { penalty: penalty as DbRow, ban: (ban ?? null) as DbRow | null };
+  };
+  router.get("/moderation/access", userRoute(async (_req, res, user) => {
+    const staff = await loadModerator(user.id);
+    const role = staff ? textValue(staff.role) : null;
+    res.json({ canManage: Boolean(staff && ["ban", "unban", "edit"].some((capability) => mayModerate(role, staff.permissions, capability as ModerationCapability))), role, can: { ban: Boolean(staff && mayModerate(role, staff.permissions, "ban")), unban: Boolean(staff && mayModerate(role, staff.permissions, "unban")), edit: Boolean(staff && mayModerate(role, staff.permissions, "edit")) } });
+  }));
+  router.post("/moderation/penalties/:penaltyId/lift", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
+    const penaltyId = userIdSchema.parse(req.params.penaltyId);
+    const input = z.object({ reason: z.string().trim().max(200).optional() }).strict().parse(req.body ?? {});
+    const staff = await requireModerator(user.id, "unban");
+    const { penalty, ban } = await loadChangeable(penaltyId);
+    if (penalty.is_unbanned) apiError(409, "That penalty is already lifted");
+    if (ban && !mayTouchBan(textValue(staff.role), numberValue(staff.immunity), numberValue(ban.issuer_immunity))) apiError(403, "That ban was issued by someone with higher immunity");
+    const { error } = await db().from("penalties").update({ is_unbanned: true, updated_at: new Date().toISOString() }).eq("id", penaltyId);
+    legacyXError(error, "Unable to lift the penalty");
+    if (ban) {
+      const revoked = await db().from("bans").update({ revoked_at: new Date().toISOString(), revoked_by: user.id, revoke_reason: input.reason ?? `Lifted by ${user.username}` }).eq("id", textValue(ban.id));
+      legacyXError(revoked.error, "Unable to lift the ban");
+    }
+    await auditPenalty(user.id, "penalty.lift", penaltyId, { type: textValue(penalty.type), reason: input.reason ?? null });
+    res.status(204).end();
+  }));
+  router.put("/moderation/penalties/:penaltyId", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
+    const penaltyId = userIdSchema.parse(req.params.penaltyId);
+    const input = z.object({ reason: z.string().trim().min(1).max(200).optional(), durationMinutes: z.number().int().min(0).max(525_600).optional() }).strict().refine((value) => value.reason !== undefined || value.durationMinutes !== undefined, "A reason or a length of time is required").parse(req.body);
+    const staff = await requireModerator(user.id, "edit");
+    const { penalty, ban } = await loadChangeable(penaltyId);
+    if (penalty.is_unbanned) apiError(409, "A lifted penalty cannot be changed");
+    if (ban && !mayTouchBan(textValue(staff.role), numberValue(staff.immunity), numberValue(ban.issuer_immunity))) apiError(403, "That ban was issued by someone with higher immunity");
+    const fields = input.durationMinutes === undefined ? null : termFields(input.durationMinutes);
+    const { error } = await db().from("penalties").update({ ...(input.reason !== undefined ? { reason: input.reason } : {}), ...(fields ?? {}), updated_at: new Date().toISOString() }).eq("id", penaltyId);
+    legacyXError(error, "Unable to change the penalty");
+    if (ban) {
+      const update: Record<string, unknown> = { ...(input.reason !== undefined ? { reason: input.reason } : {}) };
+      if (fields) {
+        update.is_permanent = fields.is_permanent;
+        update.expires_at = fields.expires_at;
+        if (needsReview(textValue(staff.role), Boolean(fields.is_permanent))) update.review_status = "pending";
+      }
+      const changed = await db().from("bans").update(update).eq("id", textValue(ban.id));
+      legacyXError(changed.error, "Unable to change the ban");
+    }
+    await auditPenalty(user.id, "penalty.edit", penaltyId, { type: textValue(penalty.type), before: { reason: textValue(penalty.reason), term: textValue(penalty.term) }, reason: input.reason ?? null, durationMinutes: input.durationMinutes ?? null });
+    res.status(204).end();
+  }));
+  router.post("/moderation/penalties", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
+    const input = z.object({ steamId: z.string().regex(/^7656119\d{10}$/, "SteamID64 is required"), type: z.enum(["ban", "comm", "gag"]), durationMinutes: z.number().int().min(0).max(525_600), reason: z.string().trim().min(1).max(200) }).strict().parse(req.body);
+    const staff = await requireModerator(user.id, input.type === "ban" ? "ban" : "mute");
+    const issued = input.type === "ban"
+      ? await issueBan(db(), { steamId: input.steamId, durationMinutes: input.durationMinutes, reason: input.reason, issuerName: user.username, source: "panel", issuerSteamId: user.steamId || undefined })
+      : await issueCommPenalty(db(), { steamId: input.steamId, type: input.type, durationMinutes: input.durationMinutes, reason: input.reason, issuerName: user.username });
+    const penaltyId = issued.penaltyId;
+    await db().from("penalties").update({ admin_id: user.id }).eq("id", penaltyId);
+    await auditPenalty(user.id, "penalty.issue", penaltyId, { type: input.type, steamId: input.steamId, durationMinutes: input.durationMinutes, reason: input.reason });
+    res.status(201).json({ penaltyId });
   }));
   router.get("/penalties/:penaltyId", asyncRoute(async (req, res) => {
     const { data, error } = await db().from("penalties").select("*,users!penalties_user_id_fkey(username,steam_id,avatar)").eq("id", userIdSchema.parse(req.params.penaltyId)).maybeSingle();
