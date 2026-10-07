@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mayModerate, mayTouchBan, needsReview, termFields } from "./moderation";
+import { mayModerate, mayModerateClans, mayTouchBan, needsReview, termFields } from "./moderation";
 
 describe("website moderation rules", () => {
   it("lets Owners, Managers and Admins in, and nobody else", () => {
@@ -29,5 +29,13 @@ describe("website moderation rules", () => {
     expect(needsReview("ADMIN", true)).toBe(true);
     expect(needsReview("MANAGER", true)).toBe(false);
     expect(needsReview("ADMIN", false)).toBe(false);
+  });
+  it("keeps Admins out of clan moderation", () => {
+    expect(mayModerateClans("OWNER", [])).toBe(true);
+    expect(mayModerateClans("MANAGER", [])).toBe(true);
+    expect(mayModerateClans("MANAGER", ["unban"])).toBe(false);
+    expect(mayModerateClans("ADMIN", [])).toBe(false);
+    expect(mayModerateClans("DEVELOPER", [])).toBe(false);
+    expect(mayModerateClans(null, [])).toBe(false);
   });
 });

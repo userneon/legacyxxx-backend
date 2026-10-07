@@ -2,7 +2,7 @@ import express, { Router, type NextFunction, type Request, type Response } from 
 import { randomBytes } from "node:crypto";
 import rateLimit from "express-rate-limit";
 import { z } from "zod";
-import { mayModerate, mayTouchBan, needsReview, termFields, type ModerationCapability } from "./moderation";
+import { mayModerate, mayModerateClans, mayTouchBan, needsReview, termFields, type ModerationCapability } from "./moderation";
 import { CLAN_LIMITS, canManage, canRemove, clanRole, describeClanAction, leaveCooldownLeftMs } from "./clans";
 import { CLAN_ART_LIMITS, artMarker, artUrl, checkClanArt, type ClanArtKind } from "./clanArt";
 import { parseCookieHeader } from "../_core/cookieHeader";
@@ -1898,10 +1898,13 @@ export function createLegacyXRouter() {
     if (clan.owner_id !== userId) apiError(403, "Clan leader access is required", "clan_forbidden");
     return clan;
   };
-  /** The same people who manage penalties (Owner, Manager, Admin with the right permission) moderate clans. */
+  /** Owners and Managers moderate clans. An Admin can manage penalties but can neither change nor delete a clan. */
   const canModerateClans = async (userId: string) => {
     const { data } = await db().from("staff").select("role,permissions").eq("user_id", userId).eq("status", "active").maybeSingle();
-    return Boolean(data && mayModerate(textValue(data.role), data.permissions, "edit"));
+    return Boolean(data && mayModerateClans(textValue(data.role), data.permissions));
+  };
+  const requireClanModerator = async (userId: string) => {
+    if (!(await canModerateClans(userId))) apiError(403, "Owner or Manager access is required");
   };
   const logClan = async (clan: DbRow, actor: string | null, action: string, target: string | null = null, detail: string | null = null) => {
     const { error } = await db().from("clan_audit").insert({ clan_id: textValue(clan.id), clan_name: textValue(clan.name), actor_id: actor, action, target_id: target, detail: detail ? detail.slice(0, 300) : null });
@@ -2280,9 +2283,9 @@ export function createLegacyXRouter() {
     }));
   }));
 
-  // Staff moderation: any active staff member can fix or remove a clan that breaks the rules.
+  // Staff moderation: Owners and Managers can fix or remove a clan that breaks the rules.
   router.delete("/staff/clans/:clanId", userRoute(async (req, res, user) => {
-    await requireModerator(user.id, "edit");
+    await requireClanModerator(user.id);
     const clanId = userIdSchema.parse(req.params.clanId);
     const clan = await loadClanBasics(clanId);
     const { error } = await db().from("clans").delete().eq("id", clanId);
@@ -2291,7 +2294,7 @@ export function createLegacyXRouter() {
     res.status(204).end();
   }));
   router.delete("/staff/clans/:clanId/art/:kind", userRoute(async (req, res, user) => {
-    await requireModerator(user.id, "edit");
+    await requireClanModerator(user.id);
     const clanId = userIdSchema.parse(req.params.clanId);
     const kind = z.enum(["logo", "banner"]).parse(req.params.kind);
     const clan = await loadClanBasics(clanId);
@@ -2303,7 +2306,7 @@ export function createLegacyXRouter() {
     res.status(204).end();
   }));
   router.delete("/staff/clans/:clanId/description", userRoute(async (req, res, user) => {
-    await requireModerator(user.id, "edit");
+    await requireClanModerator(user.id);
     const clanId = userIdSchema.parse(req.params.clanId);
     const clan = await loadClanBasics(clanId);
     const { error } = await db().from("clans").update({ description: null }).eq("id", clanId);
@@ -2312,7 +2315,7 @@ export function createLegacyXRouter() {
     res.status(204).end();
   }));
   router.put("/staff/clans/:clanId/name", userRoute(async (req, res, user) => {
-    await requireModerator(user.id, "edit");
+    await requireClanModerator(user.id);
     const clanId = userIdSchema.parse(req.params.clanId);
     const input = z.object({ name: clanSchema.shape.name, tag: clanSchema.shape.tag }).strict().parse(req.body);
     const clan = await loadClanBasics(clanId);

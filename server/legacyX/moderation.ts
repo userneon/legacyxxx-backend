@@ -37,3 +37,8 @@ export function termFields(durationMinutes: number, now = new Date()) {
 export function needsReview(role: string | null | undefined, permanent: boolean) {
   return permanent && role !== "OWNER" && role !== "MANAGER";
 }
+
+/** Clans are moderated by Owners and Managers only: an Admin can neither change nor delete a clan. */
+export function mayModerateClans(role: string | null | undefined, permissions: unknown) {
+  return (role === "OWNER" || role === "MANAGER") && mayModerate(role, permissions, "edit");
+}
