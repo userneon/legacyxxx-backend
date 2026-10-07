@@ -45,7 +45,7 @@ export function describeClanAction(action: string, detail: string | null) {
     joined: "joined",
     left: "left",
     kicked: "was removed",
-    promoted: "was made co-leader",
+    promoted: "was made a manager",
     demoted: "is a member again",
     transferred: "became the leader",
     accepted: "was accepted",
