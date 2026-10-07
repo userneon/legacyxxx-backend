@@ -2629,7 +2629,8 @@ export function createLegacyXRouter() {
     if (!target) apiError(404, "That player has not signed in to LEGACY-X yet");
     const { data, error } = await db().from("notifications").insert({ user_id: textValue(target.id), kind: "system", title: input.title, body: input.body, metadata: { kind: "staff_message", from: user.username } }).select("id").single();
     legacyXError(error, "Unable to send the notification");
-    await auditPenalty(user.id, "notification.send", textValue(target.id), { title: input.title, notificationId: textValue(data?.id) });
+    const { error: auditError } = await db().from("audit_logs").insert({ actor_type: "user", actor_id: user.id, action: "notification.send", target_type: "user", target_id: textValue(target.id), metadata: { title: input.title, notificationId: textValue(data?.id) } });
+    if (auditError) console.error("[legacy-x-api] Unable to audit notification", auditError);
     res.status(201).json({ status: "sent" });
   }));
   router.post("/moderation/penalties", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
