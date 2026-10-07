@@ -2620,6 +2620,18 @@ export function createLegacyXRouter() {
     await auditPenalty(user.id, "penalty.edit", penaltyId, { type: textValue(penalty.type), before: { reason: textValue(penalty.reason), term: textValue(penalty.term) }, reason: input.reason ?? null, durationMinutes: input.durationMinutes ?? null });
     res.status(204).end();
   }));
+  // A message from staff to one player, delivered to their notification bell.
+  router.post("/moderation/notify", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
+    const input = z.object({ steamId: z.string().regex(/^7656119\d{10}$/, "SteamID64 is required"), title: z.string().trim().min(1).max(120), body: z.string().trim().min(1).max(500) }).strict().parse(req.body);
+    await requireModerator(user.id, "edit");
+    const { data: target, error: targetError } = await db().from("users").select("id").eq("steam_id", input.steamId).maybeSingle();
+    legacyXError(targetError, "Unable to find the player");
+    if (!target) apiError(404, "That player has not signed in to LEGACY-X yet");
+    const { data, error } = await db().from("notifications").insert({ user_id: textValue(target.id), kind: "system", title: input.title, body: input.body, metadata: { kind: "staff_message", from: user.username } }).select("id").single();
+    legacyXError(error, "Unable to send the notification");
+    await auditPenalty(user.id, "notification.send", textValue(target.id), { title: input.title, notificationId: textValue(data?.id) });
+    res.status(201).json({ status: "sent" });
+  }));
   router.post("/moderation/penalties", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
     const input = z.object({ steamId: z.string().regex(/^7656119\d{10}$/, "SteamID64 is required"), type: z.enum(["ban", "comm", "gag"]), durationMinutes: z.number().int().min(0).max(525_600), reason: z.string().trim().min(1).max(200) }).strict().parse(req.body);
     const staff = await requireModerator(user.id, input.type === "ban" ? "ban" : "mute");
