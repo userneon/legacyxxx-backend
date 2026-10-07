@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mayModerate, mayModerateClans, mayTouchBan, needsReview, termFields } from "./moderation";
+import { mayApproveLifts, mayModerate, mayModerateClans, needsLiftApproval, mayTouchBan, needsReview, termFields } from "./moderation";
 
 describe("website moderation rules", () => {
   it("lets Owners, Managers and Admins in, and nobody else", () => {
@@ -37,5 +37,17 @@ describe("website moderation rules", () => {
     expect(mayModerateClans("ADMIN", [])).toBe(false);
     expect(mayModerateClans("DEVELOPER", [])).toBe(false);
     expect(mayModerateClans(null, [])).toBe(false);
+  });
+  it("asks an Admin for approval only on penalties issued by someone else", () => {
+    expect(needsLiftApproval("ADMIN", false)).toBe(true);
+    expect(needsLiftApproval("ADMIN", true)).toBe(false);
+    expect(needsLiftApproval("MANAGER", false)).toBe(false);
+    expect(needsLiftApproval("OWNER", false)).toBe(false);
+  });
+  it("lets only Owners and Managers decide on requests", () => {
+    expect(mayApproveLifts("OWNER")).toBe(true);
+    expect(mayApproveLifts("MANAGER")).toBe(true);
+    expect(mayApproveLifts("ADMIN")).toBe(false);
+    expect(mayApproveLifts(null)).toBe(false);
   });
 });

@@ -42,3 +42,13 @@ export function needsReview(role: string | null | undefined, permanent: boolean)
 export function mayModerateClans(role: string | null | undefined, permissions: unknown) {
   return (role === "OWNER" || role === "MANAGER") && mayModerate(role, permissions, "edit");
 }
+
+/** An Admin lifts their own penalties at will; lifting someone else's needs a Manager or Owner to approve. */
+export function needsLiftApproval(role: string | null | undefined, isOwn: boolean) {
+  return role === "ADMIN" && !isOwn;
+}
+
+/** Owners and Managers decide on lift requests. */
+export function mayApproveLifts(role: string | null | undefined) {
+  return role === "OWNER" || role === "MANAGER";
+}

@@ -2,7 +2,7 @@ import express, { Router, type NextFunction, type Request, type Response } from 
 import { randomBytes } from "node:crypto";
 import rateLimit from "express-rate-limit";
 import { z } from "zod";
-import { mayModerate, mayModerateClans, mayTouchBan, needsReview, termFields, type ModerationCapability } from "./moderation";
+import { mayApproveLifts, mayModerate, mayModerateClans, mayTouchBan, needsLiftApproval, needsReview, termFields, type ModerationCapability } from "./moderation";
 import { CLAN_LIMITS, canManage, canRemove, clanRole, describeClanAction, leaveCooldownLeftMs } from "./clans";
 import { CLAN_ART_LIMITS, artMarker, artUrl, checkClanArt, type ClanArtKind } from "./clanArt";
 import { parseCookieHeader } from "../_core/cookieHeader";
@@ -2506,34 +2506,97 @@ export function createLegacyXRouter() {
     if (error) console.error("[legacy-x-api] Unable to audit penalty change", error);
   };
   const loadChangeable = async (penaltyId: string) => {
-    const { data: penalty, error } = await db().from("penalties").select("id,user_id,type,reason,term,is_permanent,is_unbanned,expires_at").eq("id", penaltyId).maybeSingle();
+    const { data: penalty, error } = await db().from("penalties").select("id,user_id,admin_id,type,reason,term,is_permanent,is_unbanned,expires_at").eq("id", penaltyId).maybeSingle();
     legacyXError(error, "Unable to load the penalty");
     if (!penalty) apiError(404, "Penalty was not found");
-    const { data: ban, error: banError } = await db().from("bans").select("id,issuer_immunity").eq("penalty_id", penaltyId).is("revoked_at", null).maybeSingle();
+    const { data: ban, error: banError } = await db().from("bans").select("id,issuer_immunity,issuer_steam_id").eq("penalty_id", penaltyId).is("revoked_at", null).maybeSingle();
     legacyXError(banError, "Unable to load the ban");
     return { penalty: penalty as DbRow, ban: (ban ?? null) as DbRow | null };
   };
   router.get("/moderation/access", userRoute(async (_req, res, user) => {
     const staff = await loadModerator(user.id);
     const role = staff ? textValue(staff.role) : null;
-    res.json({ canManage: Boolean(staff && ["ban", "unban", "edit"].some((capability) => mayModerate(role, staff.permissions, capability as ModerationCapability))), role, can: { ban: Boolean(staff && mayModerate(role, staff.permissions, "ban")), unban: Boolean(staff && mayModerate(role, staff.permissions, "unban")), edit: Boolean(staff && mayModerate(role, staff.permissions, "edit")) } });
+    const waiting = staff ? await db().from("penalty_lift_requests").select("penalty_id").eq("requested_by", user.id).eq("status", "pending") : { data: [] };
+    res.json({ canManage: Boolean(staff && ["ban", "unban", "edit"].some((capability) => mayModerate(role, staff.permissions, capability as ModerationCapability))), role, requestedPenaltyIds: ((waiting.data ?? []) as DbRow[]).map((row) => textValue(row.penalty_id)), canApprove: mayApproveLifts(role), can: { ban: Boolean(staff && mayModerate(role, staff.permissions, "ban")), unban: Boolean(staff && mayModerate(role, staff.permissions, "unban")), edit: Boolean(staff && mayModerate(role, staff.permissions, "edit")) } });
   }));
+  /** Lifts one penalty (the ban row too). `actor` is whoever has the right to: the issuer, or a Manager or Owner. */
+  const liftPenalty = async (penaltyId: string, actorId: string, actorName: string, reason: string | null, via: string) => {
+    const { penalty, ban } = await loadChangeable(penaltyId);
+    if (penalty.is_unbanned) apiError(409, "That penalty is already lifted");
+    const { error } = await db().from("penalties").update({ is_unbanned: true, updated_at: new Date().toISOString() }).eq("id", penaltyId);
+    legacyXError(error, "Unable to lift the penalty");
+    if (ban) {
+      const revoked = await db().from("bans").update({ revoked_at: new Date().toISOString(), revoked_by: actorId, revoke_reason: reason ?? `Lifted by ${actorName}` }).eq("id", textValue(ban.id));
+      legacyXError(revoked.error, "Unable to lift the ban");
+    }
+    await auditPenalty(actorId, "penalty.lift", penaltyId, { type: textValue(penalty.type), reason, via });
+  };
+  const moderatorIds = async () => {
+    const { data } = await db().from("staff").select("user_id").in("role", ["OWNER", "MANAGER"]).eq("status", "active");
+    return ((data ?? []) as DbRow[]).map((row) => textValue(row.user_id));
+  };
   router.post("/moderation/penalties/:penaltyId/lift", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
     const penaltyId = userIdSchema.parse(req.params.penaltyId);
     const input = z.object({ reason: z.string().trim().max(200).optional() }).strict().parse(req.body ?? {});
     const staff = await requireModerator(user.id, "unban");
+    const role = textValue(staff.role);
     const { penalty, ban } = await loadChangeable(penaltyId);
     if (penalty.is_unbanned) apiError(409, "That penalty is already lifted");
-    if (ban && !mayTouchBan(textValue(staff.role), numberValue(staff.immunity), numberValue(ban.issuer_immunity))) apiError(403, "That ban was issued by someone with higher immunity");
-    const { error } = await db().from("penalties").update({ is_unbanned: true, updated_at: new Date().toISOString() }).eq("id", penaltyId);
-    legacyXError(error, "Unable to lift the penalty");
-    if (ban) {
-      const revoked = await db().from("bans").update({ revoked_at: new Date().toISOString(), revoked_by: user.id, revoke_reason: input.reason ?? `Lifted by ${user.username}` }).eq("id", textValue(ban.id));
-      legacyXError(revoked.error, "Unable to lift the ban");
+    const own = penalty.admin_id === user.id || Boolean(ban && user.steamId && ban.issuer_steam_id === user.steamId);
+    if (needsLiftApproval(role, own)) {
+      // Someone else's penalty: an Admin asks, a Manager or Owner decides.
+      const { error } = await db().from("penalty_lift_requests").insert({ penalty_id: penaltyId, requested_by: user.id, reason: input.reason ?? null });
+      if (error?.code === "23505") apiError(409, "An unban is already requested for this penalty");
+      legacyXError(error, "Unable to send the request");
+      await auditPenalty(user.id, "penalty.lift_requested", penaltyId, { type: textValue(penalty.type), reason: input.reason ?? null });
+      for (const managerId of await moderatorIds()) {
+        const { error: tellError } = await db().from("notifications").insert({ user_id: managerId, kind: "system", title: "Unban request", body: `${user.username} asked to lift a ${textValue(penalty.type)}.`, metadata: { penaltyId, kind: "lift_request" } });
+        if (tellError) console.warn("[legacy-x-api] unban request notification not saved", tellError.message);
+      }
+      res.status(202).json({ status: "requested" });
+      return;
     }
-    await auditPenalty(user.id, "penalty.lift", penaltyId, { type: textValue(penalty.type), reason: input.reason ?? null });
-    res.status(204).end();
+    if (!own && ban && !mayTouchBan(role, numberValue(staff.immunity), numberValue(ban.issuer_immunity))) apiError(403, "That ban was issued by someone with higher immunity");
+    await liftPenalty(penaltyId, user.id, user.username, input.reason ?? null, own ? "own" : "direct");
+    res.json({ status: "lifted" });
   }));
+  router.get("/moderation/lift-requests", userRoute(async (_req, res, user) => {
+    const staff = await requireModerator(user.id, "unban");
+    if (!mayApproveLifts(textValue(staff.role))) apiError(403, "Owner or Manager access is required");
+    const { data, error } = await db().from("penalty_lift_requests").select("id,reason,created_at,requested_by,penalty_id,penalties(id,type,reason,users!penalties_user_id_fkey(username,avatar,steam_id))").eq("status", "pending").order("created_at");
+    legacyXError(error, "Unable to load the requests");
+    const rows = (data ?? []) as DbRow[];
+    const ids = Array.from(new Set(rows.map((row) => textValue(row.requested_by))));
+    const people = ids.length ? await db().from("users").select("id,username").in("id", ids) : { data: [], error: null };
+    const names = new Map(((people.data ?? []) as DbRow[]).map((row) => [textValue(row.id), textValue(row.username)]));
+    res.json(rows.map((row) => {
+      const penalty = firstRow(row.penalties) ?? {};
+      const target = firstRow(penalty.users) ?? {};
+      return { id: textValue(row.id), penaltyId: textValue(row.penalty_id), type: textValue(penalty.type), player: textValue(target.username), avatar: textValue(target.avatar), penaltyReason: textValue(penalty.reason), reason: row.reason == null ? null : textValue(row.reason), requestedBy: names.get(textValue(row.requested_by)) ?? "Staff", at: textValue(row.created_at) };
+    }));
+  }));
+  const decideLift = (approve: boolean) => userRoute(async (req, res, user) => {
+    const requestId = userIdSchema.parse(req.params.requestId);
+    const staff = await requireModerator(user.id, "unban");
+    const role = textValue(staff.role);
+    if (!mayApproveLifts(role)) apiError(403, "Owner or Manager access is required");
+    const { data: request, error } = await db().from("penalty_lift_requests").select("id,penalty_id,requested_by,status").eq("id", requestId).maybeSingle();
+    legacyXError(error, "Unable to load the request");
+    if (!request) apiError(404, "There is no such request");
+    if (request.status !== "pending") apiError(409, "That request was already decided");
+    if (approve) {
+      const { ban } = await loadChangeable(textValue(request.penalty_id));
+      if (ban && !mayTouchBan(role, numberValue(staff.immunity), numberValue(ban.issuer_immunity))) apiError(403, "That ban was issued by someone with higher immunity");
+      await liftPenalty(textValue(request.penalty_id), user.id, user.username, null, "approved");
+    }
+    const decided = await db().from("penalty_lift_requests").update({ status: approve ? "approved" : "declined", decided_by: user.id, decided_at: new Date().toISOString() }).eq("id", requestId);
+    legacyXError(decided.error, "Unable to save the decision");
+    await auditPenalty(user.id, approve ? "penalty.lift_approved" : "penalty.lift_declined", textValue(request.penalty_id), { requestId });
+    await db().from("notifications").insert({ user_id: textValue(request.requested_by), kind: "system", title: approve ? "Unban approved" : "Unban declined", body: approve ? "Your unban request was approved." : "Your unban request was declined.", metadata: { penaltyId: textValue(request.penalty_id), kind: "lift_decision" } });
+    res.status(204).end();
+  });
+  router.post("/moderation/lift-requests/:requestId/approve", sensitiveMutationRateLimit, decideLift(true));
+  router.post("/moderation/lift-requests/:requestId/decline", sensitiveMutationRateLimit, decideLift(false));
   router.put("/moderation/penalties/:penaltyId", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
     const penaltyId = userIdSchema.parse(req.params.penaltyId);
     const input = z.object({ reason: z.string().trim().min(1).max(200).optional(), durationMinutes: z.number().int().min(0).max(525_600).optional() }).strict().refine((value) => value.reason !== undefined || value.durationMinutes !== undefined, "A reason or a length of time is required").parse(req.body);
