@@ -2,6 +2,7 @@ import express, { Router, type NextFunction, type Request, type Response } from 
 import { randomBytes } from "node:crypto";
 import rateLimit from "express-rate-limit";
 import { z } from "zod";
+import { isReaction, tallyReactions } from "./reactions";
 import { mayApproveLifts, mayModerate, mayModerateClans, mayTouchBan, needsLiftApproval, needsReview, termFields, type ModerationCapability } from "./moderation";
 import { CLAN_LIMITS, canManage, canRemove, clanRole, describeClanAction, leaveCooldownLeftMs } from "./clans";
 import { CLAN_ART_LIMITS, artMarker, artUrl, checkClanArt, type ClanArtKind } from "./clanArt";
@@ -2652,10 +2653,35 @@ export function createLegacyXRouter() {
     res.json(penalty);
   }));
 
-  router.get("/feedback", asyncRoute(async (_req, res) => {
+  /** Reactions for the given reviews. Missing table (migration not applied): no reactions, the reviews still load. */
+  const loadReactions = async (feedbackIds: string[], viewerId: string | null) => {
+    if (!feedbackIds.length) return tallyReactions([], viewerId);
+    const { data, error } = await db().from("feedback_reactions").select("feedback_id,user_id,reaction").in("feedback_id", feedbackIds);
+    if (error) { if (!isMissingTableError(error)) console.warn("[legacy-x-api] reactions unavailable", error.message); return tallyReactions([], viewerId); }
+    return tallyReactions((data ?? []) as DbRow[], viewerId);
+  };
+  router.get("/feedback", optionalUserRoute(async (_req, res, user) => {
     const { data, error } = await db().from("feedback").select("id,user_id,name,rating,message,created_at").order("created_at", { ascending: false });
     legacyXError(error, "Unable to load feedback");
-    res.json(await mapFeedbackRows((data ?? []) as DbRow[]));
+    const entries = await mapFeedbackRows((data ?? []) as DbRow[]);
+    const tally = await loadReactions(entries.map((entry) => entry.id), user?.id ?? null);
+    res.json(entries.map((entry) => ({ ...entry, ...tally.summaryFor(entry.id) })));
+  }));
+  // One reaction per player per review: send one to set or change it, null to take it back.
+  router.put("/feedback/:feedbackId/reaction", userRoute(async (req, res, user) => {
+    const feedbackId = userIdSchema.parse(req.params.feedbackId);
+    const input = z.object({ reaction: z.union([z.enum(["like", "love", "funny"]), z.null()]) }).strict().parse(req.body);
+    const { data: review, error: reviewError } = await db().from("feedback").select("id").eq("id", feedbackId).maybeSingle();
+    legacyXError(reviewError, "Unable to load the review");
+    if (!review) apiError(404, "Review was not found");
+    if (input.reaction === null) {
+      const { error } = await db().from("feedback_reactions").delete().eq("feedback_id", feedbackId).eq("user_id", user.id);
+      legacyXError(error, "Unable to remove the reaction");
+    } else if (isReaction(input.reaction)) {
+      const { error } = await db().from("feedback_reactions").upsert({ feedback_id: feedbackId, user_id: user.id, reaction: input.reaction }, { onConflict: "feedback_id,user_id" });
+      legacyXError(error, "Unable to save the reaction");
+    }
+    res.json((await loadReactions([feedbackId], user.id)).summaryFor(feedbackId));
   }));
   router.post("/feedback", userRoute(async (req, res, user) => {
     const input = z.object({ rating: z.number().int().min(1).max(5), message: z.string().trim().min(1).max(4000) }).parse(req.body);
