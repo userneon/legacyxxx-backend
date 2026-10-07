@@ -30,6 +30,7 @@ const skinchangerEndpoints: Endpoint[] = [
   { method: "DELETE", path: "/skinchanger/loadout/entry" },
   { method: "GET", path: "/skinchanger/collections" },
   { method: "POST", path: "/skinchanger/collections" },
+  { method: "GET", path: "/skinchanger/collections/00000000-0000-4000-8000-000000000009" },
   { method: "DELETE", path: "/skinchanger/collections/00000000-0000-4000-8000-000000000009" },
   { method: "PUT", path: "/skinchanger/collections/00000000-0000-4000-8000-000000000009/like" },
   { method: "POST", path: "/skinchanger/collections/00000000-0000-4000-8000-000000000009/apply" },

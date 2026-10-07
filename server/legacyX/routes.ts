@@ -1713,6 +1713,62 @@ export function createLegacyXRouter() {
     });
   }));
 
+  // One collection with every item it holds, for the detail view.
+  router.get("/skinchanger/collections/:collectionId", userRoute(async (req, res, user) => {
+    const collectionId = collectionIdSchema.parse(req.params.collectionId);
+    const { data, error } = await db().from("skin_collections")
+      .select("id,owner_user_id,name,description,entries,item_count,likes_count,applies_count,created_at")
+      .eq("id", collectionId).is("deleted_at", null).maybeSingle();
+    legacyXError(error, "Unable to load the collection");
+    if (!data) apiError(404, "Collection not found");
+    const row = data as DbRow;
+    const { data: owner, error: ownerError } = await db().from("users").select("steam_id,username,avatar").eq("id", textValue(row.owner_user_id)).maybeSingle();
+    legacyXError(ownerError, "Unable to load the collection's author");
+    const entries = (Array.isArray(row.entries) ? row.entries : []) as DbRow[];
+    const ids = Array.from(new Set(entries.map((entry) => textValue(entry.catalog_item_id)).filter(Boolean)));
+    const catalog = new Map<string, DbRow>();
+    if (ids.length) {
+      const { data: items, error: itemsError } = await db().from("skinchanger_catalog_items").select("id,weapon_class,display_name,image_key,metadata").in("id", ids);
+      legacyXError(itemsError, "Unable to load collection items");
+      for (const item of (items ?? []) as DbRow[]) catalog.set(textValue(item.id), item);
+    }
+    const { data: like, error: likeError } = await db().from("skin_collection_likes").select("user_id").eq("collection_id", collectionId).eq("user_id", user.id).maybeSingle();
+    legacyXError(likeError, "Unable to load likes");
+    const ownerRow = (owner ?? {}) as DbRow;
+    res.json({
+      collection: {
+        id: textValue(row.id),
+        name: textValue(row.name),
+        description: textValue(row.description),
+        author: { steamId: textValue(ownerRow.steam_id), username: textValue(ownerRow.username), avatar: textValue(ownerRow.avatar) },
+        createdAt: timestampValue(row.created_at),
+        applies: numberValue(row.applies_count),
+        likes: numberValue(row.likes_count),
+        liked: Boolean(like),
+        mine: textValue(row.owner_user_id) === user.id,
+        itemCount: numberValue(row.item_count),
+        items: entries.map((entry) => {
+          const item = catalog.get(textValue(entry.catalog_item_id));
+          if (!item) return null;
+          const options = recordValue(entry.options);
+          const rarity = recordValue(item.metadata).rarity;
+          return {
+            slot: textValue(entry.slot),
+            teamScope: textValue(entry.team_scope) || "all",
+            weaponClass: textValue(item.weapon_class) || null,
+            name: textValue(item.display_name),
+            imageUrl: staticStorageUrl(req, textValue(item.image_key) || null),
+            rarity: typeof rarity === "string" ? rarity : null,
+            wear: typeof options.wear === "number" ? options.wear : null,
+            statTrak: options.statTrak === true,
+            stickers: Array.isArray(options.stickers) ? options.stickers.length : 0,
+            hasCharm: Boolean(options.charm),
+          };
+        }).filter(Boolean),
+      },
+    });
+  }));
+
   // Shares what the player has equipped right now.
   router.post("/skinchanger/collections", userRoute(async (req, res, user) => {
     const input = collectionShareSchema.parse(req.body);
