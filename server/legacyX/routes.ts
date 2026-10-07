@@ -877,7 +877,7 @@ export function createLegacyXRouter() {
     const clan = clanResult.data as DbRow;
     const members = ((membersResult.data ?? []) as DbRow[]).map(mapClanMember);
     const viewerRole = viewerId ? members.find((member) => member.id === viewerId)?.role ?? null : null;
-    return { ...mapClanCard(clan), description: clan.description ?? undefined, members, viewer: { role: viewerRole, canModerate: viewerId ? await isActiveStaff(viewerId) : false } };
+    return { ...mapClanCard(clan), description: clan.description ?? undefined, members, viewer: { role: viewerRole, canModerate: viewerId ? await canModerateClans(viewerId) : false } };
   };
   // Public website reads deliberately bypass AdminPlus. CS2 plugins/admin tools
   // write to Supabase; the website reads these safe projections through root API.
@@ -1898,9 +1898,10 @@ export function createLegacyXRouter() {
     if (clan.owner_id !== userId) apiError(403, "Clan leader access is required", "clan_forbidden");
     return clan;
   };
-  const isActiveStaff = async (userId: string) => {
-    const { data } = await db().from("staff").select("id").eq("user_id", userId).eq("status", "active").maybeSingle();
-    return Boolean(data);
+  /** The same people who manage penalties (Owner, Manager, Admin with the right permission) moderate clans. */
+  const canModerateClans = async (userId: string) => {
+    const { data } = await db().from("staff").select("role,permissions").eq("user_id", userId).eq("status", "active").maybeSingle();
+    return Boolean(data && mayModerate(textValue(data.role), data.permissions, "edit"));
   };
   const logClan = async (clan: DbRow, actor: string | null, action: string, target: string | null = null, detail: string | null = null) => {
     const { error } = await db().from("clan_audit").insert({ clan_id: textValue(clan.id), clan_name: textValue(clan.name), actor_id: actor, action, target_id: target, detail: detail ? detail.slice(0, 300) : null });
@@ -2280,7 +2281,8 @@ export function createLegacyXRouter() {
   }));
 
   // Staff moderation: any active staff member can fix or remove a clan that breaks the rules.
-  router.delete("/staff/clans/:clanId", staffRoute(async (req, res, user) => {
+  router.delete("/staff/clans/:clanId", userRoute(async (req, res, user) => {
+    await requireModerator(user.id, "edit");
     const clanId = userIdSchema.parse(req.params.clanId);
     const clan = await loadClanBasics(clanId);
     const { error } = await db().from("clans").delete().eq("id", clanId);
@@ -2288,7 +2290,8 @@ export function createLegacyXRouter() {
     await logClan(clan, user.id, "moderated", null, "clan deleted by staff");
     res.status(204).end();
   }));
-  router.delete("/staff/clans/:clanId/art/:kind", staffRoute(async (req, res, user) => {
+  router.delete("/staff/clans/:clanId/art/:kind", userRoute(async (req, res, user) => {
+    await requireModerator(user.id, "edit");
     const clanId = userIdSchema.parse(req.params.clanId);
     const kind = z.enum(["logo", "banner"]).parse(req.params.kind);
     const clan = await loadClanBasics(clanId);
@@ -2299,7 +2302,17 @@ export function createLegacyXRouter() {
     await logClan(clan, user.id, "moderated", null, `${kind} removed by staff`);
     res.status(204).end();
   }));
-  router.put("/staff/clans/:clanId/name", staffRoute(async (req, res, user) => {
+  router.delete("/staff/clans/:clanId/description", userRoute(async (req, res, user) => {
+    await requireModerator(user.id, "edit");
+    const clanId = userIdSchema.parse(req.params.clanId);
+    const clan = await loadClanBasics(clanId);
+    const { error } = await db().from("clans").update({ description: null }).eq("id", clanId);
+    legacyXError(error, "Unable to clear the description");
+    await logClan(clan, user.id, "moderated", null, "description cleared by staff");
+    res.status(204).end();
+  }));
+  router.put("/staff/clans/:clanId/name", userRoute(async (req, res, user) => {
+    await requireModerator(user.id, "edit");
     const clanId = userIdSchema.parse(req.params.clanId);
     const input = z.object({ name: clanSchema.shape.name, tag: clanSchema.shape.tag }).strict().parse(req.body);
     const clan = await loadClanBasics(clanId);
