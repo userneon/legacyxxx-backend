@@ -2,6 +2,7 @@ import express, { Router, type NextFunction, type Request, type Response } from 
 import { randomBytes } from "node:crypto";
 import rateLimit from "express-rate-limit";
 import { z } from "zod";
+import { authorizeUrl, consumeOAuthState, createOAuthState, discordOAuthConfig, fetchDiscordIdentity, isOAuthState, linkDiscordAccount, ownDiscordLink, removeOwnDiscordLink } from "./discordOAuth";
 import { isReaction, tallyReactions } from "./reactions";
 import { mayApproveLifts, mayModerate, mayModerateClans, mayTouchBan, needsLiftApproval, needsReview, termFields, type ModerationCapability } from "./moderation";
 import { CLAN_LIMITS, canManage, canRemove, clanRole, describeClanAction, leaveCooldownLeftMs } from "./clans";
@@ -3169,6 +3170,39 @@ export function createLegacyXRouter() {
     res.status(status).set({ "Cache-Control": "no-store", "Content-Type": "text/html; charset=utf-8", "Content-Security-Policy": page.csp }).send(page.html);
   };
   const expiredLink = (res: Response) => sendLinkPage(res, 410, false, "Холбоос хүчингүй", "Энэ холбоосын хугацаа дууссан эсвэл ашиглагдсан байна. Discord дээр /link командыг дахин ажиллуулна уу.");
+  // Linking Discord from the website (the signed-in player starts it, Discord proves who they are).
+  router.get("/discord/link", userRoute(async (_req, res, user) => {
+    res.set("Cache-Control", "no-store");
+    res.json({ available: discordOAuthConfig() !== null, link: await ownDiscordLink(db(), user.id) });
+  }));
+  router.post("/discord/link/start", sensitiveMutationRateLimit, userRoute(async (_req, res, user) => {
+    const config = discordOAuthConfig();
+    if (!config) apiError(503, "Linking Discord from the website is not set up yet");
+    const state = await createOAuthState(db(), user.id);
+    res.set("Cache-Control", "no-store");
+    res.json({ url: authorizeUrl(config, state) });
+  }));
+  router.delete("/discord/link", sensitiveMutationRateLimit, userRoute(async (_req, res, user) => {
+    await removeOwnDiscordLink(db(), user.id);
+    res.status(204).end();
+  }));
+  router.get("/auth/discord/callback", asyncRoute(async (req, res) => {
+    const back = (result: string) => res.set("Cache-Control", "no-store").redirect(302, `${steamOpenIdOrigin(req)}/settings?discord=${result}`);
+    const config = discordOAuthConfig();
+    const { code, state, error } = req.query as Record<string, unknown>;
+    if (!config) return back("unavailable");
+    if (typeof error === "string" || typeof code !== "string" || !code || code.length > 512 || !isOAuthState(state)) return back("cancelled");
+    const userId = await consumeOAuthState(db(), state);
+    if (!userId) return back("expired");
+    try {
+      const identity = await fetchDiscordIdentity(config, code);
+      await linkDiscordAccount(db(), userId, identity);
+    } catch (failure) {
+      console.warn("[legacy-x-api] Discord link failed", failure instanceof Error ? failure.message : failure);
+      return back("failed");
+    }
+    return back("linked");
+  }));
   router.get("/auth/steam/discord/:token", asyncRoute(async (req, res) => {
     const token = req.params.token;
     if (!isLinkToken(token) || !(await pendingLinkRequest(db(), token))) return expiredLink(res);
