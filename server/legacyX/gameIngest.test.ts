@@ -50,7 +50,7 @@ describe("game → API → database", () => {
     const input = issueBanSchema.parse({ steamId: STEAM, durationMinutes: 60, reason: "wallhack", issuerName: "admin (in-game)", source: "game", issuerSteamId: "76561198000000009" });
     const { db, calls } = fakeDb({ "penalties.insert": [{ data: { id: "p1" }, error: null }], "bans.insert": [{ data: { id: "b1" }, error: null }] });
     await issueBan(db, input, now);
-    expect(calls[1]).toMatchObject({ table: "bans", payload: { source: "game", issuer_steam_id: "76561198000000009" } });
+    expect(calls.filter((call) => call.table !== "staff")[1]).toMatchObject({ table: "bans", payload: { source: "game", issuer_steam_id: "76561198000000009" } });
     expect(issueBanSchema.parse({ steamId: STEAM, durationMinutes: 0, reason: "x", issuerName: "y" }).source).toBe("panel");
   });
 

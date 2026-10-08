@@ -47,7 +47,23 @@ export function banTerm(minutes: number) {
   return `${minutes} minutes`;
 }
 
+/** SteamIDs (of those given) that belong to an active site OWNER. Owners cannot be banned through the central system. */
+export async function ownerSteamIds(db: Db, steamIds: string[]): Promise<Set<string>> {
+  const { data, error } = await db.from("staff").select("role,users(steam_id)").eq("role", "OWNER").eq("status", "active");
+  legacyXError(error, "Unable to read owners");
+  const wanted = new Set(steamIds);
+  const owners = new Set<string>();
+  for (const row of (data ?? []) as Array<{ users?: { steam_id?: string } | Array<{ steam_id?: string }> | null }>) {
+    const user = Array.isArray(row.users) ? row.users[0] : row.users;
+    if (user?.steam_id && wanted.has(user.steam_id)) owners.add(user.steam_id);
+  }
+  return owners;
+}
+
 export async function issueBan(db: Db, input: z.infer<typeof issueBanSchema>, now = new Date()) {
+  if ((await ownerSteamIds(db, [input.steamId])).has(input.steamId)) {
+    throw Object.assign(new Error("An owner cannot be banned"), { statusCode: 403 });
+  }
   const isPermanent = input.durationMinutes === 0;
   const expiresAt = isPermanent ? null : new Date(now.getTime() + input.durationMinutes * 60_000).toISOString();
 
@@ -165,8 +181,11 @@ export async function activeBans(db: Db, steamIds: string[], now = new Date()): 
     .in("steam_id", steamIds)
     .is("revoked_at", null);
   legacyXError(error, "Unable to read bans");
+  // An owner is never kicked, even if an older ban row exists for them.
+  const owners = await ownerSteamIds(db, steamIds);
   const seen = new Set<string>();
   return (data ?? [])
+    .filter((row) => !owners.has(row.steam_id))
     .filter((row) => row.is_permanent || (row.expires_at && Date.parse(row.expires_at) > now.getTime()))
     .filter((row) => !seen.has(row.steam_id) && seen.add(row.steam_id))
     .map((row) => ({ steamId: row.steam_id, reason: row.reason, isPermanent: Boolean(row.is_permanent), expiresAt: row.expires_at ?? null }));

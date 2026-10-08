@@ -56,15 +56,32 @@ describe("central bans", () => {
     const result = await issueBan(db, { steamId: "76561198000000001", durationMinutes: 1440, reason: "wallhack", issuerName: "staffer (Discord)" }, now);
 
     expect(rpcCalls).toEqual([["ensure_steam_user", { p_steam_id: "76561198000000001", p_username: "Steam 76561198000000001", p_avatar: "" }]]);
-    expect(calls[0]).toMatchObject({ table: "penalties", op: "insert", payload: { user_id: "user-1", type: "ban", reason: "wallhack", term: "1 day", is_permanent: false, expires_at: "2026-09-28T12:00:00.000Z", admin_name: "staffer (Discord)" } });
-    expect(calls[1]).toMatchObject({ table: "bans", op: "insert", payload: { steam_id: "76561198000000001", user_id: "user-1", is_permanent: false, expires_at: "2026-09-28T12:00:00.000Z", source: "panel", review_status: "none", penalty_id: "pen-1", issuer_immunity: 20 } });
+    const writes = calls.filter((call) => call.table !== "staff");
+    expect(writes[0]).toMatchObject({ table: "penalties", op: "insert", payload: { user_id: "user-1", type: "ban", reason: "wallhack", term: "1 day", is_permanent: false, expires_at: "2026-09-28T12:00:00.000Z", admin_name: "staffer (Discord)" } });
+    expect(writes[1]).toMatchObject({ table: "bans", op: "insert", payload: { steam_id: "76561198000000001", user_id: "user-1", is_permanent: false, expires_at: "2026-09-28T12:00:00.000Z", source: "panel", review_status: "none", penalty_id: "pen-1", issuer_immunity: 20 } });
     expect(result).toMatchObject({ banId: "ban-1", penaltyId: "pen-1", isPermanent: false, term: "1 day" });
   });
 
   it("sends permanent bans to the review queue", async () => {
     const { db, calls } = fakeDb({ "penalties.insert": [{ data: { id: "pen-1" }, error: null }], "bans.insert": [{ data: { id: "ban-1" }, error: null }] });
     await issueBan(db, { steamId: "76561198000000001", durationMinutes: 0, reason: "cheat", issuerName: "s" }, now);
-    expect(calls[1].payload).toMatchObject({ is_permanent: true, expires_at: null, review_status: "pending" });
+    expect(calls.filter((call) => call.table !== "staff")[1].payload).toMatchObject({ is_permanent: true, expires_at: null, review_status: "pending" });
+  });
+
+  it("refuses to ban an owner, and writes nothing", async () => {
+    const owner = { data: [{ role: "OWNER", users: { steam_id: "76561198000000001" } }], error: null };
+    const { db, calls } = fakeDb({ "staff.select": [owner] });
+    await expect(issueBan(db, { steamId: "76561198000000001", durationMinutes: 0, reason: "x", issuerName: "s" }, now)).rejects.toMatchObject({ statusCode: 403 });
+    expect(calls.some((call) => call.op === "insert")).toBe(false);
+  });
+
+  it("never reports an owner as banned to the game servers", async () => {
+    const { db } = fakeDb({
+      "bans.select": [{ data: [{ steam_id: "76561198000000001", reason: "old", is_permanent: true, expires_at: null }, { steam_id: "76561198000000002", reason: "cheat", is_permanent: true, expires_at: null }], error: null }],
+      "staff.select": [{ data: [{ role: "OWNER", users: [{ steam_id: "76561198000000001" }] }], error: null }],
+    });
+    const bans = await activeBans(db, ["76561198000000001", "76561198000000002"], now);
+    expect(bans.map((ban) => ban.steamId)).toEqual(["76561198000000002"]);
   });
 
   it("removes the penalty again if the ban row can't be written", async () => {
