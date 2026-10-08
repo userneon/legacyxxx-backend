@@ -1663,14 +1663,14 @@ export function createLegacyXRouter() {
   const COSMETIC_KINDS = ["frame", "name_color", "name_glow"] as const;
   type CosmeticKind = (typeof COSMETIC_KINDS)[number];
   const loadCosmeticCatalog = async () => {
-    const { data, error } = await db().from("cosmetic_items").select("id,kind,name_en,name_mn,unlock,price,requirement,sort,color,glow").eq("enabled", true).order("sort");
+    const { data, error } = await db().from("cosmetic_items").select("id,kind,name_en,name_mn,unlock,price,requirement,sort,color,glow,fx").eq("enabled", true).order("sort");
     legacyXError(error, "Unable to load cosmetics");
     return (data ?? []) as DbRow[];
   };
   /** What each of these players wears: their frame (item id) and name style (plain colours); players with nothing are left out. */
   const equippedCosmeticsFor = async (userIds: string[]) => {
     const ids = Array.from(new Set(userIds.filter(Boolean)));
-    const worn = new Map<string, { frame: string | null; nameStyle: { color: string | null; glow: string | null } | null }>();
+    const worn = new Map<string, { frame: string | null; nameStyle: { color: string | null; glow: string | null; colorFx: string | null; glowFx: string | null } | null }>();
     if (!ids.length) return worn;
     const [equipped, catalog] = await Promise.all([db().from("cosmetic_equipped").select("user_id,kind,item_id").in("user_id", ids), loadCosmeticCatalog().catch((error) => { console.error("[legacy-x-api] unable to load cosmetics", error?.message); return [] as DbRow[]; })]);
     if (equipped.error) { console.error("[legacy-x-api] unable to load equipped cosmetics", equipped.error.message); return worn; }
@@ -1682,9 +1682,9 @@ export function createLegacyXRouter() {
       const entry = worn.get(userId) ?? { frame: null, nameStyle: null };
       if (row.kind === "frame") entry.frame = textValue(item.id);
       else {
-        const style = entry.nameStyle ?? { color: null, glow: null };
-        if (row.kind === "name_color") style.color = textValue(item.color) || null;
-        if (row.kind === "name_glow") style.glow = textValue(item.glow) || null;
+        const style = entry.nameStyle ?? { color: null, glow: null, colorFx: null, glowFx: null };
+        if (row.kind === "name_color") { style.color = textValue(item.color) || null; style.colorFx = textValue(item.fx) || null; }
+        if (row.kind === "name_glow") { style.glow = textValue(item.glow) || null; style.glowFx = textValue(item.fx) || null; }
         entry.nameStyle = style;
       }
       worn.set(userId, entry);
@@ -1701,6 +1701,7 @@ export function createLegacyXRouter() {
     owned: textValue(item.unlock) === "free" || ownedIds.has(textValue(item.id)),
     ...(item.color ? { color: textValue(item.color) } : {}),
     ...(item.glow ? { glow: textValue(item.glow) } : {}),
+    ...(item.fx ? { fx: textValue(item.fx) } : {}),
   });
   router.get("/cosmetics", userRoute(async (_req, res, user) => {
     const [catalog, owned, worn, equippedRows] = await Promise.all([
