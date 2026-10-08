@@ -585,7 +585,7 @@ function memberCount(clan: DbRow) {
 }
 
 function mapClanCard(clan: DbRow, currentPlayers = memberCount(clan)) {
-  return { id: textValue(clan.id), name: textValue(clan.name), tag: textValue(clan.tag), logo: artUrl(textValue(clan.id), "logo", clan.logo) ?? "", thumbnail: artUrl(textValue(clan.id), "banner", clan.thumbnail), currentPlayers, maxPlayers: numberValue(clan.max_players), region: textValue(clan.region), joinMode: clan.join_mode === "request" ? "request" : "open" };
+  return { id: textValue(clan.id), number: numberValue(clan.number), name: textValue(clan.name), tag: textValue(clan.tag), logo: artUrl(textValue(clan.id), "logo", clan.logo) ?? "", thumbnail: artUrl(textValue(clan.id), "banner", clan.thumbnail), currentPlayers, maxPlayers: numberValue(clan.max_players), region: textValue(clan.region), joinMode: clan.join_mode === "request" ? "request" : "open" };
 }
 
 function mapClanMember(member: DbRow) {
@@ -879,6 +879,15 @@ export function createLegacyXRouter() {
     const { data, error } = await db().from("staff").select("role").eq("user_id", userId).eq("status", "active").maybeSingle();
     if (error) return "Player";
     return STAFF_PROFILE_ROLES[textValue((data as DbRow | null)?.role)] ?? "Player";
+  };
+  /** A clan address is its short number (/clans/1) or its long id; both end up as the id. */
+  const clanIdOf = async (value: unknown) => {
+    const raw = String(value ?? "");
+    if (!/^[0-9]{1,9}$/.test(raw)) return userIdSchema.parse(raw);
+    const { data, error } = await db().from("clans").select("id").eq("number", Number(raw)).maybeSingle();
+    legacyXError(error, "Unable to find the clan");
+    if (!data) apiError(404, "Clan was not found");
+    return textValue((data as DbRow).id);
   };
   const loadClanDetail = async (clanId: string, viewerId?: string) => {
     const [clanResult, membersResult] = await Promise.all([
@@ -2259,7 +2268,7 @@ export function createLegacyXRouter() {
   }));
   // Ranking: the total EXP of a clan's members, counted from real ranked results.
   router.get("/clans/leaderboard", userRoute(async (_req, res) => {
-    const [clans, members] = await Promise.all([db().from("clans").select("id,name,tag,logo,thumbnail,region,max_players,join_mode"), db().from("clan_members").select("clan_id,user_id")]);
+    const [clans, members] = await Promise.all([db().from("clans").select("id,number,name,tag,logo,thumbnail,region,max_players,join_mode"), db().from("clan_members").select("clan_id,user_id")]);
     legacyXError(clans.error || members.error, "Unable to load the clan ranking");
     const memberRows = (members.data ?? []) as DbRow[];
     const userIds = Array.from(new Set(memberRows.map((row) => textValue(row.user_id))));
@@ -2312,7 +2321,7 @@ export function createLegacyXRouter() {
   // Pictures. Anyone may look (an <img> cannot send a token); the leader and co-leaders may change them.
   for (const [kind, column] of [["logo", "logo"], ["banner", "thumbnail"]] as Array<[ClanArtKind, string]>) {
     router.get(`/clans/:clanId/${kind}`, asyncRoute(async (req, res) => {
-      const clanId = userIdSchema.parse(req.params.clanId);
+      const clanId = await clanIdOf(req.params.clanId);
       const { data, error } = await db().from("clan_images").select("mime,data").eq("clan_id", clanId).eq("kind", kind).maybeSingle();
       legacyXError(error, "Unable to load the picture");
       if (!data) apiError(404, "No picture");
@@ -2320,7 +2329,7 @@ export function createLegacyXRouter() {
       res.set({ "Content-Type": String(data.mime), "Cache-Control": "public, max-age=31536000, immutable", "Content-Disposition": "inline" }).send(Buffer.from(hex.startsWith("\\x") ? hex.slice(2) : hex, "hex"));
     }));
     router.put(`/clans/:clanId/${kind}`, sensitiveMutationRateLimit, express.raw({ type: () => true, limit: CLAN_ART_LIMITS[kind].maxBytes + 1 }), userRoute(async (req, res, user) => {
-      const clanId = userIdSchema.parse(req.params.clanId);
+      const clanId = await clanIdOf(req.params.clanId);
       const { clan } = await requireClanManager(clanId, user.id);
       const bytes = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
       const verdict = checkClanArt(kind, bytes);
@@ -2333,7 +2342,7 @@ export function createLegacyXRouter() {
       res.json(await loadClanDetail(clanId, user.id));
     }));
     router.delete(`/clans/:clanId/${kind}`, sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
-      const clanId = userIdSchema.parse(req.params.clanId);
+      const clanId = await clanIdOf(req.params.clanId);
       const { clan } = await requireClanManager(clanId, user.id);
       const removed = await db().from("clan_images").delete().eq("clan_id", clanId).eq("kind", kind);
       legacyXError(removed.error, "Unable to remove the picture");
@@ -2345,10 +2354,10 @@ export function createLegacyXRouter() {
   }
 
   router.get("/clans/:clanId", userRoute(async (req, res, user) => {
-    res.json(await loadClanDetail(userIdSchema.parse(req.params.clanId), user.id));
+    res.json(await loadClanDetail(await clanIdOf(req.params.clanId), user.id));
   }));
   router.get("/clans/:clanId/members", userRoute(async (req, res) => {
-    const clanId = userIdSchema.parse(req.params.clanId);
+    const clanId = await clanIdOf(req.params.clanId);
     await loadClanBasics(clanId);
     const { data, error } = await db().from("clan_members").select("role,user_id,users(id,username,avatar)").eq("clan_id", clanId).order("created_at");
     legacyXError(error, "Unable to load clan members");
@@ -2357,7 +2366,7 @@ export function createLegacyXRouter() {
 
   // Settings: description, who can join, player limit (leader or co-leader).
   router.put("/clans/:clanId", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
-    const clanId = userIdSchema.parse(req.params.clanId);
+    const clanId = await clanIdOf(req.params.clanId);
     const input = z.object({ description: z.string().trim().max(200), joinMode: z.enum(["open", "request"]), maxPlayers: z.number().int().min(2).max(50) }).partial().strict().refine((value) => Object.keys(value).length > 0, "At least one clan field is required").parse(req.body);
     const { clan } = await requireClanManager(clanId, user.id);
     if (input.maxPlayers !== undefined && input.maxPlayers < memberCount(clan)) apiError(409, "The clan already has more members than that", "clan_too_many_members");
@@ -2369,7 +2378,7 @@ export function createLegacyXRouter() {
   }));
   // A new name or tag costs coins and may be changed once a week (the leader only).
   router.put("/clans/:clanId/name", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
-    const clanId = userIdSchema.parse(req.params.clanId);
+    const clanId = await clanIdOf(req.params.clanId);
     const input = z.object({ name: clanSchema.shape.name.optional(), tag: clanSchema.shape.tag.optional() }).strict().refine((value) => value.name !== undefined || value.tag !== undefined, "A name or a tag is required").parse(req.body);
     const clan = await requireClanLeader(clanId, user.id);
     const { data: last } = await db().from("clan_audit").select("created_at").eq("clan_id", clanId).eq("action", "renamed").order("created_at", { ascending: false }).limit(1).maybeSingle();
@@ -2395,7 +2404,7 @@ export function createLegacyXRouter() {
 
   // Joining: open clans take you at once, the others get a request. One clan at a time, at most three open requests.
   router.post("/clans/:clanId/join", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
-    const clanId = userIdSchema.parse(req.params.clanId);
+    const clanId = await clanIdOf(req.params.clanId);
     const clan = await loadClanBasics(clanId);
     await waitAfterLeaving(user.id);
     if (clan.join_mode === "request") {
@@ -2423,19 +2432,19 @@ export function createLegacyXRouter() {
     res.json({ status: "joined" });
   }));
   router.delete("/clans/:clanId/join-request", userRoute(async (req, res, user) => {
-    const { error } = await db().from("clan_join_requests").delete().eq("clan_id", userIdSchema.parse(req.params.clanId)).eq("user_id", user.id);
+    const { error } = await db().from("clan_join_requests").delete().eq("clan_id", await clanIdOf(req.params.clanId)).eq("user_id", user.id);
     legacyXError(error, "Unable to withdraw the request");
     res.status(204).end();
   }));
   router.get("/clans/:clanId/requests", userRoute(async (req, res, user) => {
-    const clanId = userIdSchema.parse(req.params.clanId);
+    const clanId = await clanIdOf(req.params.clanId);
     await requireClanManager(clanId, user.id);
     const { data, error } = await db().from("clan_join_requests").select("user_id,created_at,users(id,username,avatar)").eq("clan_id", clanId).order("created_at");
     legacyXError(error, "Unable to load requests");
     res.json(((data ?? []) as DbRow[]).map((row) => { const player = firstRow(row.users) ?? {}; return { id: textValue(row.user_id), name: textValue(player.username), avatar: textValue(player.avatar), at: textValue(row.created_at) }; }));
   }));
   router.post("/clans/:clanId/requests/:userId/accept", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
-    const clanId = userIdSchema.parse(req.params.clanId);
+    const clanId = await clanIdOf(req.params.clanId);
     const applicant = userIdSchema.parse(req.params.userId);
     const { clan } = await requireClanManager(clanId, user.id);
     const { data: request, error: lookupError } = await db().from("clan_join_requests").select("user_id").eq("clan_id", clanId).eq("user_id", applicant).maybeSingle();
@@ -2451,7 +2460,7 @@ export function createLegacyXRouter() {
     res.status(204).end();
   }));
   router.delete("/clans/:clanId/requests/:userId", userRoute(async (req, res, user) => {
-    const clanId = userIdSchema.parse(req.params.clanId);
+    const clanId = await clanIdOf(req.params.clanId);
     const applicant = userIdSchema.parse(req.params.userId);
     const { clan } = await requireClanManager(clanId, user.id);
     const { error } = await db().from("clan_join_requests").delete().eq("clan_id", clanId).eq("user_id", applicant);
@@ -2463,7 +2472,7 @@ export function createLegacyXRouter() {
 
   // Invitations: a leader or co-leader invites a player by name; the player accepts or declines.
   router.post("/clans/:clanId/invites", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
-    const clanId = userIdSchema.parse(req.params.clanId);
+    const clanId = await clanIdOf(req.params.clanId);
     const input = z.object({ username: z.string().trim().min(1).max(PROFILE_NAME_MAX) }).strict().parse(req.body);
     const { clan } = await requireClanManager(clanId, user.id);
     const target = await resolveUserId(input.username, user).catch(() => null);
@@ -2483,14 +2492,14 @@ export function createLegacyXRouter() {
     res.status(201).json({ status: "invited" });
   }));
   router.get("/clans/:clanId/invites", userRoute(async (req, res, user) => {
-    const clanId = userIdSchema.parse(req.params.clanId);
+    const clanId = await clanIdOf(req.params.clanId);
     await requireClanManager(clanId, user.id);
     const { data, error } = await db().from("clan_invites").select("user_id,created_at,users:users!clan_invites_user_id_fkey(id,username,avatar)").eq("clan_id", clanId).order("created_at");
     legacyXError(error, "Unable to load invitations");
     res.json(((data ?? []) as DbRow[]).map((row) => { const player = firstRow(row.users) ?? {}; return { id: textValue(row.user_id), name: textValue(player.username), avatar: textValue(player.avatar), at: textValue(row.created_at) }; }));
   }));
   router.delete("/clans/:clanId/invites/:userId", userRoute(async (req, res, user) => {
-    const clanId = userIdSchema.parse(req.params.clanId);
+    const clanId = await clanIdOf(req.params.clanId);
     const target = userIdSchema.parse(req.params.userId);
     const { clan } = await requireClanManager(clanId, user.id);
     const { error } = await db().from("clan_invites").delete().eq("clan_id", clanId).eq("user_id", target);
@@ -2499,7 +2508,7 @@ export function createLegacyXRouter() {
     res.status(204).end();
   }));
   router.post("/clans/:clanId/invite/accept", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
-    const clanId = userIdSchema.parse(req.params.clanId);
+    const clanId = await clanIdOf(req.params.clanId);
     const clan = await loadClanBasics(clanId);
     const { data: invite } = await db().from("clan_invites").select("clan_id").eq("clan_id", clanId).eq("user_id", user.id).maybeSingle();
     if (!invite) apiError(404, "There is no such invitation", "clan_not_found");
@@ -2513,14 +2522,14 @@ export function createLegacyXRouter() {
     res.json({ status: "joined" });
   }));
   router.delete("/clans/:clanId/invite", userRoute(async (req, res, user) => {
-    const { error } = await db().from("clan_invites").delete().eq("clan_id", userIdSchema.parse(req.params.clanId)).eq("user_id", user.id);
+    const { error } = await db().from("clan_invites").delete().eq("clan_id", await clanIdOf(req.params.clanId)).eq("user_id", user.id);
     legacyXError(error, "Unable to decline the invitation");
     res.status(204).end();
   }));
 
   // Leaving, removing members, roles, handing the clan over, deleting.
   router.post("/clans/:clanId/leave", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
-    const clanId = userIdSchema.parse(req.params.clanId);
+    const clanId = await clanIdOf(req.params.clanId);
     const clan = await loadClanBasics(clanId);
     if (clan.owner_id === user.id) apiError(409, "Hand the clan to someone else or delete it before leaving", "clan_leader_cannot_leave");
     const { error } = await db().from("clan_members").delete().eq("clan_id", clanId).eq("user_id", user.id);
@@ -2529,7 +2538,7 @@ export function createLegacyXRouter() {
     res.status(204).end();
   }));
   router.delete("/clans/:clanId/members/:userId", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
-    const clanId = userIdSchema.parse(req.params.clanId);
+    const clanId = await clanIdOf(req.params.clanId);
     const target = userIdSchema.parse(req.params.userId);
     const { clan, role } = await requireClanManager(clanId, user.id);
     if (target === user.id) apiError(409, "Use Leave to go yourself", "clan_rejected");
@@ -2541,7 +2550,7 @@ export function createLegacyXRouter() {
     res.status(204).end();
   }));
   router.put("/clans/:clanId/members/:userId/role", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
-    const clanId = userIdSchema.parse(req.params.clanId);
+    const clanId = await clanIdOf(req.params.clanId);
     const target = userIdSchema.parse(req.params.userId);
     const input = z.object({ role: z.enum(["co-leader", "member"]) }).strict().parse(req.body);
     const clan = await requireClanLeader(clanId, user.id);
@@ -2553,7 +2562,7 @@ export function createLegacyXRouter() {
     res.status(204).end();
   }));
   router.post("/clans/:clanId/transfer", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
-    const clanId = userIdSchema.parse(req.params.clanId);
+    const clanId = await clanIdOf(req.params.clanId);
     const input = z.object({ userId: z.string().uuid() }).strict().parse(req.body);
     const clan = await requireClanLeader(clanId, user.id);
     if (input.userId === user.id) apiError(409, "You already lead the clan", "clan_rejected");
@@ -2565,7 +2574,7 @@ export function createLegacyXRouter() {
     res.status(204).end();
   }));
   router.delete("/clans/:clanId", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
-    const clanId = userIdSchema.parse(req.params.clanId);
+    const clanId = await clanIdOf(req.params.clanId);
     const clan = await loadClanBasics(clanId);
     const { error } = await db().rpc("delete_owned_clan", { p_owner_id: user.id, p_clan_id: clanId });
     if (error?.code === "P0002") apiError(403, "Clan leader access is required", "clan_forbidden");
@@ -2576,7 +2585,7 @@ export function createLegacyXRouter() {
 
   // What happened in the clan lately (leader and co-leaders).
   router.get("/clans/:clanId/activity", userRoute(async (req, res, user) => {
-    const clanId = userIdSchema.parse(req.params.clanId);
+    const clanId = await clanIdOf(req.params.clanId);
     await requireClanManager(clanId, user.id);
     const { data, error } = await db().from("clan_audit").select("id,actor_id,action,target_id,detail,created_at").eq("clan_id", clanId).order("created_at", { ascending: false }).limit(CLAN_LIMITS.activityLimit);
     legacyXError(error, "Unable to load the activity");
@@ -2596,7 +2605,7 @@ export function createLegacyXRouter() {
   // Staff moderation: Owners and Managers can fix or remove a clan that breaks the rules.
   router.delete("/staff/clans/:clanId", userRoute(async (req, res, user) => {
     await requireClanModerator(user.id);
-    const clanId = userIdSchema.parse(req.params.clanId);
+    const clanId = await clanIdOf(req.params.clanId);
     const clan = await loadClanBasics(clanId);
     const { error } = await db().from("clans").delete().eq("id", clanId);
     legacyXError(error, "Unable to delete clan");
@@ -2605,7 +2614,7 @@ export function createLegacyXRouter() {
   }));
   router.delete("/staff/clans/:clanId/art/:kind", userRoute(async (req, res, user) => {
     await requireClanModerator(user.id);
-    const clanId = userIdSchema.parse(req.params.clanId);
+    const clanId = await clanIdOf(req.params.clanId);
     const kind = z.enum(["logo", "banner"]).parse(req.params.kind);
     const clan = await loadClanBasics(clanId);
     const removed = await db().from("clan_images").delete().eq("clan_id", clanId).eq("kind", kind);
@@ -2617,7 +2626,7 @@ export function createLegacyXRouter() {
   }));
   router.delete("/staff/clans/:clanId/description", userRoute(async (req, res, user) => {
     await requireClanModerator(user.id);
-    const clanId = userIdSchema.parse(req.params.clanId);
+    const clanId = await clanIdOf(req.params.clanId);
     const clan = await loadClanBasics(clanId);
     const { error } = await db().from("clans").update({ description: null }).eq("id", clanId);
     legacyXError(error, "Unable to clear the description");
@@ -2626,7 +2635,7 @@ export function createLegacyXRouter() {
   }));
   router.put("/staff/clans/:clanId/name", userRoute(async (req, res, user) => {
     await requireClanModerator(user.id);
-    const clanId = userIdSchema.parse(req.params.clanId);
+    const clanId = await clanIdOf(req.params.clanId);
     const input = z.object({ name: clanSchema.shape.name, tag: clanSchema.shape.tag }).strict().parse(req.body);
     const clan = await loadClanBasics(clanId);
     const { error } = await db().from("clans").update(input).eq("id", clanId);
