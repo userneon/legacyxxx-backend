@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { apiRateLimitMax, runtimeHost, runtimePort, trustProxyValue } from "./config";
+import { apiRateLimitMax, apiSessionRateLimitMax, runtimeHost, runtimePort, trustProxyValue } from "./config";
 
 const originalEnv = { ...process.env };
 
@@ -20,7 +20,8 @@ describe("VPS runtime configuration", () => {
     expect(runtimePort()).toBe(3000);
     expect(runtimeHost()).toBe("127.0.0.1");
     expect(trustProxyValue()).toBe(1);
-    expect(apiRateLimitMax()).toBe(120);
+    expect(apiRateLimitMax()).toBe(600);
+    expect(apiSessionRateLimitMax()).toBe(600);
   });
 
   it("rejects invalid runtime ports and rate limits", () => {

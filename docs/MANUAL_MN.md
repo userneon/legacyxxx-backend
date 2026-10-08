@@ -80,7 +80,7 @@ npm run build                # esbuild → dist/index.js
 | `NODE_ENV` | заавал | `production` |
 | `HOST`, `PORT` | заавал | `127.0.0.1`, `3000` |
 | `TRUST_PROXY` | заавал | `1` (Nginx нэг hop) |
-| `API_RATE_LIMIT_MAX` | заавал | Минутанд IP тус бүр; анхдагч 120 |
+| `API_RATE_LIMIT_MAX` | заавал | Минутанд IP тус бүр; анхдагч 600 (PC cafe нэг IP-тэй олон тоглогчтой тул өндөр) |
 | `SUPABASE_URL` | заавал, HTTPS | Supabase project URL |
 | `SUPABASE_SERVICE_ROLE_KEY` | заавал | **Зөвхөн энэ API-д**, хэзээ ч log-д, frontend-д бүү оруул |
 | `STEAM_WEB_API_KEY` | заавал | Steam нэр, avatar татах |

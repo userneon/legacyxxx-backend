@@ -23,7 +23,7 @@ import {
   type LegacyUser,
   type PluginPrincipal,
 } from "./auth";
-import { apiAuthRateLimitMax, apiRateLimitMax, apiSensitiveRateLimitMax, isDeferredFeatureEnabled, publicDeferredFeatureFlags, type DeferredFeatureKey } from "./config";
+import { apiAuthRateLimitMax, apiRateLimitMax, apiSensitiveRateLimitMax, apiSessionRateLimitMax, isDeferredFeatureEnabled, publicDeferredFeatureFlags, type DeferredFeatureKey } from "./config";
 import { getFaceitProfileSnapshot, getFaceitProfileSnapshotForSteamId, resolveFaceitNickname } from "./faceit";
 import { legacyXDb, legacyXError } from "./supabase";
 import { resolveSteamProfileMedia } from "./steamBackground";
@@ -768,9 +768,12 @@ export function createLegacyXRouter() {
     legacyHeaders: false,
     message: { error: "Too many requests. Please retry shortly." },
   }));
+  // The sign-in endpoints stay strict. The session calls the page makes on every load (me, refresh, logout) have their own roomy limit, so reloading a few times never looks like an attack.
+  const SESSION_PATHS = new Set(["/me", "/refresh", "/logout"]);
   const authRateLimit = rateLimit({
     windowMs: 60_000,
     limit: process.env.NODE_ENV === "test" ? 1_000 : apiAuthRateLimitMax(),
+    skip: (req) => SESSION_PATHS.has(req.path),
     standardHeaders: "draft-8",
     legacyHeaders: false,
     message: { error: "Too many authentication requests. Please retry shortly." },
@@ -782,7 +785,15 @@ export function createLegacyXRouter() {
     legacyHeaders: false,
     message: { error: "Too many sensitive requests. Please retry shortly." },
   });
+  const sessionRateLimit = rateLimit({
+    windowMs: 60_000,
+    limit: process.env.NODE_ENV === "test" ? 1_000 : apiSessionRateLimitMax(),
+    standardHeaders: "draft-8",
+    legacyHeaders: false,
+    message: { error: "Too many requests. Please retry shortly." },
+  });
   router.use("/auth", authRateLimit);
+  router.use(["/auth/me", "/auth/refresh", "/auth/logout"], sessionRateLimit);
   router.use("/staff", sensitiveMutationRateLimit);
   router.use((req, res, next) => {
     res.setHeader("X-Content-Type-Options", "nosniff");

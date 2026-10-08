@@ -62,7 +62,7 @@ export function trustProxyValue() {
 }
 
 export function apiRateLimitMax() {
-  const value = process.env.API_RATE_LIMIT_MAX ?? "120";
+  const value = process.env.API_RATE_LIMIT_MAX ?? "600";
   const limit = Number.parseInt(value, 10);
   if (!Number.isInteger(limit) || limit < 1 || limit > 10_000) {
     throw new Error("API_RATE_LIMIT_MAX must be an integer between 1 and 10000");
@@ -81,6 +81,11 @@ function boundedEnvInt(name: string, fallback: number, min: number, max: number)
 
 export function apiAuthRateLimitMax() {
   return boundedEnvInt("API_AUTH_RATE_LIMIT_MAX", 30, 1, 1_000);
+}
+
+/** /auth/me, /auth/refresh and /auth/logout: every page load asks them, and a PC cafe shares one IP, so they get a roomy limit of their own. */
+export function apiSessionRateLimitMax() {
+  return boundedEnvInt("API_SESSION_RATE_LIMIT_MAX", 600, 1, 10_000);
 }
 
 export function apiSensitiveRateLimitMax() {
