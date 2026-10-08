@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { SignJWT } from "jose";
 import { hasPluginScope, issueAccessToken, sha256, steamLoginUrl, verifyAccessToken, verifySteamCallback } from "./auth";
 
 const originalJwtSecret = process.env.JWT_SECRET;
@@ -27,6 +28,16 @@ describe("plugin token hashing", () => {
 
     await expect(verifyAccessToken(token)).resolves.toEqual({ id: "player-id", steamId: "76561198000000000", username: "Player" });
     await expect(verifyAccessToken(`${token}tampered`)).rejects.toThrow();
+  });
+
+  it("answers an expired or tampered access token with 401, never a server error", async () => {
+    process.env.JWT_SECRET = "test-secret-that-is-longer-than-thirty-two-characters";
+    const key = new TextEncoder().encode(process.env.JWT_SECRET);
+    const expired = await new SignJWT({ steamId: "76561198000000000", username: "Player" })
+      .setProtectedHeader({ alg: "HS256" }).setSubject("player-id").setIssuedAt(Math.floor(Date.now() / 1000) - 3600).setExpirationTime(Math.floor(Date.now() / 1000) - 60).sign(key);
+
+    await expect(verifyAccessToken(expired)).rejects.toMatchObject({ statusCode: 401 });
+    await expect(verifyAccessToken("not-a-token")).rejects.toMatchObject({ statusCode: 401 });
   });
 
   it("uses legacyx.cc as the public Steam OpenID realm and return URL", () => {

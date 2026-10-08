@@ -70,7 +70,7 @@ beforeEach(() => {
 const note = { title: "Game servers updated", lines: ["CS2 build 1 → 2"], footer: "Restarted: 27015", banner: "cs2-update-finished" };
 const post = (token: string | null, body: unknown) => fetch(`${baseUrl}/plugin/announcements`, { method: "POST", headers: { "content-type": "application/json", ...(token ? { authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify(body) });
 const get = (token: string | null, query = "") => fetch(`${baseUrl}/plugin/announcements${query}`, { headers: token ? { authorization: `Bearer ${token}` } : {} });
-const inserts = () => runs.filter((run) => run.op === "insert" && run.table === "announcements");
+const inserts = () => runs.filter((run) => run.op === "insert" && run.table === "update_announcements");
 
 describe("update announcements", () => {
   it("records an announcement for a token with the announce:write scope", async () => {

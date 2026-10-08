@@ -3407,7 +3407,7 @@ export function createLegacyXRouter() {
   router.post("/plugin/announcements", pluginRoute("announce:write", async (req, res, plugin) => {
     const input = announcementSchema.parse(req.body);
     res.set("Cache-Control", "no-store");
-    const { data, error } = await db().from("announcements").insert(announcementRow(input)).select("id").single();
+    const { data, error } = await db().from("update_announcements").insert(announcementRow(input)).select("id").single();
     legacyXError(error, "Unable to record the announcement");
     const id = Number((data as DbRow | null)?.id);
     await writePluginAudit(plugin, "announcement.create", "announcements", null, { id, title: input.title })
@@ -3417,7 +3417,7 @@ export function createLegacyXRouter() {
   router.get("/plugin/announcements", pluginRoute("discord:link", async (req, res) => {
     const after = parseAfter(req.query.after);
     res.set("Cache-Control", "no-store");
-    const newest = await db().from("announcements").select("id").order("id", { ascending: false }).limit(1);
+    const newest = await db().from("update_announcements").select("id").order("id", { ascending: false }).limit(1);
     legacyXError(newest.error, "Unable to read announcements");
     const latestId = newest.data?.[0] ? Number(newest.data[0].id) : 0;
     if (after === null) {
@@ -3425,7 +3425,7 @@ export function createLegacyXRouter() {
       return;
     }
     const cutoff = new Date(Date.now() - ANNOUNCEMENT_MAX_AGE_HOURS * 3_600_000).toISOString();
-    const { data, error } = await db().from("announcements").select("*").gt("id", after).gte("created_at", cutoff).order("id", { ascending: true }).limit(ANNOUNCEMENT_PAGE);
+    const { data, error } = await db().from("update_announcements").select("*").gt("id", after).gte("created_at", cutoff).order("id", { ascending: true }).limit(ANNOUNCEMENT_PAGE);
     legacyXError(error, "Unable to read announcements");
     res.json({ announcements: ((data ?? []) as AnnouncementRecord[]).map(announcementView), latestId });
   }));

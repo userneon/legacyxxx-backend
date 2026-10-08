@@ -46,7 +46,10 @@ export async function issueAccessToken(user: LegacyUser) {
 }
 
 export async function verifyAccessToken(token: string): Promise<LegacyUser> {
-  const { payload } = await jwtVerify(token, jwtKey());
+  // An expired or tampered token is "not signed in" (401), never a server error: the site answers 401 by rotating the session.
+  const { payload } = await jwtVerify(token, jwtKey()).catch(() => {
+    throw Object.assign(new Error("Access token is invalid or expired"), { statusCode: 401 });
+  });
   if (!payload.sub || typeof payload.steamId !== "string" || typeof payload.username !== "string") {
     throw Object.assign(new Error("Invalid access token payload"), { statusCode: 401 });
   }
