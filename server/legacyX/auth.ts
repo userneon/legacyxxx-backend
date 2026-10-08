@@ -68,20 +68,28 @@ export async function createRefreshSession(userId: string) {
   return refreshToken;
 }
 
+/** How long a token that was just swapped for a new one still works (a reload that cancelled the reply, a second tab). */
+const REFRESH_ROTATION_GRACE_MS = 60_000;
+
 export async function rotateRefreshSession(refreshToken: string): Promise<LegacyUser> {
   const db = legacyXDb();
   const { data: session, error } = await db
     .from("user_sessions")
-    .select("id,user_id,expires_at,revoked_at")
+    .select("id,user_id,expires_at,revoked_at,rotated_at")
     .eq("refresh_token", sha256(refreshToken))
     .maybeSingle();
   legacyXError(error, "Unable to read refresh session");
-  if (!session || session.revoked_at || new Date(session.expires_at).getTime() <= Date.now()) {
+  const now = Date.now();
+  const justRotated = Boolean(session?.revoked_at && session.rotated_at) && now - new Date(session!.rotated_at).getTime() <= REFRESH_ROTATION_GRACE_MS;
+  if (!session || (session.revoked_at && !justRotated) || new Date(session.expires_at).getTime() <= now) {
     throw Object.assign(new Error("Refresh token is invalid or expired"), { statusCode: 401 });
   }
 
-  const { error: revokeError } = await db.from("user_sessions").update({ revoked_at: new Date().toISOString() }).eq("id", session.id);
-  legacyXError(revokeError, "Unable to rotate refresh session");
+  if (!session.revoked_at) {
+    const stamp = new Date(now).toISOString();
+    const { error: revokeError } = await db.from("user_sessions").update({ revoked_at: stamp, rotated_at: stamp }).eq("id", session.id);
+    legacyXError(revokeError, "Unable to rotate refresh session");
+  }
 
   const { data: user, error: userError } = await db
     .from("users")
@@ -96,7 +104,7 @@ export async function rotateRefreshSession(refreshToken: string): Promise<Legacy
 export async function revokeRefreshSession(refreshToken: string) {
   const { error } = await legacyXDb()
     .from("user_sessions")
-    .update({ revoked_at: new Date().toISOString() })
+    .update({ revoked_at: new Date().toISOString(), rotated_at: null })
     .eq("refresh_token", sha256(refreshToken));
   legacyXError(error, "Unable to revoke refresh session");
 }
@@ -104,9 +112,9 @@ export async function revokeRefreshSession(refreshToken: string) {
 export async function revokeUserRefreshSessions(userId: string) {
   const { error } = await legacyXDb()
     .from("user_sessions")
-    .update({ revoked_at: new Date().toISOString() })
+    .update({ revoked_at: new Date().toISOString(), rotated_at: null })
     .eq("user_id", userId)
-    .is("revoked_at", null);
+    .or("revoked_at.is.null,rotated_at.not.is.null");
   legacyXError(error, "Unable to revoke user refresh sessions");
 }
 
