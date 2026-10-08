@@ -27,6 +27,23 @@ describe("in-game staff authorization", () => {
     expect(authorizationRequestSchema.safeParse({ serverId: "x", steamIds: ["76561198000000001"], role: "owner" }).success).toBe(false);
   });
 
+  it("adds the clan tag of an authorized staff member, and leaves it out when the clan lookup fails", async () => {
+    const answers: Record<string, { data: unknown; error: unknown }> = {
+      users: { data: [{ id: "u-1", steam_id: "76561198000000001" }], error: null },
+      clan_members: { data: [{ user_id: "u-1", clans: { tag: "WOLF" } }], error: null },
+    };
+    const db = {
+      rpc: async () => ({ data: [row("76561198000000001", "owner", "active", "global"), row("76561198000000002", "admin", "active", "server")], error: null }),
+      from: (table: string) => ({ select: () => ({ in: async () => answers[table] }) }),
+    };
+    const result = await resolveAuthorizations(db as any, { serverId: "srv-1", steamIds: ["76561198000000001", "76561198000000002"] }, now);
+    expect(result.map((entry) => entry.clanTag)).toEqual(["WOLF", null]);
+
+    const broken = { rpc: db.rpc, from: () => { throw new Error("down"); } };
+    const fallback = await resolveAuthorizations(broken as any, { serverId: "srv-1", steamIds: ["76561198000000001"] }, now);
+    expect(fallback[0]).toMatchObject({ authorized: true, role: "owner", clanTag: null });
+  });
+
   it("asks the database once for the distinct SteamIDs of the server", async () => {
     const { db, calls } = fakeDb([]);
     await resolveAuthorizations(db, { serverId: "srv-1", steamIds: ["76561198000000001", "76561198000000001", "76561198000000002"] }, now);
@@ -42,10 +59,10 @@ describe("in-game staff authorization", () => {
     ]);
     const result = await resolveAuthorizations(db, { serverId: "srv-1", steamIds: ["76561198000000001", "76561198000000002", "76561198000000003", "76561198000000004"] }, now);
     expect(result).toEqual([
-      { steamId: "76561198000000001", authorized: true, role: "owner", status: "active", source: "global", expiresAt: null },
-      { steamId: "76561198000000002", authorized: true, role: "manager", status: "active", source: "global", expiresAt: null },
-      { steamId: "76561198000000003", authorized: true, role: "admin", status: "active", source: "server", expiresAt: null },
-      { steamId: "76561198000000004", authorized: true, role: "staff", status: "active", source: "server", expiresAt: "2026-09-28T00:00:00.000Z" },
+      { steamId: "76561198000000001", authorized: true, role: "owner", status: "active", source: "global", expiresAt: null, clanTag: null },
+      { steamId: "76561198000000002", authorized: true, role: "manager", status: "active", source: "global", expiresAt: null, clanTag: null },
+      { steamId: "76561198000000003", authorized: true, role: "admin", status: "active", source: "server", expiresAt: null, clanTag: null },
+      { steamId: "76561198000000004", authorized: true, role: "staff", status: "active", source: "server", expiresAt: "2026-09-28T00:00:00.000Z", clanTag: null },
     ]);
   });
 

@@ -33,6 +33,8 @@ export type PlayerAuthorization = {
   /** server | global | none: which record decided. */
   source: string;
   expiresAt: string | null;
+  /** The staff member's website clan tag (shown in Tab as [CLAN | ROLE]); null when they have none. Cosmetic only. */
+  clanTag: string | null;
 };
 
 const resolvedRowSchema = z.object({
@@ -44,7 +46,27 @@ const resolvedRowSchema = z.object({
 });
 
 function unauthorized(steamId: string, status = "none", source = "none"): PlayerAuthorization {
-  return { steamId, authorized: false, role: "player", status, source, expiresAt: null };
+  return { steamId, authorized: false, role: "player", status, source, expiresAt: null, clanTag: null };
+}
+
+/** Staff show their clan before their role in Tab. Purely cosmetic: any failure just leaves the tag out. */
+async function addClanTags(db: Db, staff: PlayerAuthorization[]) {
+  if (staff.length === 0) return;
+  try {
+    const users = await db.from("users").select("id,steam_id").in("steam_id", staff.map((entry) => entry.steamId));
+    if (users.error || !users.data?.length) return;
+    const bySteam = new Map<string, string>(users.data.map((user: { id: string; steam_id: string }) => [user.id, user.steam_id]));
+    const members = await db.from("clan_members").select("user_id,clans(tag)").in("user_id", Array.from(bySteam.keys()));
+    if (members.error) return;
+    for (const row of (members.data ?? []) as Array<{ user_id: string; clans?: { tag?: string } | Array<{ tag?: string }> | null }>) {
+      const clan = Array.isArray(row.clans) ? row.clans[0] : row.clans;
+      const steamId = bySteam.get(row.user_id);
+      const entry = staff.find((candidate) => candidate.steamId === steamId);
+      if (entry && clan?.tag) entry.clanTag = clan.tag;
+    }
+  } catch (error) {
+    console.warn("[legacy-x-api] staff clan tags unavailable", (error as Error)?.message);
+  }
 }
 
 /** One answer per requested SteamID, in request order. */
@@ -65,7 +87,8 @@ export async function resolveAuthorizations(db: Db, input: z.infer<typeof author
       bySteamId.set(steamId, unauthorized(steamId, expired && status === "active" ? "expired" : status, source));
       continue;
     }
-    bySteamId.set(steamId, { steamId, authorized: true, role: role as GameStaffRole, status, source, expiresAt: expiry ? expiry.toISOString() : null });
+    bySteamId.set(steamId, { steamId, authorized: true, role: role as GameStaffRole, status, source, expiresAt: expiry ? expiry.toISOString() : null, clanTag: null });
   }
+  await addClanTags(db, Array.from(bySteamId.values()).filter((entry) => entry.authorized));
   return steamIds.map((steamId) => bySteamId.get(steamId) ?? unauthorized(steamId));
 }
