@@ -2288,7 +2288,7 @@ export function createLegacyXRouter() {
     if (leaveCooldownLeftMs(data?.created_at as string | undefined) > 0) apiError(409, "Wait a day after leaving a clan before joining another", "clan_cooldown");
   };
 
-  router.get("/clans", userRoute(async (req, res) => {
+  router.get("/clans", optionalUserRoute(async (req, res) => {
     const input = z.object({ q: z.string().trim().max(40).optional(), sort: z.enum(["new", "name"]).default("new"), limit: z.coerce.number().int().min(1).max(60).default(24), offset: z.coerce.number().int().min(0).max(5000).default(0) }).parse(req.query);
     let query = db().from("clans").select("*,clan_members(count)");
     if (input.q) query = query.ilike("name", `%${escapeLike(input.q)}%`);
@@ -2298,7 +2298,7 @@ export function createLegacyXRouter() {
     res.json(((data ?? []) as DbRow[]).map((row) => mapClanCard(row)));
   }));
   // Ranking: the total EXP of a clan's members, counted from real ranked results.
-  router.get("/clans/leaderboard", userRoute(async (_req, res) => {
+  router.get("/clans/leaderboard", optionalUserRoute(async (_req, res) => {
     const [clans, members] = await Promise.all([db().from("clans").select("id,number,name,tag,logo,thumbnail,region,max_players,join_mode"), db().from("clan_members").select("clan_id,user_id")]);
     legacyXError(clans.error || members.error, "Unable to load the clan ranking");
     const memberRows = (members.data ?? []) as DbRow[];
@@ -2384,10 +2384,10 @@ export function createLegacyXRouter() {
     }));
   }
 
-  router.get("/clans/:clanId", userRoute(async (req, res, user) => {
-    res.json(await loadClanDetail(await clanIdOf(req.params.clanId), user.id));
+  router.get("/clans/:clanId", optionalUserRoute(async (req, res, user) => {
+    res.json(await loadClanDetail(await clanIdOf(req.params.clanId), user?.id));
   }));
-  router.get("/clans/:clanId/members", userRoute(async (req, res) => {
+  router.get("/clans/:clanId/members", optionalUserRoute(async (req, res) => {
     const clanId = await clanIdOf(req.params.clanId);
     await loadClanBasics(clanId);
     const { data, error } = await db().from("clan_members").select("role,user_id,users(id,username,avatar)").eq("clan_id", clanId).order("created_at");
