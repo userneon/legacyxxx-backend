@@ -936,7 +936,8 @@ export function createLegacyXRouter() {
     legacyXError(error, "Unable to load competitive leaderboard");
     const linked = await discordLinkedUserIds(db());
     const clanTags = await clanTagsFor(((data ?? []) as DbRow[]).map((row) => textValue(row.user_id)));
-    const rows = ((data ?? []) as DbRow[]).map((row): DbRow => ({ ...row, discord_linked: linked.has(textValue(row.user_id)), clan_tag: clanTags.get(textValue(row.user_id))?.tag ?? null }));
+    const frames = await equippedFramesFor(((data ?? []) as DbRow[]).map((row) => textValue(row.user_id)));
+    const rows = ((data ?? []) as DbRow[]).map((row): DbRow => ({ ...row, discord_linked: linked.has(textValue(row.user_id)), clan_tag: clanTags.get(textValue(row.user_id))?.tag ?? null, frame: frames.get(textValue(row.user_id)) ?? null }));
     if (sort === "exp") {
       res.json({ sort, minimumMatches: 0, entries: rows });
       return;
@@ -1258,6 +1259,7 @@ export function createLegacyXRouter() {
         memberSince: timestampValue(user.created_at) || null,
         steamBackground: steamMedia.background,
         steamMedia: { backgroundVideo: steamMedia.backgroundVideo, animatedAvatar: steamMedia.animatedAvatar, avatarFrame: steamMedia.avatarFrame },
+        frame: (await equippedFramesFor([textValue(user.id)])).get(textValue(user.id)) ?? null,
       },
       viewer: { isOwner, isStaff },
       // The owner's own switches, so the popover shows them; null for everyone else.
@@ -1637,6 +1639,95 @@ export function createLegacyXRouter() {
     });
     return { loadout, entries: enrichedEntries };
   };
+
+  // Cosmetics (avatar frames): purely visual. Free ones are open to everyone, coin ones are bought once, achievement ones are granted, never sold.
+  const cosmeticRateLimit = rateLimit({
+    windowMs: 60_000,
+    limit: process.env.NODE_ENV === "test" ? 1_000 : 30,
+    skip: (req) => req.method === "GET",
+    standardHeaders: "draft-8",
+    legacyHeaders: false,
+    message: { error: "Too many requests. Please retry shortly." },
+  });
+  router.use("/cosmetics", cosmeticRateLimit);
+  const cosmeticIdSchema = z.string().regex(/^[a-z0-9-]{2,40}$/);
+  const loadCosmeticCatalog = async () => {
+    const { data, error } = await db().from("cosmetic_items").select("id,name_en,name_mn,unlock,price,requirement,sort").eq("kind", "frame").eq("enabled", true).order("sort");
+    legacyXError(error, "Unable to load cosmetics");
+    return (data ?? []) as DbRow[];
+  };
+  /** The frame each of these players wears, by item id; players without one are left out. */
+  const equippedFramesFor = async (userIds: string[]) => {
+    const ids = Array.from(new Set(userIds.filter(Boolean)));
+    const frames = new Map<string, string>();
+    if (!ids.length) return frames;
+    const { data, error } = await db().from("cosmetic_equipped").select("user_id,item_id").eq("kind", "frame").in("user_id", ids);
+    if (error) { console.error("[legacy-x-api] unable to load equipped frames", error.message); return frames; }
+    for (const row of (data ?? []) as DbRow[]) frames.set(textValue(row.user_id), textValue(row.item_id));
+    return frames;
+  };
+  router.get("/cosmetics", userRoute(async (_req, res, user) => {
+    const [catalog, owned, equipped] = await Promise.all([
+      loadCosmeticCatalog(),
+      db().from("cosmetic_owned").select("item_id").eq("user_id", user.id),
+      equippedFramesFor([user.id]),
+    ]);
+    legacyXError(owned.error, "Unable to load your cosmetics");
+    const ownedIds = new Set(((owned.data ?? []) as DbRow[]).map((row) => textValue(row.item_id)));
+    res.json({
+      equippedFrame: equipped.get(user.id) ?? null,
+      frames: catalog.map((item) => ({
+        id: textValue(item.id),
+        name: textValue(item.name_en),
+        nameMn: textValue(item.name_mn),
+        unlock: textValue(item.unlock),
+        price: numberValue(item.price),
+        requirement: textValue(item.requirement),
+        owned: textValue(item.unlock) === "free" || ownedIds.has(textValue(item.id)),
+      })),
+    });
+  }));
+  router.post("/cosmetics/:itemId/buy", userRoute(async (req, res, user) => {
+    const itemId = cosmeticIdSchema.parse(req.params.itemId);
+    const item = (await loadCosmeticCatalog()).find((entry) => textValue(entry.id) === itemId);
+    if (!item) apiError(404, "Item not found");
+    if (textValue(item.unlock) !== "coin") apiError(409, "This item is not for sale", "cosmetic_not_for_sale");
+    const price = numberValue(item.price);
+    // The ref is per player and item, so a double click or a retry charges once.
+    try {
+      await applyWalletChange(legacyXDb(), { userId: user.id, amount: -price, kind: "spend", reason: `Frame: ${textValue(item.name_en)}`, ref: `cosmetic:${itemId}`, actor: user.id });
+    } catch (error) {
+      if (error instanceof NotEnoughCoinsError) apiError(402, `This frame costs ${price} coins`, "cosmetic_no_coins");
+      throw error;
+    }
+    const { error } = await db().from("cosmetic_owned").upsert({ user_id: user.id, item_id: itemId, source: "coin" }, { onConflict: "user_id,item_id", ignoreDuplicates: true });
+    if (error) {
+      await applyWalletChange(legacyXDb(), { userId: user.id, amount: price, kind: "refund", reason: "Frame purchase failed", ref: `cosmetic:${itemId}:refund`, actor: user.id }).catch((refundError) => console.error("[legacy-x-api] frame refund failed", refundError));
+      legacyXError(error, "Unable to save the purchase");
+    }
+    await db().from("audit_logs").insert({ actor_type: "user", actor_id: user.id, action: "cosmetic.buy", target_type: "cosmetic_items", target_id: itemId, metadata: { price } });
+    res.status(201).json({ owned: true });
+  }));
+  // Wear a frame, or take it off with { frame: null }.
+  router.put("/cosmetics/equip", userRoute(async (req, res, user) => {
+    const input = z.object({ frame: cosmeticIdSchema.nullable() }).strict().parse(req.body);
+    if (input.frame === null) {
+      const { error } = await db().from("cosmetic_equipped").delete().eq("user_id", user.id).eq("kind", "frame");
+      legacyXError(error, "Unable to take the frame off");
+      res.json({ equippedFrame: null });
+      return;
+    }
+    const item = (await loadCosmeticCatalog()).find((entry) => textValue(entry.id) === input.frame);
+    if (!item) apiError(404, "Item not found");
+    if (textValue(item.unlock) !== "free") {
+      const { data, error: ownedError } = await db().from("cosmetic_owned").select("item_id").eq("user_id", user.id).eq("item_id", input.frame).maybeSingle();
+      legacyXError(ownedError, "Unable to check your cosmetics");
+      if (!data) apiError(403, "You do not own this frame yet", "cosmetic_not_owned");
+    }
+    const { error } = await db().from("cosmetic_equipped").upsert({ user_id: user.id, kind: "frame", item_id: input.frame, updated_at: new Date().toISOString() }, { onConflict: "user_id,kind" });
+    legacyXError(error, "Unable to wear the frame");
+    res.json({ equippedFrame: input.frame });
+  }));
 
   // Community collections: a snapshot of someone's loadout that anyone can apply. Free; likes and applies count once per account.
   const MAX_COLLECTIONS_PER_PLAYER = 5;
