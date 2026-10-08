@@ -21,6 +21,8 @@ export function legacyXDb(): SupabaseClient<any, any, any, any, any> {
 
 export function legacyXError(error: { message?: string; code?: string } | null, fallback: string): never | void {
   if (!error) return;
+  // The player only ever sees the safe message below; the real reason goes to the server log so a 500 can be diagnosed.
+  console.error(`[legacy-x-api] database error (${fallback}): ${error.code ?? "no code"} ${error.message ?? ""}`);
   const safeMessages: Record<string, string> = {
     "23505": "A record with that value already exists",
     "23503": "A referenced record does not exist",
