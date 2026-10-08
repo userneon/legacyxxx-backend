@@ -758,7 +758,8 @@ export function createLegacyXRouter() {
     const { data, error } = await db().from("users").select("id,steam_id,avatar").in("id", userIds);
     legacyXError(error, "Unable to resolve feedback reviewer profiles");
     const reviewerProfiles = new Map(((data ?? []) as DbRow[]).map(user => [textValue(user.id), { steamId: textValue(user.steam_id), avatar: textValue(user.avatar) }]));
-    return rows.map(row => mapFeedback(row, reviewerProfiles));
+    const worn = await equippedCosmeticsFor(userIds);
+    return rows.map(row => ({ ...mapFeedback(row, reviewerProfiles), ...lookOf(worn, textValue(row.user_id)) }));
   };
 
   router.use(rateLimit({
@@ -897,7 +898,8 @@ export function createLegacyXRouter() {
     legacyXError(clanResult.error || membersResult.error, "Unable to load clan");
     if (!clanResult.data) apiError(404, "Clan was not found");
     const clan = clanResult.data as DbRow;
-    const members = ((membersResult.data ?? []) as DbRow[]).map(mapClanMember);
+    const worn = await equippedCosmeticsFor(((membersResult.data ?? []) as DbRow[]).map((member) => textValue(member.user_id)));
+    const members = ((membersResult.data ?? []) as DbRow[]).map((member) => ({ ...mapClanMember(member), ...lookOf(worn, textValue(member.user_id)) }));
     const viewerRole = viewerId ? members.find((member) => member.id === viewerId)?.role ?? null : null;
     return { ...mapClanCard(clan), description: clan.description ?? undefined, members, viewer: { role: viewerRole, canModerate: viewerId ? await canModerateClans(viewerId) : false } };
   };
@@ -1055,13 +1057,15 @@ export function createLegacyXRouter() {
     const rounds = await db().from("match_rounds").select("round_number,winner_side,reason,team1_score,team2_score")
       .eq("match_external_id", textValue(core.data.matchzy_local_id)).eq("map_number", mapNumber).order("round_number");
     if (rounds.error) console.warn("[legacy-x-api] match rounds unavailable", rounds.error.message);
-    res.json(mapMatchDetail({
+    const detail = mapMatchDetail({
       matchId,
       mapNumber,
       results: rows.map((row) => expRowAsResult(row, score, mapName)),
       rounds: rounds.error ? [] : ((rounds.data ?? []) as DbRow[]),
       receiptPayload: recordValue(core.data.result).rank_result,
-    }));
+    });
+    const worn = await equippedCosmeticsFor(rows.map((row) => textValue(firstRow(row.users)?.id)));
+    res.json({ ...detail, teams: detail.teams.map((team) => ({ ...team, players: team.players.map((player) => ({ ...player, ...lookOf(worn, player.userId ?? "") })) })) });
   }));
   router.get("/public/servers", asyncRoute(async (_req, res) => {
     res.json({ entries: await readServers() });
@@ -1691,6 +1695,8 @@ export function createLegacyXRouter() {
     }
     return worn;
   };
+  /** The frame and name style fields every player card carries (null when nothing is worn). */
+  const lookOf = (worn: Awaited<ReturnType<typeof equippedCosmeticsFor>>, userId: string) => ({ frame: worn.get(userId)?.frame ?? null, nameStyle: worn.get(userId)?.nameStyle ?? null });
   const cosmeticView = (item: DbRow, ownedIds: Set<string>) => ({
     id: textValue(item.id),
     name: textValue(item.name_en),
@@ -2392,7 +2398,8 @@ export function createLegacyXRouter() {
     await loadClanBasics(clanId);
     const { data, error } = await db().from("clan_members").select("role,user_id,users(id,username,avatar)").eq("clan_id", clanId).order("created_at");
     legacyXError(error, "Unable to load clan members");
-    res.json(((data ?? []) as DbRow[]).map(mapClanMember));
+    const worn = await equippedCosmeticsFor(((data ?? []) as DbRow[]).map((member) => textValue(member.user_id)));
+    res.json(((data ?? []) as DbRow[]).map((member) => ({ ...mapClanMember(member), ...lookOf(worn, textValue(member.user_id)) })));
   }));
 
   // Settings: description, who can join, player limit (leader or co-leader).
@@ -3055,7 +3062,8 @@ export function createLegacyXRouter() {
     const input = z.object({ query: z.string().trim().min(1).max(64) }).parse(req.query);
     const { data, error } = await db().from("users").select("id,steam_id,username,avatar,level,player_stats(*)").ilike("username", `%${input.query}%`).order("username");
     legacyXError(error, "Unable to search players");
-    res.json({ players: ((data ?? []) as DbRow[]).map(mapLeaderFromUser) });
+    const worn = await equippedCosmeticsFor(((data ?? []) as DbRow[]).map((user) => textValue(user.id)));
+    res.json({ players: ((data ?? []) as DbRow[]).map((user, index) => ({ ...mapLeaderFromUser(user, index), ...lookOf(worn, textValue(user.id)) })) });
   }));
   router.get("/search/clans", userRoute(async (req, res) => {
     const input = z.object({ query: z.string().trim().min(1).max(64) }).parse(req.query);
