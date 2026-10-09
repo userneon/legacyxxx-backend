@@ -19,6 +19,8 @@ export interface ClanLookItem {
   fx?: string;
   from?: string;
   to?: string;
+  /** page only: an animated background (from is its colour, to the base). */
+  effect?: "slats" | "waves" | "dots";
 }
 
 export const CLAN_LOOK_ITEMS: ClanLookItem[] = [
@@ -73,6 +75,15 @@ export const CLAN_LOOK_ITEMS: ClanLookItem[] = [
   { id: "page-inferno", kind: "page", name: "Inferno", price: 1000, rarity: 4, from: "#dc2626", to: "#f59e0b" },
   { id: "page-nebula", kind: "page", name: "Nebula", price: 1000, rarity: 4, from: "#be185d", to: "#0e7490" },
   { id: "page-royal", kind: "page", name: "Royal Court", price: 1000, rarity: 4, from: "#7c3aed", to: "#b45309" },
+  { id: "page-slats-silver", kind: "page", name: "Micro Slats Silver", price: 1200, rarity: 4, from: "#cbd5e1", to: "#0a0a0a", effect: "slats" },
+  { id: "page-slats-rose", kind: "page", name: "Micro Slats Rose", price: 1200, rarity: 4, from: "#fb7185", to: "#0a0a0a", effect: "slats" },
+  { id: "page-slats-ocean", kind: "page", name: "Micro Slats Ocean", price: 1200, rarity: 4, from: "#38bdf8", to: "#0a0a0a", effect: "slats" },
+  { id: "page-waves-silver", kind: "page", name: "Pattern Waves Silver", price: 1200, rarity: 4, from: "#e5e5e5", to: "#0a0a0a", effect: "waves" },
+  { id: "page-waves-ember", kind: "page", name: "Pattern Waves Ember", price: 1200, rarity: 4, from: "#fb923c", to: "#0a0a0a", effect: "waves" },
+  { id: "page-waves-mint", kind: "page", name: "Pattern Waves Mint", price: 1200, rarity: 4, from: "#6ee7b7", to: "#0a0a0a", effect: "waves" },
+  { id: "page-dots-silver", kind: "page", name: "Dot Field Silver", price: 1000, rarity: 4, from: "#d4d4d4", to: "#0a0a0a", effect: "dots" },
+  { id: "page-dots-rose", kind: "page", name: "Dot Field Rose", price: 1000, rarity: 4, from: "#fb7185", to: "#0a0a0a", effect: "dots" },
+  { id: "page-dots-gold", kind: "page", name: "Dot Field Gold", price: 1000, rarity: 4, from: "#fcd34d", to: "#0a0a0a", effect: "dots" },
 ];
 
 const ITEM_BY_ID = new Map(CLAN_LOOK_ITEMS.map((item) => [item.id, item]));
@@ -84,7 +95,7 @@ export interface ClanLook {
   tagGlow: string | null;
   tagGlowFx: string | null;
   backdrop: { from: string; to: string } | null;
-  page: { from: string; to: string } | null;
+  page: { from: string; to: string; effect: "slats" | "waves" | "dots" | null } | null;
 }
 
 /** What each clan wears, for any number of clans in one query. A clan that wears nothing is absent from the map. */
@@ -104,7 +115,7 @@ export async function clanLooksFor(db: SupabaseClient, clanIds: string[]): Promi
     if (item.kind === "tag_color") { look.tagColor = item.color ?? null; look.tagColorFx = item.fx ?? null; }
     if (item.kind === "tag_glow") { look.tagGlow = item.glow ?? null; look.tagGlowFx = item.fx ?? null; }
     if (item.kind === "backdrop" && item.from && item.to) look.backdrop = { from: item.from, to: item.to };
-    if (item.kind === "page" && item.from && item.to) look.page = { from: item.from, to: item.to };
+    if (item.kind === "page" && item.from && item.to) look.page = { from: item.from, to: item.to, effect: item.effect ?? null };
     looks.set(row.clan_id, look);
   }
   return looks;
