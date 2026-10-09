@@ -4,6 +4,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
  * Clan appearance. Purely visual. The leader buys with coins, the clan owns it, and every member's clan shows it.
  * Colours are #rrggbb and effect keys are ones the website knows; anything else is never sent.
  */
+export type ClanPageEffect = "slats" | "waves" | "dots" | "aurora" | "threads" | "particles" | "lightning" | "rays" | "lines" | "plasma";
 export type ClanLookKind = "tag_color" | "tag_glow" | "backdrop" | "page";
 export const CLAN_LOOK_KINDS = ["tag_color", "tag_glow", "backdrop", "page"] as const;
 
@@ -20,7 +21,7 @@ export interface ClanLookItem {
   from?: string;
   to?: string;
   /** page only: an animated background (from is its colour, to the base). */
-  effect?: "slats" | "waves" | "dots";
+  effect?: ClanPageEffect;
 }
 
 export const CLAN_LOOK_ITEMS: ClanLookItem[] = [
@@ -84,6 +85,20 @@ export const CLAN_LOOK_ITEMS: ClanLookItem[] = [
   { id: "page-dots-silver", kind: "page", name: "Dot Field Silver", price: 1300, rarity: 4, from: "#d4d4d4", to: "#0a0a0a", effect: "dots" },
   { id: "page-dots-rose", kind: "page", name: "Dot Field Rose", price: 1300, rarity: 4, from: "#fb7185", to: "#0a0a0a", effect: "dots" },
   { id: "page-dots-gold", kind: "page", name: "Dot Field Gold", price: 1300, rarity: 4, from: "#fcd34d", to: "#0a0a0a", effect: "dots" },
+  { id: "page-aurora-rose", kind: "page", name: "Aurora Veil Rose", price: 1400, rarity: 4, from: "#fb7185", to: "#0a0a0a", effect: "aurora" },
+  { id: "page-aurora-mint", kind: "page", name: "Aurora Veil Mint", price: 1400, rarity: 4, from: "#6ee7b7", to: "#0a0a0a", effect: "aurora" },
+  { id: "page-threads-mint", kind: "page", name: "Silk Threads Mint", price: 1300, rarity: 4, from: "#6ee7b7", to: "#0a0a0a", effect: "threads" },
+  { id: "page-threads-gold", kind: "page", name: "Silk Threads Gold", price: 1300, rarity: 4, from: "#fcd34d", to: "#0a0a0a", effect: "threads" },
+  { id: "page-particles-gold", kind: "page", name: "Star Dust Gold", price: 1300, rarity: 4, from: "#fcd34d", to: "#0a0a0a", effect: "particles" },
+  { id: "page-particles-ice", kind: "page", name: "Star Dust Ice", price: 1300, rarity: 4, from: "#7dd3fc", to: "#0a0a0a", effect: "particles" },
+  { id: "page-lightning-ember", kind: "page", name: "Lightning Ember", price: 1500, rarity: 4, from: "#fb923c", to: "#0a0a0a", effect: "lightning" },
+  { id: "page-lightning-ice", kind: "page", name: "Lightning Ice", price: 1500, rarity: 4, from: "#7dd3fc", to: "#0a0a0a", effect: "lightning" },
+  { id: "page-rays-silver", kind: "page", name: "Light Rays Silver", price: 1400, rarity: 4, from: "#e5e5e5", to: "#0a0a0a", effect: "rays" },
+  { id: "page-rays-gold", kind: "page", name: "Light Rays Gold", price: 1400, rarity: 4, from: "#fcd34d", to: "#0a0a0a", effect: "rays" },
+  { id: "page-lines-rose", kind: "page", name: "Wave Lines Rose", price: 1100, rarity: 4, from: "#fb7185", to: "#0a0a0a", effect: "lines" },
+  { id: "page-lines-mint", kind: "page", name: "Wave Lines Mint", price: 1100, rarity: 4, from: "#6ee7b7", to: "#0a0a0a", effect: "lines" },
+  { id: "page-plasma-ember", kind: "page", name: "Plasma Ember", price: 1500, rarity: 4, from: "#fb923c", to: "#0a0a0a", effect: "plasma" },
+  { id: "page-plasma-rose", kind: "page", name: "Plasma Rose", price: 1500, rarity: 4, from: "#fb7185", to: "#0a0a0a", effect: "plasma" },
 ];
 
 const ITEM_BY_ID = new Map(CLAN_LOOK_ITEMS.map((item) => [item.id, item]));
@@ -95,7 +110,7 @@ export interface ClanLook {
   tagGlow: string | null;
   tagGlowFx: string | null;
   backdrop: { from: string; to: string } | null;
-  page: { from: string; to: string; effect: "slats" | "waves" | "dots" | null } | null;
+  page: { from: string; to: string; effect: ClanPageEffect | null } | null;
 }
 
 /** What each clan wears, for any number of clans in one query. A clan that wears nothing is absent from the map. */
