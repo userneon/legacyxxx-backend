@@ -121,6 +121,10 @@ export const COIN_RULES = {
   win: 30,
   clanFee: 500,
   clanRename: 200,
+  /** Extra member slots: `clanSlotStep` more places for `clanSlotPrice`, up to `clanSlotCap` members. */
+  clanSlotPrice: 300,
+  clanSlotStep: 2,
+  clanSlotCap: 50,
   /** Every new wallet starts with this. */
   welcome: 50,
   /** The daily EXP limit pays this share of the coins, like it does for EXP. */
@@ -285,4 +289,9 @@ export async function awardDiscordLink(db: Db, userId: string, log: (message: st
     log(`Unable to pay the Discord link bonus to ${userId}`, error);
     return false;
   }
+}
+
+/** What the clan services cost, for the Shop (one source: COIN_RULES). */
+export function clanPrices() {
+  return { create: COIN_RULES.clanFee, rename: COIN_RULES.clanRename, slots: COIN_RULES.clanSlotPrice, slotStep: COIN_RULES.clanSlotStep, slotCap: COIN_RULES.clanSlotCap };
 }

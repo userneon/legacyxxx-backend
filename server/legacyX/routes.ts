@@ -33,7 +33,7 @@ import { RANK_CALCULATION_VERSION, calculateMatchExp, expLimitUsage, limitWindow
 import { buildRankedInput, rankedResultSchema, type MatchParticipant, type PlayerProgression } from "./rankedMatch";
 import { ANNOUNCEMENT_MAX_AGE_HOURS, ANNOUNCEMENT_PAGE, announcementRow, announcementSchema, announcementView, type AnnouncementRecord } from "./announcements";
 import { ADMIN_CALL_COOLDOWN_SECONDS, ADMIN_CALL_MAX_AGE_HOURS, ADMIN_CALL_PAGE, adminCallRow, adminCallSchema, adminCallView, parseAfter, type AdminCallRecord } from "./adminCalls";
-import { COIN_RULES, NotEnoughCoinsError, applyWalletChange, awardDiscordLink, awardMatchBonuses, awardMatchCoins, earnRules, loadWallet, penalizeWallet, walletGrantSchema, walletPenaltySchema } from "./wallet";
+import { COIN_RULES, NotEnoughCoinsError, applyWalletChange, awardDiscordLink, awardMatchBonuses, awardMatchCoins, clanPrices, earnRules, loadWallet, penalizeWallet, walletGrantSchema, walletPenaltySchema } from "./wallet";
 import { isMissingTableError, ownerLinks, ownerProfileSchema, ownerTeam, ownerUpdates } from "./ownerProfile";
 import { PROFILE_NAME_MAX, PROFILE_SECTIONS, bestNameMatch, escapeLike, hiddenForViewer, loadoutShowcase, mapWinRates, normalizeHiddenSections, profileStats, staffCard, type ProfileSection } from "./profileOverview";
 import { activeBans, bannedPlayer, checkBansSchema, issueBan, issueBanSchema, revokeAllBans, revokeAllBansSchema, revokeBans, revokeBanSchema } from "./bans";
@@ -1359,7 +1359,7 @@ export function createLegacyXRouter() {
   router.get("/wallet/me", userRoute(async (_req, res, user) => {
     try {
       res.set("Cache-Control", "no-store");
-      res.json({ ...(await loadWallet(db(), user.id)), earn: earnRules() });
+      res.json({ ...(await loadWallet(db(), user.id)), earn: earnRules(), clanPrices: clanPrices() });
     } catch (error) {
       if (isMissingTableError(error)) apiError(503, "The wallet is not available yet");
       throw error;
@@ -2449,6 +2449,29 @@ export function createLegacyXRouter() {
       legacyXError(error, "Unable to rename clan");
     }
     await logClan({ id: clanId, name: next.name }, user.id, "renamed", null, `${textValue(clan.name)} [${textValue(clan.tag)}] to ${next.name} [${next.tag}]`);
+    res.json(await loadClanDetail(clanId, user.id));
+  }));
+
+  // Extra member slots cost coins; the leader buys them in steps, up to the cap.
+  router.post("/clans/:clanId/slots", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
+    const clanId = await clanIdOf(req.params.clanId);
+    const clan = await requireClanLeader(clanId, user.id);
+    const current = Number(clan.max_players);
+    if (current >= COIN_RULES.clanSlotCap) apiError(409, "The clan is already at the largest size", "clan_slots_cap");
+    const next = Math.min(COIN_RULES.clanSlotCap, current + COIN_RULES.clanSlotStep);
+    const ref = `clan-slots:${clanId}:${next}`;
+    try {
+      await applyWalletChange(legacyXDb(), { userId: user.id, amount: -COIN_RULES.clanSlotPrice, kind: "spend", reason: `Clan size ${current} to ${next}`, ref, actor: user.id });
+    } catch (error) {
+      if (error instanceof NotEnoughCoinsError) apiError(402, `More member slots cost ${COIN_RULES.clanSlotPrice} coins`, "clan_no_coins");
+      throw error;
+    }
+    const { error } = await db().from("clans").update({ max_players: next }).eq("id", clanId).eq("max_players", current);
+    if (error) {
+      await applyWalletChange(legacyXDb(), { userId: user.id, amount: COIN_RULES.clanSlotPrice, kind: "refund", reason: "Clan size change failed", ref: `${ref}:refund`, actor: user.id }).catch((refundError) => console.error("[legacy-x-api] clan slots refund failed", refundError));
+      legacyXError(error, "Unable to add member slots");
+    }
+    await logClan(clan, user.id, "settings", null, `max: ${next} (bought)`);
     res.json(await loadClanDetail(clanId, user.id));
   }));
 
