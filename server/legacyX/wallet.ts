@@ -24,7 +24,7 @@ export const walletPenaltySchema = walletGrantSchema;
 
 export class NotEnoughCoinsError extends Error {
   constructor() {
-    super("Not enough coins");
+    super("Not enough LX");
   }
 }
 

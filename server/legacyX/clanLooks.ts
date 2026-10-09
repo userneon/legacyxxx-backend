@@ -1,7 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 /**
- * Clan appearance. Purely visual. The leader buys with coins, the clan owns it, and every member's clan shows it.
+ * Clan appearance. Purely visual. The leader buys with LX, the clan owns it, and every member's clan shows it.
  * Colours are #rrggbb and effect keys are ones the website knows; anything else is never sent.
  */
 export type ClanPageEffect = "slats" | "waves" | "dots" | "aurora" | "threads" | "particles" | "lightning" | "rays" | "lines" | "plasma";

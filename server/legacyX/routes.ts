@@ -1391,7 +1391,7 @@ export function createLegacyXRouter() {
       }
       res.status(result.applied ? 201 : 200).json({ userId: targetId, balance: result.balance, applied: result.applied });
     } catch (error) {
-      if (error instanceof NotEnoughCoinsError) apiError(402, "Not enough coins");
+      if (error instanceof NotEnoughCoinsError) apiError(402, "Not enough LX");
       if (isMissingTableError(error)) apiError(503, "The wallet is not available yet");
       throw error;
     }
@@ -1753,7 +1753,7 @@ export function createLegacyXRouter() {
     try {
       await applyWalletChange(legacyXDb(), { userId: user.id, amount: -price, kind: "spend", reason: `${label}: ${textValue(item.name_en)}`, ref: `cosmetic:${itemId}`, actor: user.id });
     } catch (error) {
-      if (error instanceof NotEnoughCoinsError) apiError(402, `This costs ${price} coins`, "cosmetic_no_coins");
+      if (error instanceof NotEnoughCoinsError) apiError(402, `This costs ${price} LX`, "cosmetic_no_coins");
       throw error;
     }
     const { error } = await db().from("cosmetic_owned").upsert({ user_id: user.id, item_id: itemId, source: "coin" }, { onConflict: "user_id,item_id", ignoreDuplicates: true });
@@ -2295,7 +2295,7 @@ export function createLegacyXRouter() {
   const clanRpcError = (error: { code?: string; message?: string } | null) => {
     if (!error) return;
     const message = String(error.message ?? "");
-    if (/insufficient coins/i.test(message)) apiError(402, `A clan costs ${COIN_RULES.clanFee} coins`, "clan_no_coins");
+    if (/insufficient coins/i.test(message)) apiError(402, `A clan costs ${COIN_RULES.clanFee} LX`, "clan_no_coins");
     if (error.code === "23505") apiError(409, "That clan name or tag is already taken", "clan_name_taken");
     if (/already belongs/i.test(message)) apiError(409, "You already belong to a clan", "clan_already_member");
     if (/full/i.test(message)) apiError(409, "The clan is full", "clan_full");
@@ -2442,7 +2442,7 @@ export function createLegacyXRouter() {
     try {
       await applyWalletChange(legacyXDb(), { userId: user.id, amount: -COIN_RULES.clanRename, kind: "spend", reason: `Clan renamed: ${next.name} [${next.tag}]`, ref, actor: user.id });
     } catch (error) {
-      if (error instanceof NotEnoughCoinsError) apiError(402, `Changing the name or tag costs ${COIN_RULES.clanRename} coins`, "clan_no_coins");
+      if (error instanceof NotEnoughCoinsError) apiError(402, `Changing the name or tag costs ${COIN_RULES.clanRename} LX`, "clan_no_coins");
       throw error;
     }
     const { error } = await db().from("clans").update(next).eq("id", clanId);
@@ -2466,7 +2466,7 @@ export function createLegacyXRouter() {
     try {
       await applyWalletChange(legacyXDb(), { userId: user.id, amount: -COIN_RULES.clanSlotPrice, kind: "spend", reason: `Clan size ${current} to ${next}`, ref, actor: user.id });
     } catch (error) {
-      if (error instanceof NotEnoughCoinsError) apiError(402, `More member slots cost ${COIN_RULES.clanSlotPrice} coins`, "clan_no_coins");
+      if (error instanceof NotEnoughCoinsError) apiError(402, `More member slots cost ${COIN_RULES.clanSlotPrice} LX`, "clan_no_coins");
       throw error;
     }
     const { error } = await db().from("clans").update({ max_players: next }).eq("id", clanId).eq("max_players", current);
@@ -2501,7 +2501,7 @@ export function createLegacyXRouter() {
     try {
       await applyWalletChange(legacyXDb(), { userId, amount: -item.price, kind: "spend", reason: `Clan look: ${item.name}`, ref, actor: userId });
     } catch (error) {
-      if (error instanceof NotEnoughCoinsError) apiError(402, `This costs ${item.price} coins`, "clan_no_coins");
+      if (error instanceof NotEnoughCoinsError) apiError(402, `This costs ${item.price} LX`, "clan_no_coins");
       throw error;
     }
     const { error } = await db().from("clan_look_owned_player").upsert({ user_id: userId, item_id: item.id }, { onConflict: "user_id,item_id", ignoreDuplicates: true });
