@@ -40,6 +40,7 @@ import { activeBans, bannedPlayer, checkBansSchema, issueBan, issueBanSchema, re
 import { authorizationRequestSchema, resolveAuthorizations } from "./adminAuthorization";
 import { completeLink, createLinkRequest, discordLinkedUserIds, discordIdSchema, isLinkToken, linkCallbackUrl, linkRequestSchema, linkStartUrl, linkResultPage, listLinks, pendingLinkRequest, returnToMatches, unlink } from "./discordLinks";
 import { issueCommPenalty, issueCommPenaltySchema, liftCommPenalties, liftCommPenaltySchema } from "./gamePenalties";
+import { CLAN_LOOK_ITEMS, CLAN_LOOK_KINDS, clanLookItem, clanLooksFor } from "./clanLooks";
 import { killEventSchema, killFeed } from "./killfeed";
 import { heartbeatSchema, ingestHeartbeat } from "./serverHeartbeat";
 import { mapPlayServer, pickQuickJoin, sortPlayServers, type PlayMode } from "./play";
@@ -903,7 +904,7 @@ export function createLegacyXRouter() {
     const worn = await equippedCosmeticsFor(((membersResult.data ?? []) as DbRow[]).map((member) => textValue(member.user_id)));
     const members = ((membersResult.data ?? []) as DbRow[]).map((member) => ({ ...mapClanMember(member), ...lookOf(worn, textValue(member.user_id)) }));
     const viewerRole = viewerId ? members.find((member) => member.id === viewerId)?.role ?? null : null;
-    return { ...mapClanCard(clan), description: clan.description ?? undefined, members, viewer: { role: viewerRole, canModerate: viewerId ? await canModerateClans(viewerId) : false } };
+    return { ...mapClanCard(clan), look: (await clanLooksFor(db(), [clanId])).get(clanId) ?? null, description: clan.description ?? undefined, members, viewer: { role: viewerRole, canModerate: viewerId ? await canModerateClans(viewerId) : false } };
   };
   // Public website reads deliberately bypass AdminPlus. CS2 plugins/admin tools
   // write to Supabase; the website reads these safe projections through root API.
@@ -2313,7 +2314,8 @@ export function createLegacyXRouter() {
     query = input.sort === "name" ? query.order("name", { ascending: true }) : query.order("created_at", { ascending: false });
     const { data, error } = await query.range(input.offset, input.offset + input.limit - 1);
     legacyXError(error, "Unable to load clans");
-    res.json(((data ?? []) as DbRow[]).map((row) => mapClanCard(row)));
+    const looks = await clanLooksFor(db(), ((data ?? []) as DbRow[]).map((row) => textValue(row.id)));
+    res.json(((data ?? []) as DbRow[]).map((row) => ({ ...mapClanCard(row), look: looks.get(textValue(row.id)) ?? null })));
   }));
   // Ranking: the total EXP of a clan's members, counted from real ranked results.
   router.get("/clans/leaderboard", optionalUserRoute(async (_req, res) => {
@@ -2331,8 +2333,9 @@ export function createLegacyXRouter() {
       total.exp += numberValue(stats?.current_exp); total.matches += numberValue(stats?.matches_completed); total.wins += numberValue(stats?.wins); total.members += 1;
       totals.set(textValue(row.clan_id), total);
     }
+    const looks = await clanLooksFor(db(), ((clans.data ?? []) as DbRow[]).map((clan) => textValue(clan.id)));
     const ranked = ((clans.data ?? []) as DbRow[])
-      .map((clan) => ({ ...mapClanCard(clan, totals.get(textValue(clan.id))?.members ?? 0), totalExp: totals.get(textValue(clan.id))?.exp ?? 0, matches: totals.get(textValue(clan.id))?.matches ?? 0, wins: totals.get(textValue(clan.id))?.wins ?? 0 }))
+      .map((clan) => ({ ...mapClanCard(clan, totals.get(textValue(clan.id))?.members ?? 0), look: looks.get(textValue(clan.id)) ?? null, totalExp: totals.get(textValue(clan.id))?.exp ?? 0, matches: totals.get(textValue(clan.id))?.matches ?? 0, wins: totals.get(textValue(clan.id))?.wins ?? 0 }))
       .filter((clan) => clan.currentPlayers > 0)
       .sort((a, b) => b.totalExp - a.totalExp || b.wins - a.wins || a.name.localeCompare(b.name))
       .slice(0, 50)
@@ -2473,6 +2476,64 @@ export function createLegacyXRouter() {
     }
     await logClan(clan, user.id, "settings", null, `max: ${next} (bought)`);
     res.json(await loadClanDetail(clanId, user.id));
+  }));
+
+  // Clan appearance (tag colour, tag glow, backdrop): the leader buys with coins, the clan owns it and wears one of each.
+  const lookView = async (clanId: string) => {
+    const [owned, worn] = await Promise.all([db().from("clan_look_owned").select("item_id").eq("clan_id", clanId), db().from("clan_look_equipped").select("kind,item_id").eq("clan_id", clanId)]);
+    legacyXError(owned.error || worn.error, "Unable to load the clan's looks");
+    const ownedIds = new Set(((owned.data ?? []) as DbRow[]).map((row) => textValue(row.item_id)));
+    const wearing = Object.fromEntries(((worn.data ?? []) as DbRow[]).map((row) => [textValue(row.kind), textValue(row.item_id)]));
+    return {
+      items: CLAN_LOOK_ITEMS.map((item) => ({ ...item, owned: ownedIds.has(item.id) })),
+      equipped: { tag_color: wearing.tag_color ?? null, tag_glow: wearing.tag_glow ?? null, backdrop: wearing.backdrop ?? null },
+    };
+  };
+  router.get("/clans/:clanId/looks", userRoute(async (req, res, user) => {
+    const clanId = await clanIdOf(req.params.clanId);
+    await requireClanLeader(clanId, user.id);
+    res.json(await lookView(clanId));
+  }));
+  router.post("/clans/:clanId/looks/:itemId/buy", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
+    const clanId = await clanIdOf(req.params.clanId);
+    const clan = await requireClanLeader(clanId, user.id);
+    const item = clanLookItem(String(req.params.itemId));
+    if (!item) apiError(404, "Item not found");
+    const { data: have } = await db().from("clan_look_owned").select("item_id").eq("clan_id", clanId).eq("item_id", item.id).maybeSingle();
+    if (have) apiError(409, "The clan already has this", "clan_look_owned");
+    // The ref is per clan and item, so a double click or a retry charges once.
+    const ref = `clan-look:${clanId}:${item.id}`;
+    try {
+      await applyWalletChange(legacyXDb(), { userId: user.id, amount: -item.price, kind: "spend", reason: `Clan look: ${item.name}`, ref, actor: user.id });
+    } catch (error) {
+      if (error instanceof NotEnoughCoinsError) apiError(402, `This costs ${item.price} coins`, "clan_no_coins");
+      throw error;
+    }
+    const { error } = await db().from("clan_look_owned").upsert({ clan_id: clanId, item_id: item.id, bought_by: user.id }, { onConflict: "clan_id,item_id", ignoreDuplicates: true });
+    if (error) {
+      await applyWalletChange(legacyXDb(), { userId: user.id, amount: item.price, kind: "refund", reason: "Clan look purchase failed", ref: `${ref}:refund`, actor: user.id }).catch((refundError) => console.error("[legacy-x-api] clan look refund failed", refundError));
+      legacyXError(error, "Unable to save the purchase");
+    }
+    await logClan(clan, user.id, "settings", null, `look: ${item.name} (bought)`);
+    res.status(201).json(await lookView(clanId));
+  }));
+  // Wear one, or take it off with item: null.
+  router.put("/clans/:clanId/looks/equip", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
+    const clanId = await clanIdOf(req.params.clanId);
+    await requireClanLeader(clanId, user.id);
+    const input = z.object({ kind: z.enum(CLAN_LOOK_KINDS), item: z.string().regex(/^[a-z0-9-]{2,40}$/).nullable() }).strict().parse(req.body);
+    if (input.item === null) {
+      const { error } = await db().from("clan_look_equipped").delete().eq("clan_id", clanId).eq("kind", input.kind);
+      legacyXError(error, "Unable to take it off");
+    } else {
+      const item = clanLookItem(input.item);
+      if (!item || item.kind !== input.kind) apiError(404, "Item not found");
+      const { data: have } = await db().from("clan_look_owned").select("item_id").eq("clan_id", clanId).eq("item_id", item.id).maybeSingle();
+      if (!have) apiError(403, "The clan does not have this yet", "clan_look_not_owned");
+      const { error } = await db().from("clan_look_equipped").upsert({ clan_id: clanId, kind: input.kind, item_id: item.id, updated_at: new Date().toISOString() }, { onConflict: "clan_id,kind" });
+      legacyXError(error, "Unable to wear it");
+    }
+    res.json(await lookView(clanId));
   }));
 
   // Joining: open clans take you at once, the others get a request. One clan at a time, at most three open requests.
