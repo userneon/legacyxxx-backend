@@ -41,6 +41,25 @@ export const checkReportSchema = z
     consent: z.literal(true),
     checkerVersion: text(20).min(1),
     steamIds: z.array(z.string().regex(/^\d{17}$/)).max(10),
+    /** What Steam's own files on the PC say about each account that signed in. Optional: an older checker does not send it. */
+    steamAccounts: z
+      .array(
+        z
+          .object({
+            steamId: z.string().regex(/^\d{17}$/),
+            accountName: text(64).optional(),
+            personaName: text(64).optional(),
+            lastLogin: z.string().datetime().optional(),
+            mostRecent: z.boolean().optional(),
+            cs2LastPlayed: z.string().datetime().optional(),
+            cs2Hours: z.number().min(0).max(100_000).optional(),
+            launchOptions: text(160).optional(),
+          })
+          .strict(),
+      )
+      .max(10)
+      .optional(),
+    cs2: z.object({ installed: z.boolean(), lastUpdated: z.string().datetime().optional() }).strict().optional(),
     filesScanned: z.number().int().min(0).max(100_000_000),
     durationSeconds: z.number().int().min(0).max(86_400),
     findings: z
@@ -62,10 +81,12 @@ export const checkReportSchema = z
 export type CheckReport = z.infer<typeof checkReportSchema>;
 
 /** The stored report plus whether the Steam accounts found on the PC include the player who was asked. */
-export function summarizeReport(report: CheckReport, targetSteamId: string) {
+export function summarizeReport(report: CheckReport, targetSteamId: string, steamBans: unknown[] = []) {
   const detections = report.findings.filter((finding) => finding.confidence === "detection").length;
   return {
     ...report,
+    /** What Steam itself says about the accounts (names, VAC and game bans). Added by the server, not sent by the program. */
+    steamBans,
     consent: true as const,
     detections,
     suspicions: report.findings.length - detections,

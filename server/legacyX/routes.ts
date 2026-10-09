@@ -28,7 +28,7 @@ import { getFaceitProfileSnapshot, getFaceitProfileSnapshotForSteamId, resolveFa
 import { legacyXDb, legacyXError } from "./supabase";
 import { resolveSteamProfileMedia } from "./steamBackground";
 import { coreRoundScore, expRowAsResult, mapExpRecentMatch, mapMatchDetail } from "./matchDetails";
-import { fetchSteamAccountCreatedAt, syncSteamUserProfile } from "./steamProfile";
+import { fetchSteamAccountCreatedAt, fetchSteamBans, syncSteamUserProfile } from "./steamProfile";
 import { RANK_CALCULATION_VERSION, calculateMatchExp, expLimitUsage, limitWindows } from "./ranking";
 import { buildRankedInput, rankedResultSchema, type MatchParticipant, type PlayerProgression } from "./rankedMatch";
 import { ANNOUNCEMENT_MAX_AGE_HOURS, ANNOUNCEMENT_PAGE, announcementRow, announcementSchema, announcementView, type AnnouncementRecord } from "./announcements";
@@ -2572,7 +2572,7 @@ export function createLegacyXRouter() {
       createdAt: textValue(row.created_at),
       completedAt: row.completed_at ? textValue(row.completed_at) : null,
       checkerVersion: row.checker_version ? textValue(row.checker_version) : null,
-      ...(row.report ? { summary: { detections: Number((row.report as DbRow).detections ?? 0), suspicions: Number((row.report as DbRow).suspicions ?? 0), matchesTarget: Boolean((row.report as DbRow).matchesTarget) } } : {}),
+      ...(row.report ? { summary: { detections: Number((row.report as DbRow).detections ?? 0), suspicions: Number((row.report as DbRow).suspicions ?? 0), matchesTarget: Boolean((row.report as DbRow).matchesTarget), bannedAccounts: (Array.isArray((row.report as DbRow).steamBans) ? ((row.report as DbRow).steamBans as DbRow[]) : []).filter((ban) => ban.vacBanned === true || Number(ban.gameBans ?? 0) > 0).length } } : {}),
       ...(withReport ? { report: row.report ?? null } : {}),
     };
   };
@@ -2646,8 +2646,10 @@ export function createLegacyXRouter() {
     const report = checkReportSchema.parse(req.body);
     const { data } = await db().from("player_checks").select("id,target_steam_id,status,expires_at").eq("code_hash", hashCheckCode(normalized)).maybeSingle();
     if (!data || data.status !== "pending" || Date.parse(textValue(data.expires_at)) <= Date.now()) apiError(404, "That code is not valid or has expired", "check_code_invalid");
+    // What Steam says about the accounts on the PC and the player who was asked (names, VAC and game bans). Extra, never required.
+    const steamBans = await fetchSteamBans([textValue(data.target_steam_id), ...report.steamIds, ...(report.steamAccounts ?? []).map((account) => account.steamId)]);
     // Only the first report counts: the status moves in the same statement that is checked.
-    const { data: updated, error } = await db().from("player_checks").update({ status: "completed", completed_at: new Date().toISOString(), checker_version: report.checkerVersion, report: summarizeReport(report, textValue(data.target_steam_id)) }).eq("id", textValue(data.id)).eq("status", "pending").select("id");
+    const { data: updated, error } = await db().from("player_checks").update({ status: "completed", completed_at: new Date().toISOString(), checker_version: report.checkerVersion, report: summarizeReport(report, textValue(data.target_steam_id), steamBans) }).eq("id", textValue(data.id)).eq("status", "pending").select("id");
     legacyXError(error, "Unable to save the report");
     if (!updated || updated.length === 0) apiError(409, "This code was already used", "check_code_used");
     res.status(201).json({ received: true });
