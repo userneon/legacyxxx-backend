@@ -33,7 +33,7 @@ import { RANK_CALCULATION_VERSION, calculateMatchExp, expLimitUsage, limitWindow
 import { buildRankedInput, rankedResultSchema, type MatchParticipant, type PlayerProgression } from "./rankedMatch";
 import { ANNOUNCEMENT_MAX_AGE_HOURS, ANNOUNCEMENT_PAGE, announcementRow, announcementSchema, announcementView, type AnnouncementRecord } from "./announcements";
 import { ADMIN_CALL_COOLDOWN_SECONDS, ADMIN_CALL_MAX_AGE_HOURS, ADMIN_CALL_PAGE, adminCallRow, adminCallSchema, adminCallView, parseAfter, type AdminCallRecord } from "./adminCalls";
-import { COIN_RULES, NotEnoughCoinsError, applyWalletChange, awardDiscordLink, awardMatchBonuses, awardMatchCoins, clanPrices, earnRules, loadWallet, penalizeWallet, walletGrantSchema, walletPenaltySchema } from "./wallet";
+import { COIN_RULES, NotEnoughCoinsError, applyWalletChange, awardDiscordLink, awardMatchBonuses, awardMatchCoins, clanPrices, earnRules, loadWallet, loadWalletSummary, penalizeWallet, walletGrantSchema, walletPenaltySchema } from "./wallet";
 import { isMissingTableError, ownerLinks, ownerProfileSchema, ownerTeam, ownerUpdates } from "./ownerProfile";
 import { PROFILE_NAME_MAX, PROFILE_SECTIONS, bestNameMatch, escapeLike, hiddenForViewer, loadoutShowcase, mapWinRates, normalizeHiddenSections, profileStats, staffCard, type ProfileSection } from "./profileOverview";
 import { activeBans, bannedPlayer, checkBansSchema, issueBan, issueBanSchema, revokeAllBans, revokeAllBansSchema, revokeBans, revokeBanSchema } from "./bans";
@@ -1360,7 +1360,7 @@ export function createLegacyXRouter() {
   router.get("/wallet/me", userRoute(async (_req, res, user) => {
     try {
       res.set("Cache-Control", "no-store");
-      res.json({ ...(await loadWallet(db(), user.id)), earn: earnRules(), clanPrices: clanPrices() });
+      res.json({ ...(await loadWallet(db(), user.id)), earn: earnRules(), clanPrices: clanPrices(), summary: await loadWalletSummary(db(), user.id, new Date(), (message, error) => console.error(`[legacy-x-api] ${message}`, error)) });
     } catch (error) {
       if (isMissingTableError(error)) apiError(503, "The wallet is not available yet");
       throw error;

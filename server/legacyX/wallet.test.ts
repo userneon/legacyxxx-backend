@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { COIN_RULES, applyWalletChange, awardDiscordLink, awardMatchBonuses, awardMatchCoins, earnRules, matchBonuses, playDay, streakLength, ensureWallet, loadWallet, matchCoins, penalizeWallet, walletPenaltySchema, NotEnoughCoinsError, walletGrantSchema } from "./wallet";
+import { buildWalletSummary, describe, expect, it } from "vitest";
+import { COIN_RULES, buildWalletSummary, applyWalletChange, awardDiscordLink, awardMatchBonuses, awardMatchCoins, earnRules, matchBonuses, playDay, streakLength, ensureWallet, loadWallet, matchCoins, penalizeWallet, walletPenaltySchema, NotEnoughCoinsError, walletGrantSchema } from "./wallet";
 
 const USER = "5b8a2f0c-3b1e-4c2f-9d44-0a1b2c3d4e5f";
 
@@ -154,5 +154,49 @@ describe("coin bonuses", () => {
     expect(await awardDiscordLink(db, USER)).toBe(true);
     expect(await awardDiscordLink(db, USER)).toBe(false);
     expect(earnRules().find((rule) => rule.id === "discord")?.coins).toBe(COIN_RULES.discordLink);
+  });
+});
+
+describe("wallet summary", () => {
+  // 2026-10-10 12:00 UTC is 20:00 on 2026-10-10 in Ulaanbaatar.
+  const now = new Date("2026-10-10T12:00:00Z");
+  const hoursAgo = (hours: number) => new Date(now.getTime() - hours * 3_600_000).toISOString();
+
+  it("adds up what was earned today and this week, and what was spent in total", () => {
+    const summary = buildWalletSummary(
+      [
+        { amount: 50, kind: "grant", at: hoursAgo(1) },
+        { amount: 25, kind: "grant", at: hoursAgo(2) },
+        { amount: 30, kind: "grant", at: hoursAgo(30) },
+        { amount: -450, kind: "spend", at: hoursAgo(30) },
+        { amount: 450, kind: "refund", at: hoursAgo(29) },
+        { amount: -300, kind: "spend", at: hoursAgo(24 * 20) },
+      ],
+      [hoursAgo(1), hoursAgo(2), hoursAgo(30)],
+      now,
+    );
+    expect(summary.todayEarned).toBe(75);
+    expect(summary.weekEarned).toBe(105);
+    expect(summary.todayMatches).toBe(2);
+    expect(summary.weekMatches).toBe(3);
+    // A refund is not income, and old spending still counts toward the total.
+    expect(summary.spentTotal).toBe(750);
+    expect(summary.spentCount).toBe(2);
+    expect(summary.daily).toHaveLength(14);
+    expect(summary.daily[13]).toEqual({ day: "2026-10-10", earned: 75 });
+    expect(summary.daily[12].earned).toBe(30);
+  });
+
+  it("counts the days in a row and marks the week", () => {
+    const summary = buildWalletSummary([], [hoursAgo(1), hoursAgo(25), hoursAgo(49), hoursAgo(97)], now);
+    expect(summary.streakDays).toBe(3);
+    expect(summary.week).toHaveLength(7);
+    // Oldest first: 6 days ago and 5 days ago were free, 4 days ago was played, then a gap, then 3 days in a row up to today.
+    expect(summary.week.map((entry) => entry.played)).toEqual([false, false, true, false, true, true, true]);
+  });
+
+  it("is all zeros for a player with no history", () => {
+    const summary = buildWalletSummary([], [], now);
+    expect(summary).toMatchObject({ todayEarned: 0, weekEarned: 0, spentTotal: 0, streakDays: 0 });
   });
 });

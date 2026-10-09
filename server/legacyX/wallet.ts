@@ -295,3 +295,77 @@ export async function awardDiscordLink(db: Db, userId: string, log: (message: st
 export function clanPrices() {
   return { create: COIN_RULES.clanFee, rename: COIN_RULES.clanRename, slots: COIN_RULES.clanSlotPrice, slotStep: COIN_RULES.clanSlotStep, slotCap: COIN_RULES.clanSlotCap };
 }
+
+export interface WalletSummary {
+  /** LX earned today and over the last 7 days (the player's day is Ulaanbaatar time). */
+  todayEarned: number;
+  weekEarned: number;
+  todayMatches: number;
+  weekMatches: number;
+  spentTotal: number;
+  spentCount: number;
+  /** The last 14 days, oldest first: what was earned each day. */
+  daily: { day: string; earned: number }[];
+  /** The last 7 days ending today, oldest first: did the player play a ranked match. */
+  week: { day: string; played: boolean }[];
+  streakDays: number;
+}
+
+/** Turns ledger lines and ranked-match times into the wallet's numbers. Pure, so it can be tested. */
+export function buildWalletSummary(
+  ledger: { amount: number; kind: string; at: string }[],
+  matchTimes: string[],
+  now: Date,
+): WalletSummary {
+  const today = playDay(now);
+  const dayAt = (offset: number) => playDay(new Date(now.getTime() - offset * DAY_MS));
+  const days14 = Array.from({ length: 14 }, (_, index) => dayAt(13 - index));
+  const earnedBy = new Map<string, number>(days14.map((day) => [day, 0]));
+  let spentTotal = 0;
+  let spentCount = 0;
+  for (const line of ledger) {
+    if (line.kind === "spend" && line.amount < 0) {
+      spentTotal += -line.amount;
+      spentCount += 1;
+    }
+    if (line.amount > 0 && line.kind !== "refund") {
+      const day = playDay(new Date(line.at));
+      if (earnedBy.has(day)) earnedBy.set(day, (earnedBy.get(day) ?? 0) + line.amount);
+    }
+  }
+  const matchDays = matchTimes.map((at) => playDay(new Date(at)));
+  const days7 = days14.slice(7);
+  const playedDays = new Set(matchDays);
+  return {
+    todayEarned: earnedBy.get(today) ?? 0,
+    weekEarned: days7.reduce((sum, day) => sum + (earnedBy.get(day) ?? 0), 0),
+    todayMatches: matchDays.filter((day) => day === today).length,
+    weekMatches: matchDays.filter((day) => days7.includes(day)).length,
+    spentTotal,
+    spentCount,
+    daily: days14.map((day) => ({ day, earned: earnedBy.get(day) ?? 0 })),
+    week: days7.map((day) => ({ day, played: playedDays.has(day) })),
+    streakDays: streakLength(playedDays, today),
+  };
+}
+
+/** The wallet's numbers for one player. Decoration for the wallet page: a problem reading them gives null, never an error. */
+export async function loadWalletSummary(db: Db, userId: string, now = new Date(), log: (message: string, error: unknown) => void = () => undefined): Promise<WalletSummary | null> {
+  try {
+    const since = new Date(now.getTime() - 15 * DAY_MS).toISOString();
+    const [recent, spends, matches] = await Promise.all([
+      db.from("wallet_transactions").select("amount,kind,created_at").eq("user_id", userId).gte("created_at", since).limit(2000),
+      db.from("wallet_transactions").select("amount,kind,created_at").eq("user_id", userId).eq("kind", "spend").limit(5000),
+      db.from("competitive_match_exp").select("created_at").eq("user_id", userId).gte("created_at", since).limit(2000),
+    ]);
+    if (recent.error) throw recent.error;
+    if (spends.error) throw spends.error;
+    if (matches.error) throw matches.error;
+    const rows = new Map<string, { amount: number; kind: string; at: string }>();
+    for (const row of [...((recent.data ?? []) as Record<string, unknown>[]), ...((spends.data ?? []) as Record<string, unknown>[])]) rows.set(`${row.created_at}|${row.kind}|${row.amount}`, { amount: Number(row.amount), kind: String(row.kind), at: String(row.created_at) });
+    return buildWalletSummary(Array.from(rows.values()), ((matches.data ?? []) as { created_at: string }[]).map((row) => row.created_at), now);
+  } catch (error) {
+    log("Unable to read the wallet summary", error);
+    return null;
+  }
+}
