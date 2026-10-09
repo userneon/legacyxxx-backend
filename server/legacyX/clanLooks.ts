@@ -49,6 +49,18 @@ export const CLAN_LOOK_ITEMS: ClanLookItem[] = [
   { id: "back-steel", kind: "backdrop", name: "Steel", price: 450, rarity: 2, from: "#334155", to: "#0a0a0a" },
   { id: "back-sunset", kind: "backdrop", name: "Sunset", price: 650, rarity: 3, from: "#9a3412", to: "#701a75" },
   { id: "back-northern", kind: "backdrop", name: "Northern Lights", price: 800, rarity: 4, from: "#0f766e", to: "#4338ca" },
+  { id: "back-violet", kind: "backdrop", name: "Violet Night", price: 300, rarity: 1, from: "#3b0764", to: "#0a0a0a" },
+  { id: "back-rose", kind: "backdrop", name: "Rose", price: 300, rarity: 1, from: "#9f1239", to: "#0a0a0a" },
+  { id: "back-gold", kind: "backdrop", name: "Old Gold", price: 300, rarity: 1, from: "#854d0e", to: "#0a0a0a" },
+  { id: "back-teal", kind: "backdrop", name: "Teal", price: 300, rarity: 1, from: "#115e59", to: "#0a0a0a" },
+  { id: "back-slate-blue", kind: "backdrop", name: "Midnight", price: 450, rarity: 2, from: "#1e3a8a", to: "#0f172a" },
+  { id: "back-toxic", kind: "backdrop", name: "Toxic", price: 450, rarity: 2, from: "#3f6212", to: "#052e16" },
+  { id: "back-blood", kind: "backdrop", name: "Blood Moon", price: 450, rarity: 2, from: "#991b1b", to: "#1c1917" },
+  { id: "back-candy", kind: "backdrop", name: "Candy", price: 650, rarity: 3, from: "#be185d", to: "#6d28d9" },
+  { id: "back-lava", kind: "backdrop", name: "Lava", price: 650, rarity: 3, from: "#c2410c", to: "#7f1d1d" },
+  { id: "back-glacier", kind: "backdrop", name: "Glacier", price: 650, rarity: 3, from: "#0e7490", to: "#1e40af" },
+  { id: "back-royal", kind: "backdrop", name: "Royal", price: 800, rarity: 4, from: "#6d28d9", to: "#b45309" },
+  { id: "back-nebula", kind: "backdrop", name: "Nebula", price: 800, rarity: 4, from: "#be185d", to: "#0e7490" },
 ];
 
 const ITEM_BY_ID = new Map(CLAN_LOOK_ITEMS.map((item) => [item.id, item]));
