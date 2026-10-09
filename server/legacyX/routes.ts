@@ -40,6 +40,7 @@ import { activeBans, bannedPlayer, checkBansSchema, issueBan, issueBanSchema, re
 import { authorizationRequestSchema, resolveAuthorizations } from "./adminAuthorization";
 import { completeLink, createLinkRequest, discordLinkedUserIds, discordIdSchema, isLinkToken, linkCallbackUrl, linkRequestSchema, linkStartUrl, linkResultPage, listLinks, pendingLinkRequest, returnToMatches, unlink } from "./discordLinks";
 import { issueCommPenalty, issueCommPenaltySchema, liftCommPenalties, liftCommPenaltySchema } from "./gamePenalties";
+import { CHECK_CODE_MINUTES, CHECK_RETENTION_DAYS, CHECK_ROLES, checkReportSchema, createCheckSchema, generateCheckCode, hashCheckCode, normalizeCheckCode, summarizeReport } from "./playerChecks";
 import { CLAN_LOOK_ITEMS, CLAN_LOOK_KINDS, clanLookItem, clanLooksFor } from "./clanLooks";
 import { killEventSchema, killFeed } from "./killfeed";
 import { heartbeatSchema, ingestHeartbeat } from "./serverHeartbeat";
@@ -2547,6 +2548,109 @@ export function createLegacyXRouter() {
       legacyXError(error, "Unable to wear it");
     }
     res.json(await lookView(clanId, user.id));
+  }));
+
+  // Player checks: Admin, Manager and Owner ask a player to run the checker program with a one-time code. Anyone can
+  // download the program; only the code needs staff. The program sends back names and masked paths; staff decide.
+  const requireCheckStaff = async (userId: string) => {
+    const { data, error } = await db().from("staff").select("role").eq("user_id", userId).eq("status", "active").maybeSingle();
+    legacyXError(error, "Unable to verify staff access");
+    if (!data || !(CHECK_ROLES as readonly string[]).includes(textValue(data.role))) apiError(403, "Only an Admin, Manager or Owner can request a check", "check_forbidden");
+    return textValue(data.role);
+  };
+  const checkRateLimit = rateLimit({ windowMs: 60_000, limit: process.env.NODE_ENV === "test" ? 1_000 : 30, standardHeaders: "draft-8", legacyHeaders: false, message: { error: "Too many attempts. Please retry shortly." } });
+  const mapCheck = (row: DbRow, usernames: Map<string, string>, withReport = false) => {
+    const pending = row.status === "pending" && Date.parse(textValue(row.expires_at)) <= Date.now();
+    return {
+      id: textValue(row.id),
+      codeHint: textValue(row.code_hint),
+      targetSteamId: textValue(row.target_steam_id),
+      targetName: row.target_user_id ? usernames.get(textValue(row.target_user_id)) ?? null : null,
+      requestedBy: usernames.get(textValue(row.requested_by)) ?? "Staff",
+      status: pending ? "expired" : textValue(row.status),
+      expiresAt: textValue(row.expires_at),
+      createdAt: textValue(row.created_at),
+      completedAt: row.completed_at ? textValue(row.completed_at) : null,
+      checkerVersion: row.checker_version ? textValue(row.checker_version) : null,
+      ...(row.report ? { summary: { detections: Number((row.report as DbRow).detections ?? 0), suspicions: Number((row.report as DbRow).suspicions ?? 0), matchesTarget: Boolean((row.report as DbRow).matchesTarget) } } : {}),
+      ...(withReport ? { report: row.report ?? null } : {}),
+    };
+  };
+  const namesOf = async (ids: string[]) => {
+    const unique = Array.from(new Set(ids.filter(Boolean)));
+    const names = new Map<string, string>();
+    if (unique.length === 0) return names;
+    const { data } = await db().from("users").select("id,username").in("id", unique);
+    for (const row of (data ?? []) as DbRow[]) names.set(textValue(row.id), textValue(row.username));
+    return names;
+  };
+
+  router.post("/checks", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
+    await requireCheckStaff(user.id);
+    const { steamId } = createCheckSchema.parse(req.body);
+    const { data: open } = await db().from("player_checks").select("id").eq("target_steam_id", steamId).eq("status", "pending").gt("expires_at", new Date().toISOString()).maybeSingle();
+    if (open) apiError(409, "This player already has an open check", "check_open");
+    const { data: target } = await db().from("users").select("id").eq("steam_id", steamId).maybeSingle();
+    const code = generateCheckCode();
+    const normalized = normalizeCheckCode(code) ?? "";
+    const expiresAt = new Date(Date.now() + CHECK_CODE_MINUTES * 60_000).toISOString();
+    const { data, error } = await db().from("player_checks").insert({ code_hash: hashCheckCode(normalized), code_hint: normalized.slice(-4), target_steam_id: steamId, target_user_id: target ? textValue(target.id) : null, requested_by: user.id, expires_at: expiresAt }).select("id").single();
+    legacyXError(error, "Unable to create the check");
+    await db().from("audit_logs").insert({ actor_type: "user", actor_id: user.id, action: "check.create", target_type: "player_checks", target_id: textValue(data?.id), metadata: { steamId } });
+    // The code is shown here once; only its hash is kept.
+    res.status(201).json({ id: textValue(data?.id), code, expiresAt, steamId });
+  }));
+  router.get("/checks", userRoute(async (_req, res, user) => {
+    await requireCheckStaff(user.id);
+    // Finished checks do not stay for ever.
+    await db().from("player_checks").delete().lt("created_at", new Date(Date.now() - CHECK_RETENTION_DAYS * 86_400_000).toISOString());
+    const { data, error } = await db().from("player_checks").select("id,code_hint,target_steam_id,target_user_id,requested_by,status,expires_at,completed_at,checker_version,report,created_at").order("created_at", { ascending: false }).limit(50);
+    legacyXError(error, "Unable to load the checks");
+    const rows = (data ?? []) as DbRow[];
+    const names = await namesOf(rows.flatMap((row) => [textValue(row.requested_by), row.target_user_id ? textValue(row.target_user_id) : ""]));
+    res.json(rows.map((row) => mapCheck(row, names)));
+  }));
+  router.get("/checks/:id", userRoute(async (req, res, user) => {
+    await requireCheckStaff(user.id);
+    const id = z.string().uuid().parse(req.params.id);
+    const { data, error } = await db().from("player_checks").select("*").eq("id", id).maybeSingle();
+    legacyXError(error, "Unable to load the check");
+    if (!data) apiError(404, "Check not found");
+    const names = await namesOf([textValue(data.requested_by), data.target_user_id ? textValue(data.target_user_id) : ""]);
+    res.json(mapCheck(data as DbRow, names, true));
+  }));
+  router.delete("/checks/:id", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
+    const role = await requireCheckStaff(user.id);
+    const id = z.string().uuid().parse(req.params.id);
+    const { data } = await db().from("player_checks").select("requested_by,status").eq("id", id).maybeSingle();
+    if (!data) apiError(404, "Check not found");
+    if (textValue(data.requested_by) !== user.id && role === "ADMIN") apiError(403, "An Admin can only cancel their own checks", "check_forbidden");
+    const { error } = await db().from("player_checks").delete().eq("id", id);
+    legacyXError(error, "Unable to remove the check");
+    await db().from("audit_logs").insert({ actor_type: "user", actor_id: user.id, action: "check.delete", target_type: "player_checks", target_id: id, metadata: {} });
+    res.status(204).end();
+  }));
+
+  // For the checker program: it asks who wants the check, shows that to the player, then sends the report. No login: the code is the key.
+  router.get("/checks/code/:code", checkRateLimit, asyncRoute(async (req, res) => {
+    const normalized = normalizeCheckCode(String(req.params.code));
+    if (!normalized) apiError(404, "That code is not valid", "check_code_invalid");
+    const { data } = await db().from("player_checks").select("requested_by,status,expires_at").eq("code_hash", hashCheckCode(normalized)).maybeSingle();
+    if (!data || data.status !== "pending" || Date.parse(textValue(data.expires_at)) <= Date.now()) apiError(404, "That code is not valid or has expired", "check_code_invalid");
+    const names = await namesOf([textValue(data.requested_by)]);
+    res.json({ requestedBy: names.get(textValue(data.requested_by)) ?? "Staff", expiresAt: textValue(data.expires_at) });
+  }));
+  router.post("/checks/code/:code/report", checkRateLimit, asyncRoute(async (req, res) => {
+    const normalized = normalizeCheckCode(String(req.params.code));
+    if (!normalized) apiError(404, "That code is not valid", "check_code_invalid");
+    const report = checkReportSchema.parse(req.body);
+    const { data } = await db().from("player_checks").select("id,target_steam_id,status,expires_at").eq("code_hash", hashCheckCode(normalized)).maybeSingle();
+    if (!data || data.status !== "pending" || Date.parse(textValue(data.expires_at)) <= Date.now()) apiError(404, "That code is not valid or has expired", "check_code_invalid");
+    // Only the first report counts: the status moves in the same statement that is checked.
+    const { data: updated, error } = await db().from("player_checks").update({ status: "completed", completed_at: new Date().toISOString(), checker_version: report.checkerVersion, report: summarizeReport(report, textValue(data.target_steam_id)) }).eq("id", textValue(data.id)).eq("status", "pending").select("id");
+    legacyXError(error, "Unable to save the report");
+    if (!updated || updated.length === 0) apiError(409, "This code was already used", "check_code_used");
+    res.status(201).json({ received: true });
   }));
 
   // Joining: open clans take you at once, the others get a request. One clan at a time, at most three open requests.
