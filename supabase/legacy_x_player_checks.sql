@@ -21,3 +21,7 @@ ALTER TABLE legacy_x.player_checks ENABLE ROW LEVEL SECURITY;
 REVOKE ALL ON legacy_x.player_checks FROM PUBLIC, anon, authenticated;
 GRANT SELECT, INSERT, UPDATE, DELETE ON legacy_x.player_checks TO service_role;
 NOTIFY pgrst, 'reload schema';
+
+-- A personal download: each check can give out its checker zip a few times (the zip carries the check's code). Safe to re-run.
+ALTER TABLE legacy_x.player_checks ADD COLUMN IF NOT EXISTS download_count integer NOT NULL DEFAULT 0 CHECK (download_count BETWEEN 0 AND 100);
+NOTIFY pgrst, 'reload schema';

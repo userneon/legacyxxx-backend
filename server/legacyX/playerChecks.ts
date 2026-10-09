@@ -10,6 +10,8 @@ export const CHECK_ROLES = ["ADMIN", "MANAGER", "OWNER"] as const;
 export const CHECK_CODE_MINUTES = 60;
 /** Finished checks are deleted after this many days. */
 export const CHECK_RETENTION_DAYS = 30;
+/** How many times one check's personal download can be fetched (a second try after a failed download is fine). */
+export const CHECK_MAX_DOWNLOADS = 3;
 
 /** No 0/O, 1/I/L: a code read out loud or copied by hand is not misread. */
 const ALPHABET = "23456789ABCDEFGHJKMNPQRSTUVWXYZ";
