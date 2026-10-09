@@ -33,7 +33,7 @@ import { RANK_CALCULATION_VERSION, calculateMatchExp, expLimitUsage, limitWindow
 import { buildRankedInput, rankedResultSchema, type MatchParticipant, type PlayerProgression } from "./rankedMatch";
 import { ANNOUNCEMENT_MAX_AGE_HOURS, ANNOUNCEMENT_PAGE, announcementRow, announcementSchema, announcementView, type AnnouncementRecord } from "./announcements";
 import { ADMIN_CALL_COOLDOWN_SECONDS, ADMIN_CALL_MAX_AGE_HOURS, ADMIN_CALL_PAGE, adminCallRow, adminCallSchema, adminCallView, parseAfter, type AdminCallRecord } from "./adminCalls";
-import { COIN_RULES, NotEnoughCoinsError, applyWalletChange, awardMatchCoins, loadWallet, penalizeWallet, walletGrantSchema, walletPenaltySchema } from "./wallet";
+import { COIN_RULES, NotEnoughCoinsError, applyWalletChange, awardDiscordLink, awardMatchBonuses, awardMatchCoins, earnRules, loadWallet, penalizeWallet, walletGrantSchema, walletPenaltySchema } from "./wallet";
 import { isMissingTableError, ownerLinks, ownerProfileSchema, ownerTeam, ownerUpdates } from "./ownerProfile";
 import { PROFILE_NAME_MAX, PROFILE_SECTIONS, bestNameMatch, escapeLike, hiddenForViewer, loadoutShowcase, mapWinRates, normalizeHiddenSections, profileStats, staffCard, type ProfileSection } from "./profileOverview";
 import { activeBans, bannedPlayer, checkBansSchema, issueBan, issueBanSchema, revokeAllBans, revokeAllBansSchema, revokeBans, revokeBanSchema } from "./bans";
@@ -740,7 +740,9 @@ async function applyRankedMatchResult(pluginId: string, eventId: string, matchId
     if (applied.error?.code === "40001" && attempt === 0) continue;
     legacyXError(applied.error, "Unable to apply competitive EXP");
     // Coins follow the EXP just applied (and the same limits). A replayed result pays nobody twice (ref = the match).
-    await awardMatchCoins(legacyXDb(), matchId, outcome.players, (message, error) => console.error(`[legacy-x-api] ${message}`, error));
+    const coinLog = (message: string, error: unknown) => console.error(`[legacy-x-api] ${message}`, error);
+    await awardMatchCoins(legacyXDb(), matchId, outcome.players, coinLog);
+    await awardMatchBonuses(legacyXDb(), matchId, finishedAt, outcome.players, coinLog);
     return { ...recordValue(applied.data), ...summary };
   }
   return { status: "not_ranked", reasons: ["exp_changed_concurrently"] };
@@ -1357,7 +1359,7 @@ export function createLegacyXRouter() {
   router.get("/wallet/me", userRoute(async (_req, res, user) => {
     try {
       res.set("Cache-Control", "no-store");
-      res.json(await loadWallet(db(), user.id));
+      res.json({ ...(await loadWallet(db(), user.id)), earn: earnRules() });
     } catch (error) {
       if (isMissingTableError(error)) apiError(503, "The wallet is not available yet");
       throw error;
@@ -3553,6 +3555,7 @@ export function createLegacyXRouter() {
     try {
       const identity = await fetchDiscordIdentity(config, code);
       await linkDiscordAccount(db(), userId, identity);
+      await awardDiscordLink(db(), userId, (message, error) => console.error(`[legacy-x-api] ${message}`, error));
     } catch (failure) {
       console.warn("[legacy-x-api] Discord link failed", failure instanceof Error ? failure.message : failure);
       return back("failed");

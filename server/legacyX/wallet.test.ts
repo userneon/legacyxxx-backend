@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { COIN_RULES, applyWalletChange, awardMatchCoins, ensureWallet, loadWallet, matchCoins, penalizeWallet, walletPenaltySchema, NotEnoughCoinsError, walletGrantSchema } from "./wallet";
+import { COIN_RULES, applyWalletChange, awardDiscordLink, awardMatchBonuses, awardMatchCoins, earnRules, matchBonuses, playDay, streakLength, ensureWallet, loadWallet, matchCoins, penalizeWallet, walletPenaltySchema, NotEnoughCoinsError, walletGrantSchema } from "./wallet";
 
 const USER = "5b8a2f0c-3b1e-4c2f-9d44-0a1b2c3d4e5f";
 
@@ -95,5 +95,64 @@ describe("welcome bonus and penalty", () => {
     expect(walletPenaltySchema.safeParse({ steamId: "76561198000000000", amount: 30, reason: "Cheating" }).success).toBe(true);
     expect(walletPenaltySchema.safeParse({ userId: USER, amount: -30, reason: "Cheating" }).success).toBe(false);
     expect(walletPenaltySchema.safeParse({ userId: USER, amount: 30, reason: "no" }).success).toBe(false);
+  });
+});
+
+describe("coin bonuses", () => {
+  const base = { outcome: "win" as const, countsAsRankedMatch: true, rankBeforeId: 4, rankAfterId: 4, streakDays: 1 };
+
+  it("days are Ulaanbaatar days and a streak counts days in a row ending today", () => {
+    expect(playDay(new Date("2026-10-08T15:59:00Z"))).toBe("2026-10-08");
+    expect(playDay(new Date("2026-10-08T16:01:00Z"))).toBe("2026-10-09");
+    expect(streakLength(["2026-10-08", "2026-10-07", "2026-10-06", "2026-10-04"], "2026-10-08")).toBe(3);
+    expect(streakLength(["2026-10-07"], "2026-10-08")).toBe(0);
+    expect(streakLength(["2026-10-08"], "2026-10-08")).toBe(1);
+  });
+
+  it("pays the first win of the day, each new rank, and the 3 and 7 day streaks", () => {
+    expect(matchBonuses(base)).toEqual([{ key: "first-win", amount: COIN_RULES.firstWinOfDay, reason: "First win of the day" }]);
+    expect(matchBonuses({ ...base, outcome: "loss" })).toEqual([]);
+    expect(matchBonuses({ ...base, outcome: "loss", rankBeforeId: 4, rankAfterId: 6 }).map((bonus) => bonus.key)).toEqual(["rank-5", "rank-6"]);
+    expect(matchBonuses({ ...base, outcome: "loss", streakDays: 3 }).map((bonus) => bonus.key)).toEqual(["streak-3"]);
+    expect(matchBonuses({ ...base, outcome: "loss", streakDays: 7 }).map((bonus) => bonus.key)).toEqual(["streak-7"]);
+    expect(matchBonuses({ ...base, outcome: "loss", streakDays: 10 }).map((bonus) => bonus.key)).toEqual(["streak-3"]);
+    expect(matchBonuses({ ...base, outcome: "loss", streakDays: 5 })).toEqual([]);
+  });
+
+  it("pays nothing to a player who is over the EXP limit or did not count", () => {
+    expect(matchBonuses({ ...base, limited: "daily", rankAfterId: 6 })).toEqual([]);
+    expect(matchBonuses({ ...base, limited: "weekly" })).toEqual([]);
+    expect(matchBonuses({ ...base, countsAsRankedMatch: false })).toEqual([]);
+  });
+
+  it("pays each bonus once: a second win the same day or a replayed match pays nothing", async () => {
+    const seen = new Set<string>();
+    const paid: Array<{ amount: number; ref: string }> = [];
+    const db = {
+      rpc: async (name: string, args: Record<string, unknown>) => {
+        if (name === "wallet_ensure") return { data: 50, error: null };
+        const ref = String(args.p_ref);
+        const fresh = !seen.has(ref);
+        seen.add(ref);
+        if (fresh) paid.push({ amount: Number(args.p_amount), ref });
+        return { data: [{ new_balance: 100, applied: fresh }], error: null };
+      },
+      from: () => ({ select: () => ({ in: () => ({ gte: async () => ({ data: [{ user_id: USER, created_at: "2026-10-06T10:00:00Z" }, { user_id: USER, created_at: "2026-10-07T10:00:00Z" }], error: null }) }) }) }),
+    } as any;
+    const win = [{ userId: USER, outcome: "win" as const, countsAsRankedMatch: true, breakdown: {}, rankBefore: { id: 4 }, rankAfter: { id: 5 } }];
+    const at = new Date("2026-10-08T10:00:00Z");
+    expect(await awardMatchBonuses(db, "m1", at, win)).toBe(3);
+    expect(paid.map((entry) => entry.amount).sort((a, b) => a - b)).toEqual([COIN_RULES.streakThree, COIN_RULES.firstWinOfDay, COIN_RULES.rankUp].sort((a, b) => a - b));
+    expect(await awardMatchBonuses(db, "m1", at, win)).toBe(0);
+    // A second win the same day with no new rank: nothing new.
+    expect(await awardMatchBonuses(db, "m2", at, [{ ...win[0]!, rankBefore: { id: 5 }, rankAfter: { id: 5 } }])).toBe(0);
+  });
+
+  it("pays the Discord link once, and lists the rules from the same numbers", async () => {
+    const seen = new Set<string>();
+    const db = { rpc: async (name: string, args: Record<string, unknown>) => (name === "wallet_ensure" ? { data: 50, error: null } : { data: [{ new_balance: 100, applied: !seen.has(String(args.p_ref)) && !!seen.add(String(args.p_ref)) }], error: null }) } as any;
+    expect(await awardDiscordLink(db, USER)).toBe(true);
+    expect(await awardDiscordLink(db, USER)).toBe(false);
+    expect(earnRules().find((rule) => rule.id === "discord")?.coins).toBe(COIN_RULES.discordLink);
   });
 });

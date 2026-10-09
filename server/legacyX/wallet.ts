@@ -125,7 +125,64 @@ export const COIN_RULES = {
   welcome: 50,
   /** The daily EXP limit pays this share of the coins, like it does for EXP. */
   overDailyLimitShare: 0.25,
+  /** The first ranked win of each (Ulaanbaatar) day. */
+  firstWinOfDay: 25,
+  /** Each rank a player reaches for the first time. Falling and climbing back pays nothing again. */
+  rankUp: 50,
+  /** Linking a Discord account, once per player. */
+  discordLink: 50,
+  /** Ranked matches on 3 days in a row, then every 7th day of the run (3, 7, 10, 14 ...). */
+  streakThree: 30,
+  streakSeven: 100,
 } as const;
+
+/** The earning rules as the website shows them (one source: COIN_RULES). */
+export function earnRules() {
+  return [
+    { id: "match", label: "Ranked match", coins: COIN_RULES.match },
+    { id: "win", label: "Ranked win", coins: COIN_RULES.win },
+    { id: "first-win", label: "First win of the day", coins: COIN_RULES.firstWinOfDay },
+    { id: "rank-up", label: "Each new rank", coins: COIN_RULES.rankUp },
+    { id: "streak-3", label: "3 days in a row", coins: COIN_RULES.streakThree },
+    { id: "streak-7", label: "7 days in a row", coins: COIN_RULES.streakSeven },
+    { id: "discord", label: "Link Discord (once)", coins: COIN_RULES.discordLink },
+  ];
+}
+
+const DAY_MS = 86_400_000;
+/** The player's day: Ulaanbaatar time (UTC+8), as YYYY-MM-DD. */
+export function playDay(at: Date): string {
+  return new Date(at.getTime() + 8 * 3_600_000).toISOString().slice(0, 10);
+}
+
+/** How many days in a row, ending on `today`, the player played (days as YYYY-MM-DD). */
+export function streakLength(days: Iterable<string>, today: string): number {
+  const played = new Set(days);
+  let length = 0;
+  for (let cursor = Date.parse(`${today}T00:00:00Z`); played.has(new Date(cursor).toISOString().slice(0, 10)); cursor -= DAY_MS) length += 1;
+  return length;
+}
+
+export interface MatchBonusInput {
+  outcome: "win" | "draw" | "loss";
+  countsAsRankedMatch: boolean;
+  limited?: "daily" | "weekly";
+  rankBeforeId: number;
+  rankAfterId: number;
+  /** Days in a row ending today, this match included. */
+  streakDays: number;
+}
+
+/** The extra coins one finished match can earn on top of the match itself. A limited (farming) player earns none. */
+export function matchBonuses(player: MatchBonusInput): Array<{ key: string; amount: number; reason: string }> {
+  if (!player.countsAsRankedMatch || player.limited) return [];
+  const bonuses: Array<{ key: string; amount: number; reason: string }> = [];
+  if (player.outcome === "win") bonuses.push({ key: "first-win", amount: COIN_RULES.firstWinOfDay, reason: "First win of the day" });
+  for (let rank = player.rankBeforeId + 1; rank <= player.rankAfterId; rank += 1) bonuses.push({ key: `rank-${rank}`, amount: COIN_RULES.rankUp, reason: "New rank" });
+  if (player.streakDays >= 3 && player.streakDays % 7 === 3) bonuses.push({ key: "streak-3", amount: COIN_RULES.streakThree, reason: "3 days in a row" });
+  if (player.streakDays >= 7 && player.streakDays % 7 === 0) bonuses.push({ key: "streak-7", amount: COIN_RULES.streakSeven, reason: "7 days in a row" });
+  return bonuses;
+}
 
 export interface MatchCoinInput {
   outcome: "win" | "draw" | "loss";
@@ -172,4 +229,60 @@ export async function awardMatchCoins(
     }
   }
   return paid;
+}
+
+/**
+ * Pays the extras of a finished match (first win of the day, a new rank, a streak). Every payment has its own ref, so a
+ * replayed result or a second win the same day pays nothing twice; a wallet problem is logged and never fails the ranking.
+ */
+export async function awardMatchBonuses(
+  db: Db,
+  matchId: string,
+  finishedAt: Date,
+  players: { userId: string; outcome: "win" | "draw" | "loss"; countsAsRankedMatch: boolean; breakdown: { limited?: "daily" | "weekly" }; rankBefore: { id: number }; rankAfter: { id: number } }[],
+  log: (message: string, error: unknown) => void = () => undefined,
+): Promise<number> {
+  const counted = players.filter((player) => player.countsAsRankedMatch && !player.breakdown.limited);
+  if (counted.length === 0) return 0;
+  const today = playDay(finishedAt);
+  const daysByUser = new Map<string, Set<string>>();
+  try {
+    const since = new Date(finishedAt.getTime() - 10 * DAY_MS).toISOString();
+    const { data, error } = await db.from("competitive_match_exp").select("user_id,created_at").in("user_id", counted.map((player) => player.userId)).gte("created_at", since);
+    if (error) throw error;
+    for (const row of (data ?? []) as Array<{ user_id: string; created_at: string }>) {
+      const days = daysByUser.get(row.user_id) ?? new Set<string>();
+      days.add(playDay(new Date(row.created_at)));
+      daysByUser.set(row.user_id, days);
+    }
+  } catch (error) {
+    log(`Unable to read the play days for match ${matchId}`, error);
+  }
+  let paid = 0;
+  for (const player of counted) {
+    const days = daysByUser.get(player.userId) ?? new Set<string>();
+    days.add(today);
+    const bonuses = matchBonuses({ outcome: player.outcome, countsAsRankedMatch: true, rankBeforeId: player.rankBefore.id, rankAfterId: player.rankAfter.id, streakDays: streakLength(days, today) });
+    for (const bonus of bonuses) {
+      // One payment per player per day for the daily ones, once ever for a rank, once per day-of-the-run for a streak.
+      const ref = bonus.key.startsWith("rank-") ? `bonus:${bonus.key}:${player.userId}` : `bonus:${bonus.key}:${player.userId}:${today}`;
+      try {
+        const result = await applyWalletChange(db, { userId: player.userId, amount: bonus.amount, kind: "grant", reason: bonus.reason, ref });
+        if (result.applied) paid += 1;
+      } catch (error) {
+        log(`Unable to pay the ${bonus.key} bonus of match ${matchId} to ${player.userId}`, error);
+      }
+    }
+  }
+  return paid;
+}
+
+/** The one-time coins for linking Discord. */
+export async function awardDiscordLink(db: Db, userId: string, log: (message: string, error: unknown) => void = () => undefined): Promise<boolean> {
+  try {
+    return (await applyWalletChange(db, { userId, amount: COIN_RULES.discordLink, kind: "grant", reason: "Discord linked", ref: `bonus:discord-link:${userId}` })).applied;
+  } catch (error) {
+    log(`Unable to pay the Discord link bonus to ${userId}`, error);
+    return false;
+  }
 }
