@@ -2382,7 +2382,7 @@ export function createLegacyXRouter() {
     }));
     router.put(`/clans/:clanId/${kind}`, sensitiveMutationRateLimit, express.raw({ type: () => true, limit: CLAN_ART_LIMITS[kind].maxBytes + 1 }), userRoute(async (req, res, user) => {
       const clanId = await clanIdOf(req.params.clanId);
-      const { clan } = await requireClanManager(clanId, user.id);
+      const clan = await requireClanLeader(clanId, user.id);
       const bytes = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
       const verdict = checkClanArt(kind, bytes);
       if (!verdict.ok) apiError(verdict.status, verdict.message);
@@ -2395,7 +2395,7 @@ export function createLegacyXRouter() {
     }));
     router.delete(`/clans/:clanId/${kind}`, sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
       const clanId = await clanIdOf(req.params.clanId);
-      const { clan } = await requireClanManager(clanId, user.id);
+      const clan = await requireClanLeader(clanId, user.id);
       const removed = await db().from("clan_images").delete().eq("clan_id", clanId).eq("kind", kind);
       legacyXError(removed.error, "Unable to remove the picture");
       const marker = await db().from("clans").update({ [column]: kind === "logo" ? "" : null }).eq("id", clanId);
@@ -2417,11 +2417,11 @@ export function createLegacyXRouter() {
     res.json(((data ?? []) as DbRow[]).map((member) => ({ ...mapClanMember(member), ...lookOf(worn, textValue(member.user_id)) })));
   }));
 
-  // Settings: description, who can join, player limit (leader or co-leader).
+  // Settings: description, who can join, player limit (the leader only).
   router.put("/clans/:clanId", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
     const clanId = await clanIdOf(req.params.clanId);
     const input = z.object({ description: z.string().trim().max(200), joinMode: z.enum(["open", "request"]), maxPlayers: z.number().int().min(2).max(50) }).partial().strict().refine((value) => Object.keys(value).length > 0, "At least one clan field is required").parse(req.body);
-    const { clan } = await requireClanManager(clanId, user.id);
+    const clan = await requireClanLeader(clanId, user.id);
     if (input.maxPlayers !== undefined && input.maxPlayers < memberCount(clan)) apiError(409, "The clan already has more members than that", "clan_too_many_members");
     const { description, joinMode, maxPlayers } = input;
     const { error } = await db().from("clans").update({ ...(description !== undefined ? { description } : {}), ...(joinMode ? { join_mode: joinMode } : {}), ...(maxPlayers !== undefined ? { max_players: maxPlayers } : {}) }).eq("id", clanId);
