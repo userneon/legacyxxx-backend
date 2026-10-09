@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { createReadStream, promises as fs } from "node:fs";
 import type { Readable } from "node:stream";
 
@@ -109,7 +110,7 @@ export async function* zipChunks(sources: ZipSource[]): AsyncGenerator<Buffer> {
   yield endRecord(sources.length, directory.length, offset);
 }
 
-type FileInfo = { path: string; size: number; crc: number; mtimeMs: number };
+type FileInfo = { path: string; size: number; crc: number; sha256: string; mtimeMs: number };
 const known = new Map<string, FileInfo>();
 
 /** The size and checksum of a big file, worked out once and again only when the file changes. */
@@ -120,8 +121,12 @@ export async function fileInfo(path: string): Promise<FileInfo | null> {
     const cached = known.get(path);
     if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) return cached;
     let crc = 0;
-    for await (const chunk of createReadStream(path) as Readable) crc = crc32(chunk as Buffer, crc);
-    const info = { path, size: stat.size, crc, mtimeMs: stat.mtimeMs };
+    const hash = createHash("sha256");
+    for await (const chunk of createReadStream(path) as Readable) {
+      crc = crc32(chunk as Buffer, crc);
+      hash.update(chunk as Buffer);
+    }
+    const info = { path, size: stat.size, crc, sha256: hash.digest("hex"), mtimeMs: stat.mtimeMs };
     known.set(path, info);
     return info;
   } catch {
@@ -133,6 +138,12 @@ export async function fileInfo(path: string): Promise<FileInfo | null> {
  * The checker as set up on this server: CHECKER_EXE_PATH is the signed LegacyX-Checker.exe, CHECKER_RULES_PATH (optional) its
  * rules.json. Null when no program is set up, so the site does not promise a download it cannot give.
  */
+/** The SHA-256 of the checker program on this server, shown to staff so a player can compare it with what they downloaded. */
+export async function checkerSha256(): Promise<string | null> {
+  const exePath = process.env.CHECKER_EXE_PATH?.trim();
+  return exePath ? (await fileInfo(exePath))?.sha256 ?? null : null;
+}
+
 export async function checkerBase(): Promise<ZipSource[] | null> {
   const exePath = process.env.CHECKER_EXE_PATH?.trim();
   if (!exePath) return null;

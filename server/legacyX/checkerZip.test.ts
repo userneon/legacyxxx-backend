@@ -43,6 +43,7 @@ describe("checker zip", () => {
     writeFileSync(path, program);
     const info = await fileInfo(path);
     expect(info).not.toBeNull();
+    expect(info!.sha256).toMatch(/^[0-9a-f]{64}$/);
     const sources = [
       { name: "LegacyX-Checker.exe", path, size: info!.size, crc: info!.crc },
       { name: "check.json", data: Buffer.from(JSON.stringify({ code: "K7F2-9QX4" })) },

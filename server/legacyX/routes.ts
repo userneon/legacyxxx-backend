@@ -40,7 +40,7 @@ import { activeBans, bannedPlayer, checkBansSchema, issueBan, issueBanSchema, re
 import { authorizationRequestSchema, resolveAuthorizations } from "./adminAuthorization";
 import { completeLink, createLinkRequest, discordLinkedUserIds, discordIdSchema, isLinkToken, linkCallbackUrl, linkRequestSchema, linkStartUrl, linkResultPage, listLinks, pendingLinkRequest, returnToMatches, unlink } from "./discordLinks";
 import { issueCommPenalty, issueCommPenaltySchema, liftCommPenalties, liftCommPenaltySchema } from "./gamePenalties";
-import { checkerBase, zipChunks, zipLength } from "./checkerZip";
+import { checkerBase, checkerSha256, zipChunks, zipLength } from "./checkerZip";
 import { CHECK_CODE_MINUTES, CHECK_MAX_DOWNLOADS, CHECK_RETENTION_DAYS, CHECK_ROLES, checkReportSchema, createCheckSchema, generateCheckCode, hashCheckCode, normalizeCheckCode, summarizeReport } from "./playerChecks";
 import { CLAN_LOOK_ITEMS, CLAN_LOOK_KINDS, clanLookItem, clanLooksFor } from "./clanLooks";
 import { killEventSchema, killFeed } from "./killfeed";
@@ -2604,7 +2604,7 @@ export function createLegacyXRouter() {
     await db().from("audit_logs").insert({ actor_type: "user", actor_id: user.id, action: "check.create", target_type: "player_checks", target_id: textValue(data?.id), metadata: { steamId } });
     // The code is shown here once; only its hash is kept.
     const downloadAvailable = (await checkerBase()) !== null;
-    res.status(201).json({ id: textValue(data?.id), code, expiresAt, steamId, downloadAvailable, downloadPath: downloadAvailable ? `/api/v1/checks/code/${code}/download` : null });
+    res.status(201).json({ id: textValue(data?.id), code, expiresAt, steamId, downloadAvailable, downloadPath: downloadAvailable ? `/api/v1/checks/code/${code}/download` : null, checkerSha256: downloadAvailable ? await checkerSha256() : null });
   }));
   router.get("/checks", userRoute(async (_req, res, user) => {
     await requireCheckStaff(user.id);
