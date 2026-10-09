@@ -4,8 +4,8 @@ import type { SupabaseClient } from "@supabase/supabase-js";
  * Clan appearance. Purely visual. The leader buys with coins, the clan owns it, and every member's clan shows it.
  * Colours are #rrggbb and effect keys are ones the website knows; anything else is never sent.
  */
-export type ClanLookKind = "tag_color" | "tag_glow" | "backdrop";
-export const CLAN_LOOK_KINDS = ["tag_color", "tag_glow", "backdrop"] as const;
+export type ClanLookKind = "tag_color" | "tag_glow" | "backdrop" | "page";
+export const CLAN_LOOK_KINDS = ["tag_color", "tag_glow", "backdrop", "page"] as const;
 
 export interface ClanLookItem {
   id: string;
@@ -13,7 +13,7 @@ export interface ClanLookItem {
   name: string;
   price: number;
   rarity: 1 | 2 | 3 | 4;
-  /** tag_color: base colour and optional effect. tag_glow: glow colour and effect. backdrop: two colours of the gradient. */
+  /** tag_color: base colour and optional effect. tag_glow: glow colour and effect. backdrop and page: two colours of the gradient (a backdrop paints the clan's header and cards, a page paints the whole clan page). */
   color?: string;
   glow?: string;
   fx?: string;
@@ -61,6 +61,18 @@ export const CLAN_LOOK_ITEMS: ClanLookItem[] = [
   { id: "back-glacier", kind: "backdrop", name: "Glacier", price: 650, rarity: 3, from: "#0e7490", to: "#1e40af" },
   { id: "back-royal", kind: "backdrop", name: "Royal", price: 800, rarity: 4, from: "#6d28d9", to: "#b45309" },
   { id: "back-nebula", kind: "backdrop", name: "Nebula", price: 800, rarity: 4, from: "#be185d", to: "#0e7490" },
+  { id: "page-ember", kind: "page", name: "Ember Glow", price: 500, rarity: 2, from: "#7c2d12", to: "#0a0a0a" },
+  { id: "page-ocean", kind: "page", name: "Deep Sea", price: 500, rarity: 2, from: "#0c4a6e", to: "#0a0a0a" },
+  { id: "page-forest", kind: "page", name: "Pine Forest", price: 500, rarity: 2, from: "#14532d", to: "#0a0a0a" },
+  { id: "page-violet", kind: "page", name: "Violet Haze", price: 500, rarity: 2, from: "#4c1d95", to: "#0a0a0a" },
+  { id: "page-crimson", kind: "page", name: "Crimson Dawn", price: 500, rarity: 2, from: "#881337", to: "#0a0a0a" },
+  { id: "page-steel", kind: "page", name: "Steel Fog", price: 500, rarity: 2, from: "#475569", to: "#0a0a0a" },
+  { id: "page-dusk", kind: "page", name: "Dusk Sky", price: 750, rarity: 3, from: "#6d28d9", to: "#9d174d" },
+  { id: "page-sunset", kind: "page", name: "Sunset", price: 750, rarity: 3, from: "#c2410c", to: "#86198f" },
+  { id: "page-aurora", kind: "page", name: "Aurora", price: 750, rarity: 3, from: "#0f766e", to: "#4338ca" },
+  { id: "page-inferno", kind: "page", name: "Inferno", price: 1000, rarity: 4, from: "#dc2626", to: "#f59e0b" },
+  { id: "page-nebula", kind: "page", name: "Nebula", price: 1000, rarity: 4, from: "#be185d", to: "#0e7490" },
+  { id: "page-royal", kind: "page", name: "Royal Court", price: 1000, rarity: 4, from: "#7c3aed", to: "#b45309" },
 ];
 
 const ITEM_BY_ID = new Map(CLAN_LOOK_ITEMS.map((item) => [item.id, item]));
@@ -72,6 +84,7 @@ export interface ClanLook {
   tagGlow: string | null;
   tagGlowFx: string | null;
   backdrop: { from: string; to: string } | null;
+  page: { from: string; to: string } | null;
 }
 
 /** What each clan wears, for any number of clans in one query. A clan that wears nothing is absent from the map. */
@@ -87,10 +100,11 @@ export async function clanLooksFor(db: SupabaseClient, clanIds: string[]): Promi
   for (const row of (data ?? []) as Array<{ clan_id: string; kind: string; item_id: string }>) {
     const item = clanLookItem(row.item_id);
     if (!item || item.kind !== row.kind) continue;
-    const look = looks.get(row.clan_id) ?? { tagColor: null, tagColorFx: null, tagGlow: null, tagGlowFx: null, backdrop: null };
+    const look = looks.get(row.clan_id) ?? { tagColor: null, tagColorFx: null, tagGlow: null, tagGlowFx: null, backdrop: null, page: null };
     if (item.kind === "tag_color") { look.tagColor = item.color ?? null; look.tagColorFx = item.fx ?? null; }
     if (item.kind === "tag_glow") { look.tagGlow = item.glow ?? null; look.tagGlowFx = item.fx ?? null; }
     if (item.kind === "backdrop" && item.from && item.to) look.backdrop = { from: item.from, to: item.to };
+    if (item.kind === "page" && item.from && item.to) look.page = { from: item.from, to: item.to };
     looks.set(row.clan_id, look);
   }
   return looks;

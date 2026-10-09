@@ -2486,7 +2486,7 @@ export function createLegacyXRouter() {
     const wearing = Object.fromEntries(((worn.data ?? []) as DbRow[]).map((row) => [textValue(row.kind), textValue(row.item_id)]));
     return {
       items: CLAN_LOOK_ITEMS.map((item) => ({ ...item, owned: ownedIds.has(item.id) })),
-      equipped: { tag_color: wearing.tag_color ?? null, tag_glow: wearing.tag_glow ?? null, backdrop: wearing.backdrop ?? null },
+      equipped: { tag_color: wearing.tag_color ?? null, tag_glow: wearing.tag_glow ?? null, backdrop: wearing.backdrop ?? null, page: wearing.page ?? null },
     };
   };
   router.get("/clans/:clanId/looks", userRoute(async (req, res, user) => {

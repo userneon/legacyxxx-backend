@@ -9,7 +9,7 @@ CREATE TABLE IF NOT EXISTS legacy_x.clan_look_owned (
 );
 CREATE TABLE IF NOT EXISTS legacy_x.clan_look_equipped (
   clan_id uuid NOT NULL REFERENCES legacy_x.clans(id) ON DELETE CASCADE,
-  kind text NOT NULL CHECK (kind IN ('tag_color', 'tag_glow', 'backdrop')),
+  kind text NOT NULL CHECK (kind IN ('tag_color', 'tag_glow', 'backdrop', 'page')),
   item_id text NOT NULL CHECK (item_id ~ '^[a-z0-9-]{2,40}$'),
   updated_at timestamptz NOT NULL DEFAULT now(),
   PRIMARY KEY (clan_id, kind)
@@ -19,3 +19,6 @@ ALTER TABLE legacy_x.clan_look_equipped ENABLE ROW LEVEL SECURITY;
 REVOKE ALL ON legacy_x.clan_look_owned, legacy_x.clan_look_equipped FROM PUBLIC, anon, authenticated;
 GRANT SELECT, INSERT, UPDATE, DELETE ON legacy_x.clan_look_owned, legacy_x.clan_look_equipped TO service_role;
 NOTIFY pgrst, 'reload schema';
+-- Added later: the whole-page background. Safe to re-run.
+ALTER TABLE legacy_x.clan_look_equipped DROP CONSTRAINT IF EXISTS clan_look_equipped_kind_check;
+ALTER TABLE legacy_x.clan_look_equipped ADD CONSTRAINT clan_look_equipped_kind_check CHECK (kind IN ('tag_color', 'tag_glow', 'backdrop', 'page'));
