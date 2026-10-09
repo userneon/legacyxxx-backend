@@ -40,7 +40,9 @@ import { activeBans, bannedPlayer, checkBansSchema, issueBan, issueBanSchema, re
 import { authorizationRequestSchema, resolveAuthorizations } from "./adminAuthorization";
 import { completeLink, createLinkRequest, discordLinkedUserIds, discordIdSchema, isLinkToken, linkCallbackUrl, linkRequestSchema, linkStartUrl, linkResultPage, listLinks, pendingLinkRequest, returnToMatches, unlink } from "./discordLinks";
 import { issueCommPenalty, issueCommPenaltySchema, liftCommPenalties, liftCommPenaltySchema } from "./gamePenalties";
-import { checkerBase, checkerSha256, zipChunks, zipLength } from "./checkerZip";
+import { createReadStream } from "node:fs";
+import { pipeline } from "node:stream/promises";
+import { checkerBase, checkerMsi, checkerSha256, zipChunks, zipLength } from "./checkerZip";
 import { CHECK_CODE_MINUTES, CHECK_MAX_DOWNLOADS, CHECK_RETENTION_DAYS, CHECK_ROLES, checkReportSchema, createCheckSchema, generateCheckCode, hashCheckCode, normalizeCheckCode, summarizeReport } from "./playerChecks";
 import { CLAN_LOOK_ITEMS, CLAN_LOOK_KINDS, clanLookItem, clanLooksFor } from "./clanLooks";
 import { killEventSchema, killFeed } from "./killfeed";
@@ -2603,8 +2605,9 @@ export function createLegacyXRouter() {
     legacyXError(error, "Unable to create the check");
     await db().from("audit_logs").insert({ actor_type: "user", actor_id: user.id, action: "check.create", target_type: "player_checks", target_id: textValue(data?.id), metadata: { steamId } });
     // The code is shown here once; only its hash is kept.
-    const downloadAvailable = (await checkerBase()) !== null;
-    res.status(201).json({ id: textValue(data?.id), code, expiresAt, steamId, downloadAvailable, downloadPath: downloadAvailable ? `/api/v1/checks/code/${code}/download` : null, checkerSha256: downloadAvailable ? await checkerSha256() : null });
+    const installer = (await checkerMsi()) !== null;
+    const downloadAvailable = installer || (await checkerBase()) !== null;
+    res.status(201).json({ id: textValue(data?.id), code, expiresAt, steamId, downloadAvailable, downloadKind: installer ? "installer" : "zip", downloadPath: downloadAvailable ? `/api/v1/checks/code/${code}/download` : null, checkerSha256: downloadAvailable ? await checkerSha256() : null });
   }));
   router.get("/checks", userRoute(async (_req, res, user) => {
     await requireCheckStaff(user.id);
@@ -2652,17 +2655,24 @@ export function createLegacyXRouter() {
     if (!normalized) apiError(404, "That code is not valid", "check_code_invalid");
     const { data } = await db().from("player_checks").select("id,requested_by,status,expires_at,download_count,code_hint").eq("code_hash", hashCheckCode(normalized)).maybeSingle();
     if (!data || data.status !== "pending" || Date.parse(textValue(data.expires_at)) <= Date.now()) apiError(404, "That code is not valid or has expired", "check_code_invalid");
-    const base = await checkerBase();
-    if (!base) apiError(404, "The checker is not available for download here", "check_download_unavailable");
+    const msi = await checkerMsi();
+    const base = msi ? null : await checkerBase();
+    if (!msi && !base) apiError(404, "The checker is not available for download here", "check_download_unavailable");
     const used = Number(data.download_count ?? 0);
     if (used >= CHECK_MAX_DOWNLOADS) apiError(409, "This download was already used", "check_download_used");
     // Count it before sending, and only if nobody else counted at the same moment.
     const { data: counted, error } = await db().from("player_checks").update({ download_count: used + 1 }).eq("id", textValue(data.id)).eq("download_count", used).select("id");
     legacyXError(error, "Unable to prepare the download");
     if (!counted || counted.length === 0) apiError(409, "Try the download again", "check_download_busy");
+    if (msi) {
+      // The installer has no code inside: the player types it.
+      res.set({ "Content-Type": "application/octet-stream", "Content-Length": String(msi.size), "Content-Disposition": 'attachment; filename="LegacyX-Checker.msi"', "Cache-Control": "no-store" });
+      await pipeline(createReadStream(msi.path), res);
+      return;
+    }
     const names = await namesOf([textValue(data.requested_by)]);
     const code = `${normalized.slice(0, 4)}-${normalized.slice(4)}`;
-    const sources = [...base, { name: "check.json", data: Buffer.from(JSON.stringify({ code, requestedBy: names.get(textValue(data.requested_by)) ?? "Staff" }, null, 2)) }];
+    const sources = [...(base ?? []), { name: "check.json", data: Buffer.from(JSON.stringify({ code, requestedBy: names.get(textValue(data.requested_by)) ?? "Staff" }, null, 2)) }];
     res.set({ "Content-Type": "application/zip", "Content-Length": String(zipLength(sources)), "Content-Disposition": `attachment; filename="LegacyX-Checker-${textValue(data.code_hint)}.zip"`, "Cache-Control": "no-store" });
     for await (const chunk of zipChunks(sources)) {
       if (!res.write(chunk)) await new Promise<void>((resolve) => res.once("drain", () => resolve()));

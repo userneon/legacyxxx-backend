@@ -140,8 +140,16 @@ export async function fileInfo(path: string): Promise<FileInfo | null> {
  */
 /** The SHA-256 of the checker program on this server, shown to staff so a player can compare it with what they downloaded. */
 export async function checkerSha256(): Promise<string | null> {
+  const msi = await checkerMsi();
+  if (msi) return msi.sha256;
   const exePath = process.env.CHECKER_EXE_PATH?.trim();
   return exePath ? (await fileInfo(exePath))?.sha256 ?? null : null;
+}
+
+/** The installer (LegacyX-Checker.msi) when CHECKER_MSI_PATH is set: it is sent as it is, with no code inside; the player types the code. */
+export async function checkerMsi() {
+  const msiPath = process.env.CHECKER_MSI_PATH?.trim();
+  return msiPath ? fileInfo(msiPath) : null;
 }
 
 export async function checkerBase(): Promise<ZipSource[] | null> {
