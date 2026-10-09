@@ -1669,7 +1669,7 @@ export function createLegacyXRouter() {
   const COSMETIC_KINDS = ["frame", "name_color", "name_glow"] as const;
   type CosmeticKind = (typeof COSMETIC_KINDS)[number];
   const loadCosmeticCatalog = async () => {
-    const { data, error } = await db().from("cosmetic_items").select("id,kind,name_en,name_mn,unlock,price,requirement,sort,color,glow,fx").eq("enabled", true).order("sort");
+    const { data, error } = await db().from("cosmetic_items").select("id,kind,name_en,name_mn,unlock,price,requirement,sort,color,glow,fx,rarity,featured").eq("enabled", true).order("sort");
     legacyXError(error, "Unable to load cosmetics");
     return (data ?? []) as DbRow[];
   };
@@ -1699,7 +1699,7 @@ export function createLegacyXRouter() {
   };
   /** The frame and name style fields every player card carries (null when nothing is worn). */
   const lookOf = (worn: Awaited<ReturnType<typeof equippedCosmeticsFor>>, userId: string) => ({ frame: worn.get(userId)?.frame ?? null, nameStyle: worn.get(userId)?.nameStyle ?? null });
-  const cosmeticView = (item: DbRow, ownedIds: Set<string>) => ({
+  const cosmeticView = (item: DbRow, ownedIds: Set<string>, owners: Map<string, number>) => ({
     id: textValue(item.id),
     name: textValue(item.name_en),
     nameMn: textValue(item.name_mn),
@@ -1707,22 +1707,32 @@ export function createLegacyXRouter() {
     price: numberValue(item.price),
     requirement: textValue(item.requirement),
     owned: textValue(item.unlock) === "free" || ownedIds.has(textValue(item.id)),
+    rarity: Math.min(4, Math.max(1, numberValue(item.rarity) || 1)),
+    featured: Boolean(item.featured),
+    /** How many players own it (null for free items, which everyone has). */
+    owners: textValue(item.unlock) === "free" ? null : owners.get(textValue(item.id)) ?? 0,
     ...(item.color ? { color: textValue(item.color) } : {}),
     ...(item.glow ? { glow: textValue(item.glow) } : {}),
     ...(item.fx ? { fx: textValue(item.fx) } : {}),
   });
   router.get("/cosmetics", userRoute(async (_req, res, user) => {
-    const [catalog, owned, worn, equippedRows] = await Promise.all([
+    const [catalog, owned, worn, equippedRows, everyOwned, players] = await Promise.all([
       loadCosmeticCatalog(),
       db().from("cosmetic_owned").select("item_id").eq("user_id", user.id),
       equippedCosmeticsFor([user.id]),
       db().from("cosmetic_equipped").select("kind,item_id").eq("user_id", user.id),
+      db().from("cosmetic_owned").select("item_id").limit(100000),
+      db().from("users").select("id", { count: "exact", head: true }),
     ]);
     legacyXError(owned.error || equippedRows.error, "Unable to load your cosmetics");
+    // Counts are cosmetic extras: if they cannot be read the shop still works, just without them.
+    const owners = new Map<string, number>();
+    if (!everyOwned.error) for (const row of (everyOwned.data ?? []) as DbRow[]) owners.set(textValue(row.item_id), (owners.get(textValue(row.item_id)) ?? 0) + 1);
     const ownedIds = new Set(((owned.data ?? []) as DbRow[]).map((row) => textValue(row.item_id)));
     const wearing = new Map(((equippedRows.data ?? []) as DbRow[]).map((row) => [textValue(row.kind), textValue(row.item_id)]));
-    const ofKind = (kind: CosmeticKind) => catalog.filter((item) => item.kind === kind).map((item) => cosmeticView(item, ownedIds));
+    const ofKind = (kind: CosmeticKind) => catalog.filter((item) => item.kind === kind).map((item) => cosmeticView(item, ownedIds, owners));
     res.json({
+      players: players.error ? null : players.count ?? 0,
       equippedFrame: worn.get(user.id)?.frame ?? null,
       equippedNameColor: wearing.get("name_color") ?? null,
       equippedNameGlow: wearing.get("name_glow") ?? null,
