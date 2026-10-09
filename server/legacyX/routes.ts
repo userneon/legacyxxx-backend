@@ -2479,8 +2479,9 @@ export function createLegacyXRouter() {
   }));
 
   // Clan appearance (tag colour, tag glow, backdrop): the leader buys with coins, the clan owns it and wears one of each.
-  const lookView = async (clanId: string) => {
-    const [owned, worn] = await Promise.all([db().from("clan_look_owned").select("item_id").eq("clan_id", clanId), db().from("clan_look_equipped").select("kind,item_id").eq("clan_id", clanId)]);
+  // What a leader buys belongs to the player, not the clan: it stays theirs when the clan is deleted and goes with them to the next one.
+  const lookView = async (clanId: string, userId: string) => {
+    const [owned, worn] = await Promise.all([db().from("clan_look_owned_player").select("item_id").eq("user_id", userId), db().from("clan_look_equipped").select("kind,item_id").eq("clan_id", clanId)]);
     legacyXError(owned.error || worn.error, "Unable to load the clan's looks");
     const ownedIds = new Set(((owned.data ?? []) as DbRow[]).map((row) => textValue(row.item_id)));
     const wearing = Object.fromEntries(((worn.data ?? []) as DbRow[]).map((row) => [textValue(row.kind), textValue(row.item_id)]));
@@ -2492,30 +2493,30 @@ export function createLegacyXRouter() {
   router.get("/clans/:clanId/looks", userRoute(async (req, res, user) => {
     const clanId = await clanIdOf(req.params.clanId);
     await requireClanLeader(clanId, user.id);
-    res.json(await lookView(clanId));
+    res.json(await lookView(clanId, user.id));
   }));
   router.post("/clans/:clanId/looks/:itemId/buy", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
     const clanId = await clanIdOf(req.params.clanId);
     const clan = await requireClanLeader(clanId, user.id);
     const item = clanLookItem(String(req.params.itemId));
     if (!item) apiError(404, "Item not found");
-    const { data: have } = await db().from("clan_look_owned").select("item_id").eq("clan_id", clanId).eq("item_id", item.id).maybeSingle();
-    if (have) apiError(409, "The clan already has this", "clan_look_owned");
-    // The ref is per clan and item, so a double click or a retry charges once.
-    const ref = `clan-look:${clanId}:${item.id}`;
+    const { data: have } = await db().from("clan_look_owned_player").select("item_id").eq("user_id", user.id).eq("item_id", item.id).maybeSingle();
+    if (have) apiError(409, "You already have this", "clan_look_owned");
+    // The ref is per player and item, so a double click or a retry charges once.
+    const ref = `clan-look:${user.id}:${item.id}`;
     try {
       await applyWalletChange(legacyXDb(), { userId: user.id, amount: -item.price, kind: "spend", reason: `Clan look: ${item.name}`, ref, actor: user.id });
     } catch (error) {
       if (error instanceof NotEnoughCoinsError) apiError(402, `This costs ${item.price} coins`, "clan_no_coins");
       throw error;
     }
-    const { error } = await db().from("clan_look_owned").upsert({ clan_id: clanId, item_id: item.id, bought_by: user.id }, { onConflict: "clan_id,item_id", ignoreDuplicates: true });
+    const { error } = await db().from("clan_look_owned_player").upsert({ user_id: user.id, item_id: item.id }, { onConflict: "user_id,item_id", ignoreDuplicates: true });
     if (error) {
       await applyWalletChange(legacyXDb(), { userId: user.id, amount: item.price, kind: "refund", reason: "Clan look purchase failed", ref: `${ref}:refund`, actor: user.id }).catch((refundError) => console.error("[legacy-x-api] clan look refund failed", refundError));
       legacyXError(error, "Unable to save the purchase");
     }
     await logClan(clan, user.id, "settings", null, `look: ${item.name} (bought)`);
-    res.status(201).json(await lookView(clanId));
+    res.status(201).json(await lookView(clanId, user.id));
   }));
   // Wear one, or take it off with item: null.
   router.put("/clans/:clanId/looks/equip", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
@@ -2528,12 +2529,12 @@ export function createLegacyXRouter() {
     } else {
       const item = clanLookItem(input.item);
       if (!item || item.kind !== input.kind) apiError(404, "Item not found");
-      const { data: have } = await db().from("clan_look_owned").select("item_id").eq("clan_id", clanId).eq("item_id", item.id).maybeSingle();
-      if (!have) apiError(403, "The clan does not have this yet", "clan_look_not_owned");
+      const { data: have } = await db().from("clan_look_owned_player").select("item_id").eq("user_id", user.id).eq("item_id", item.id).maybeSingle();
+      if (!have) apiError(403, "You do not have this yet", "clan_look_not_owned");
       const { error } = await db().from("clan_look_equipped").upsert({ clan_id: clanId, kind: input.kind, item_id: item.id, updated_at: new Date().toISOString() }, { onConflict: "clan_id,kind" });
       legacyXError(error, "Unable to wear it");
     }
-    res.json(await lookView(clanId));
+    res.json(await lookView(clanId, user.id));
   }));
 
   // Joining: open clans take you at once, the others get a request. One clan at a time, at most three open requests.
