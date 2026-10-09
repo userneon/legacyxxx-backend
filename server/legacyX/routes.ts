@@ -2566,6 +2566,7 @@ export function createLegacyXRouter() {
       codeHint: textValue(row.code_hint),
       targetSteamId: textValue(row.target_steam_id),
       targetName: row.target_user_id ? usernames.get(textValue(row.target_user_id)) ?? null : null,
+      targetAvatar: row.target_user_id ? usernames.get(`avatar:${textValue(row.target_user_id)}`) ?? null : null,
       requestedBy: usernames.get(textValue(row.requested_by)) ?? "Staff",
       status: pending ? "expired" : textValue(row.status),
       expiresAt: textValue(row.expires_at),
@@ -2580,8 +2581,11 @@ export function createLegacyXRouter() {
     const unique = Array.from(new Set(ids.filter(Boolean)));
     const names = new Map<string, string>();
     if (unique.length === 0) return names;
-    const { data } = await db().from("users").select("id,username").in("id", unique);
-    for (const row of (data ?? []) as DbRow[]) names.set(textValue(row.id), textValue(row.username));
+    const { data } = await db().from("users").select("id,username,avatar").in("id", unique);
+    for (const row of (data ?? []) as DbRow[]) {
+      names.set(textValue(row.id), textValue(row.username));
+      if (row.avatar) names.set(`avatar:${textValue(row.id)}`, textValue(row.avatar));
+    }
     return names;
   };
 
