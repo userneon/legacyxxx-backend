@@ -4212,12 +4212,13 @@ export function createLegacyXRouter() {
       return;
     }
     const userId = textValue(user.id);
-    const since = new Date(Date.now() - 2 * 60 * 60_000).toISOString();
-    const { data: online, error: onlineError } = await db().from("skinchanger_server_sessions")
+    // Servers report who is on them every few seconds (reconnect_sessions); an open session seen in the last 10 minutes is "online".
+    const since = new Date(Date.now() - 10 * 60_000).toISOString();
+    const { data: online, error: onlineError } = await db().from("reconnect_sessions")
       .select("server_id")
       .eq("steam_id", input.steam_id)
       .is("disconnected_at", null)
-      .gte("last_seen_at", since)
+      .gte("updated_at", since)
       .limit(1);
     legacyXError(onlineError, "Unable to check the player's session");
     if (!(online ?? []).length) apiError(409, "The player is not on a server right now", "not_online");
