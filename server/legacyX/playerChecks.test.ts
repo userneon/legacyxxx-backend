@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { checkReportSchema, createCheckSchema, generateCheckCode, hashCheckCode, normalizeCheckCode, summarizeReport, sharesSamePc } from "./playerChecks";
+import { checkReportSchema, createCheckSchema, generateCheckCode, hashCheckCode, normalizeCheckCode, summarizeReport, sharesSamePc, recentSteamIds } from "./playerChecks";
 
 const STEAM = "76561198000000001";
 const report = { consent: true as const, checkerVersion: "1.0.0", steamIds: [STEAM], filesScanned: 1000, durationSeconds: 90, findings: [{ name: "cheat.exe", kind: "file" as const, confidence: "detection" as const, path: "C:\\Users\\***\\cheat.exe" }, { name: "loader", kind: "trace" as const, confidence: "suspicion" as const }] };
@@ -77,5 +77,20 @@ describe("same PC", () => {
     expect(sharesSamePc(["cpu"])).toBe(false);
     expect(sharesSamePc(["board"])).toBe(false);
     expect(sharesSamePc(["board", "cpu"])).toBe(false);
+  });
+});
+
+describe("recent sign-ins", () => {
+  const at = new Date("2026-10-10T12:00:00Z");
+  it("keeps the accounts signed in within the last 30 minutes and leaves out the ones used earlier or with no time", () => {
+    const accounts = [
+      { steamId: "76561198000000001", lastLogin: "2026-10-10T11:50:00Z" },
+      { steamId: "76561198000000002", lastLogin: "2026-10-10T11:20:00Z" },
+      { steamId: "76561198000000003", lastLogin: "2026-10-08T09:00:00Z" },
+      { steamId: "76561198000000004" },
+      { steamId: "76561198000000005", lastLogin: "2026-10-10T12:03:00Z" },
+    ];
+    expect(recentSteamIds(accounts, at)).toEqual(["76561198000000001", "76561198000000005"]);
+    expect(recentSteamIds(undefined, at)).toEqual([]);
   });
 });

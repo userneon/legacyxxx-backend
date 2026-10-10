@@ -35,6 +35,25 @@ export function hashCheckCode(normalized: string): string {
 
 export const createCheckSchema = z.object({ steamId: z.string().regex(/^\d{17}$/, "A Steam ID has 17 digits") }).strict();
 
+/** An account that signed in to Steam this recently before a scan (or since the scan began) is one the player was just using. */
+export const RECENT_LOGIN_MINUTES = 30;
+
+/**
+ * Which of the Steam accounts found on a PC were signed in within the last few minutes before `at`. Accounts used days ago (a sibling, an old
+ * account) are left out; an account the player switched to just before the scan is in. An account with no known sign-in time is left out.
+ */
+export function recentSteamIds(accounts: Array<{ steamId: string; lastLogin?: string | null }> | undefined, at: Date, minutes = RECENT_LOGIN_MINUTES): string[] {
+  const ids: string[] = [];
+  for (const account of accounts ?? []) {
+    const signedIn = account.lastLogin ? Date.parse(account.lastLogin) : NaN;
+    if (!Number.isFinite(signedIn)) continue;
+    const ago = at.getTime() - signedIn;
+    // A few minutes of clock difference between the PC and the server are allowed.
+    if (ago >= -5 * 60_000 && ago <= minutes * 60_000) ids.push(account.steamId);
+  }
+  return Array.from(new Set(ids));
+}
+
 export const HWID_KINDS = ["id", "uuid", "board", "bios", "cpu", "disk", "machine"] as const;
 /** The parts that say "same PC" (a Windows reinstall changes "machine" only, so it is kept but never used to match). */
 export const HWID_MATCH_KINDS = ["id", "uuid", "board", "bios", "cpu", "disk"] as const;

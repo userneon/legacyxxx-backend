@@ -45,7 +45,7 @@ import { pipeline } from "node:stream/promises";
 import { loadCheckerRules, probesOf } from "./checkerRules";
 import { judgeFacts } from "./checkerJudge";
 import { checkerBase, checkerMsi, checkerSha256, zipChunks, zipLength } from "./checkerZip";
-import { CHECK_CODE_MINUTES, CHECK_MAX_DOWNLOADS, CHECK_RETENTION_DAYS, CHECK_ROLES, HWID_MATCH_KINDS, checkReportSchema, createCheckSchema, generateCheckCode, hashCheckCode, normalizeCheckCode, summarizeReport, sharesSamePc } from "./playerChecks";
+import { CHECK_CODE_MINUTES, CHECK_MAX_DOWNLOADS, CHECK_RETENTION_DAYS, CHECK_ROLES, HWID_MATCH_KINDS, checkReportSchema, createCheckSchema, generateCheckCode, hashCheckCode, normalizeCheckCode, summarizeReport, sharesSamePc, recentSteamIds } from "./playerChecks";
 import { CLAN_LOOK_ITEMS, CLAN_LOOK_KINDS, clanLookItem, clanLooksFor } from "./clanLooks";
 import { killEventSchema, killFeed } from "./killfeed";
 import { heartbeatSchema, ingestHeartbeat } from "./serverHeartbeat";
@@ -2666,8 +2666,8 @@ export function createLegacyXRouter() {
    * A check found a cheat on this PC and the player's own Steam account was on it: that account is banned, and so are the other accounts that were
    * on the same PC (earlier checks, clean then). The hardware itself is not banned; nothing is kept against it.
    */
-  const banCheaterAndAlts = async (steamId: string, parts: Array<{ kind: string; hash: string }>, requestedBy: string): Promise<string[]> => {
-    const alts = await samePcSteamIds(steamId, parts, true);
+  const banCheaterAndAlts = async (steamId: string, parts: Array<{ kind: string; hash: string }>, requestedBy: string, recent: string[] = []): Promise<string[]> => {
+    const alts = Array.from(new Set([...(await samePcSteamIds(steamId, parts, true)), ...recent.filter((id) => id !== steamId)]));
     const eligible = await eligibleToBan([steamId, ...alts.slice(0, 10)]);
     const banned: string[] = [];
     for (const id of eligible) {
@@ -2844,7 +2844,7 @@ export function createLegacyXRouter() {
           if (matched) console.warn(`Banned ${target}: same PC as banned account ${matched}`);
           // A cheat was found (a detection, not a suspicion) and the asked player's own account was on the PC: ban it and the accounts that shared the PC.
           if (accounts.includes(target) && report.findings.some((finding) => finding.confidence === "detection")) {
-            const banned = await banCheaterAndAlts(target, report.hwid.parts, requestedBy);
+            const banned = await banCheaterAndAlts(target, report.hwid.parts, requestedBy, recentSteamIds(report.steamAccounts, new Date()));
             if (banned.length > 0) console.warn(`Cheat found on the PC of ${target}: banned ${banned.join(", ")}`);
           }
         } catch (failure) {
@@ -3715,11 +3715,12 @@ export function createLegacyXRouter() {
    */
   const accountsOnSamePc = async (steamId: string): Promise<string[]> => {
     const candidates = new Set<string>();
-    // Found on the player's PC by their own checks.
-    const { data: checks } = await db().from("player_checks").select("report").eq("target_steam_id", steamId).eq("status", "completed").order("created_at", { ascending: false }).limit(5);
+    // Found on the player's PC by their own checks, and signed in to Steam just before that check (not an account that was last used days ago).
+    const { data: checks } = await db().from("player_checks").select("report,completed_at,created_at").eq("target_steam_id", steamId).eq("status", "completed").order("created_at", { ascending: false }).limit(5);
     for (const row of (checks ?? []) as DbRow[]) {
-      const ids = (row.report as { steamIds?: unknown } | null)?.steamIds;
-      if (Array.isArray(ids)) for (const id of ids) if (typeof id === "string" && /^\d{17}$/.test(id)) candidates.add(id);
+      const accounts = (row.report as { steamAccounts?: Array<{ steamId: string; lastLogin?: string }> } | null)?.steamAccounts;
+      const at = new Date(textValue(row.completed_at) || textValue(row.created_at));
+      for (const id of recentSteamIds(accounts, at)) candidates.add(id);
     }
     // Seen on the same hardware, by checks of other players.
     const { data: mine } = await db().from("player_hwids").select("kind,hash").eq("steam_id", steamId).eq("verified", true);
