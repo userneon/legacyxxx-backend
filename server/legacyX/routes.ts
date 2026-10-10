@@ -2592,6 +2592,56 @@ export function createLegacyXRouter() {
     return names;
   };
 
+  /** The accounts (other than this one) whose kept fingerprint says "same PC" as these parts. With onlyVerified, only where their own Steam account was on that PC. */
+  const samePcSteamIds = async (steamId: string, parts: Array<{ kind: string; hash: string }>, onlyVerified: boolean): Promise<string[]> => {
+    const strong = parts.filter((part) => (HWID_MATCH_KINDS as readonly string[]).includes(part.kind));
+    if (strong.length === 0) return [];
+    let query = db().from("player_hwids").select("steam_id,kind,hash").neq("steam_id", steamId).in("hash", strong.map((part) => part.hash)).limit(500);
+    if (onlyVerified) query = query.eq("verified", true);
+    const { data: found } = await query;
+    const kindsBy = new Map<string, Set<string>>();
+    for (const hit of (found ?? []) as DbRow[]) {
+      if (!strong.some((part) => part.kind === textValue(hit.kind) && part.hash === textValue(hit.hash))) continue;
+      const kinds = kindsBy.get(textValue(hit.steam_id)) ?? new Set<string>();
+      kinds.add(textValue(hit.kind));
+      kindsBy.set(textValue(hit.steam_id), kinds);
+    }
+    return Array.from(kindsBy.entries()).filter(([, kinds]) => sharesSamePc(kinds)).map(([id]) => id);
+  };
+
+  /**
+   * A new fingerprint (a check just finished) that is the same PC as an account that is banned: the account that ran the check is banned too, the same
+   * way a ban from the staff panel is (queued for the server, with the requesting staff member's name on it). Staff and accounts that are already banned
+   * are left alone. Returns the banned account it matched, or null.
+   */
+  const banIfOnBannedPc = async (steamId: string, parts: Array<{ kind: string; hash: string }>, requestedBy: string): Promise<string | null> => {
+    const others = await samePcSteamIds(steamId, parts, false);
+    if (others.length === 0) return null;
+    const { data: otherUsers } = await db().from("users").select("id,steam_id").in("steam_id", others.slice(0, 50));
+    const otherIds = ((otherUsers ?? []) as DbRow[]).map((row) => textValue(row.id));
+    if (otherIds.length === 0) return null;
+    const { data: bans } = await db().from("penalties").select("user_id,is_permanent").in("user_id", otherIds).eq("type", "ban").eq("is_unbanned", false);
+    const banRows = (bans ?? []) as DbRow[];
+    if (banRows.length === 0) return null;
+    const { data: me } = await db().from("users").select("id,role").eq("steam_id", steamId).maybeSingle();
+    if (me) {
+      if (textValue(me.role) !== "Player") return null;
+      const { data: mine } = await db().from("penalties").select("id").eq("user_id", textValue(me.id)).eq("type", "ban").eq("is_unbanned", false).limit(1);
+      if ((mine ?? []).length > 0) return null;
+    }
+    const { data: staff } = await db().from("staff").select("id").eq("user_id", requestedBy).eq("status", "active").maybeSingle();
+    const { data: server } = await db().schema("legacy_x").from("reconnect_servers").select("server_id").limit(1).maybeSingle();
+    if (!staff || !server) return null;
+    const bannedUser = ((otherUsers ?? []) as DbRow[]).find((row) => banRows.some((ban) => textValue(ban.user_id) === textValue(row.id)));
+    const matched = bannedUser ? textValue(bannedUser.steam_id) : others[0];
+    const permanent = banRows.some((ban) => ban.is_permanent === true);
+    const payload = { serverId: textValue(server.server_id), type: "ban", playerSteamId: steamId, message: `Same PC as banned account ${matched}`.slice(0, 240), banTerm: permanent ? "permanent" : "7d", enforceAfterSeconds: 10 };
+    const { data: action, error } = await db().from("staff_panel_actions").insert({ server_id: payload.serverId, requested_by: requestedBy, requested_by_staff_id: textValue(staff.id), action_type: "ban", payload, status: "pending" }).select("id").single();
+    if (error || !action) return null;
+    await db().from("staff_audit_logs").insert({ staff_id: textValue(staff.id), event_type: "staffpanel_action_queued", target_type: "server_action", target_id: (action as DbRow).id, metadata: { action_type: "ban", server_id: payload.serverId, player_steam_id: steamId, same_pc_as_banned: matched, trigger: "check_completed" } });
+    return matched;
+  };
+
   /** What is known about the PC's fingerprint: is it kept for the player, and which other players have run on the same hardware. */
   const hwidView = async (row: DbRow) => {
     const report = row.report as DbRow | null;
@@ -2720,7 +2770,7 @@ export function createLegacyXRouter() {
     const normalized = normalizeCheckCode(String(req.params.code));
     if (!normalized) apiError(404, "That code is not valid", "check_code_invalid");
     const report = checkReportSchema.parse(req.body);
-    const { data } = await db().from("player_checks").select("id,target_steam_id,status,expires_at").eq("code_hash", hashCheckCode(normalized)).maybeSingle();
+    const { data } = await db().from("player_checks").select("id,target_steam_id,requested_by,status,expires_at").eq("code_hash", hashCheckCode(normalized)).maybeSingle();
     if (!data || data.status !== "pending" || Date.parse(textValue(data.expires_at)) <= Date.now()) apiError(404, "That code is not valid or has expired", "check_code_invalid");
     // What Steam says about the accounts on the PC and the player who was asked (names, VAC and game bans). Extra, never required.
     const steamBans = await fetchSteamBans([textValue(data.target_steam_id), ...report.steamIds, ...(report.steamAccounts ?? []).map((account) => account.steamId)]);
@@ -2734,6 +2784,13 @@ export function createLegacyXRouter() {
       const now = new Date().toISOString();
       const { error: hwidError } = await db().from("player_hwids").upsert(report.hwid.parts.map((part) => ({ steam_id: textValue(data.target_steam_id), kind: part.kind, hash: part.hash, verified, check_id: textValue(data.id), last_seen: now })), { onConflict: "steam_id,kind,hash" });
       if (hwidError) console.error("Unable to keep the hardware fingerprint", hwidError.message);
+      // The same PC as an account that is banned: this account is banned too, whether or not its own Steam account was found on the PC.
+      try {
+        const matched = await banIfOnBannedPc(textValue(data.target_steam_id), report.hwid.parts, textValue(data.requested_by));
+        if (matched) console.warn(`Banned ${textValue(data.target_steam_id)}: same PC as banned account ${matched}`);
+      } catch (failure) {
+        console.error("Unable to check the fingerprint against banned accounts", failure instanceof Error ? failure.message : failure);
+      }
     }
     res.status(201).json({ received: true });
   }));
