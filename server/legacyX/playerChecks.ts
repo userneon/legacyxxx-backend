@@ -86,6 +86,30 @@ export const checkReportSchema = z
       })
       .strict()
       .optional(),
+    /**
+     * Facts about programs, not verdicts: which of the listed functions and words a program holds. The server judges them (checkerJudge.ts), so the
+     * rule that decides never has to be inside the program. Not stored; only the findings made from them are.
+     */
+    facts: z
+      .array(
+        z
+          .object({
+            name: text(120).min(1),
+            path: text(200).optional(),
+            size: z.number().int().min(0).max(2_000_000_000),
+            signed: z.boolean(),
+            managed: z.boolean(),
+            running: z.boolean().optional(),
+            protector: text(24).optional(),
+            apis: z.array(text(48)).max(60),
+            game: z.array(text(40)).max(10),
+            offsets: z.array(text(40)).max(20),
+            family: z.array(text(80)).max(60),
+          })
+          .strict(),
+      )
+      .max(500)
+      .optional(),
     cs2: z.object({ installed: z.boolean(), lastUpdated: z.string().datetime().optional() }).strict().optional(),
     filesScanned: z.number().int().min(0).max(100_000_000),
     durationSeconds: z.number().int().min(0).max(86_400),

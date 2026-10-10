@@ -42,6 +42,8 @@ import { completeLink, createLinkRequest, discordLinkedUserIds, discordIdSchema,
 import { issueCommPenalty, issueCommPenaltySchema, liftCommPenalties, liftCommPenaltySchema } from "./gamePenalties";
 import { createReadStream } from "node:fs";
 import { pipeline } from "node:stream/promises";
+import { loadCheckerRules, probesOf } from "./checkerRules";
+import { judgeFacts } from "./checkerJudge";
 import { checkerBase, checkerMsi, checkerSha256, zipChunks, zipLength } from "./checkerZip";
 import { CHECK_CODE_MINUTES, CHECK_MAX_DOWNLOADS, CHECK_RETENTION_DAYS, CHECK_ROLES, HWID_MATCH_KINDS, checkReportSchema, createCheckSchema, generateCheckCode, hashCheckCode, normalizeCheckCode, summarizeReport, sharesSamePc } from "./playerChecks";
 import { CLAN_LOOK_ITEMS, CLAN_LOOK_KINDS, clanLookItem, clanLooksFor } from "./clanLooks";
@@ -2766,10 +2768,23 @@ export function createLegacyXRouter() {
     }
     res.end();
   }));
+  // What the program is told to look for at the start of a scan: the lists only. How what it finds is judged stays here.
+  router.get("/checks/code/:code/rules", checkRateLimit, asyncRoute(async (req, res) => {
+    const normalized = normalizeCheckCode(String(req.params.code));
+    if (!normalized) apiError(404, "That code is not valid", "check_code_invalid");
+    const { data } = await db().from("player_checks").select("status,expires_at").eq("code_hash", hashCheckCode(normalized)).maybeSingle();
+    if (!data || data.status !== "pending" || Date.parse(textValue(data.expires_at)) <= Date.now()) apiError(404, "That code is not valid or has expired", "check_code_invalid");
+    res.set("Cache-Control", "no-store");
+    res.json(probesOf(await loadCheckerRules()));
+  }));
   router.post("/checks/code/:code/report", checkRateLimit, asyncRoute(async (req, res) => {
     const normalized = normalizeCheckCode(String(req.params.code));
     if (!normalized) apiError(404, "That code is not valid", "check_code_invalid");
-    const report = checkReportSchema.parse(req.body);
+    const sent = checkReportSchema.parse(req.body);
+    // The program reports facts about programs; the verdicts are made here, then added to what it found itself (Steam, traces, tampering, downloads).
+    const { facts, ...rest } = sent;
+    const judged = judgeFacts(facts ?? [], await loadCheckerRules()).map((finding) => ({ ...finding, name: finding.name.slice(0, 120), ...(finding.path ? { path: finding.path.slice(0, 200) } : {}), note: finding.note.slice(0, 200) }));
+    const report = { ...rest, findings: [...rest.findings, ...judged].sort((a, b) => Number(b.confidence === "detection") - Number(a.confidence === "detection")).slice(0, 200) };
     const { data } = await db().from("player_checks").select("id,target_steam_id,requested_by,status,expires_at").eq("code_hash", hashCheckCode(normalized)).maybeSingle();
     if (!data || data.status !== "pending" || Date.parse(textValue(data.expires_at)) <= Date.now()) apiError(404, "That code is not valid or has expired", "check_code_invalid");
     // What Steam says about the accounts on the PC and the player who was asked (names, VAC and game bans). Extra, never required.
