@@ -35,7 +35,7 @@ import { ANNOUNCEMENT_MAX_AGE_HOURS, ANNOUNCEMENT_PAGE, announcementRow, announc
 import { ADMIN_CALL_COOLDOWN_SECONDS, ADMIN_CALL_MAX_AGE_HOURS, ADMIN_CALL_PAGE, adminCallRow, adminCallSchema, adminCallView, parseAfter, type AdminCallRecord } from "./adminCalls";
 import { COIN_RULES, NotEnoughCoinsError, applyWalletChange, awardDiscordLink, awardMatchBonuses, awardMatchCoins, clanPrices, earnRules, loadWallet, loadWalletSummary, penalizeWallet, walletGrantSchema, walletPenaltySchema } from "./wallet";
 import { isMissingTableError, ownerLinks, ownerProfileSchema, ownerTeam, ownerUpdates } from "./ownerProfile";
-import { MENU_AGENT_TEAMS, MENU_SKIN_PAGE, MENU_SLOT_CATEGORY, entriesReplacedByEquip, menuAgentName, menuGunModel, menuSkinEquipBody, menuSkinItemsQuery, menuSkinName, menuSkinSlotSchema, menuSkinTypesQuery, menuSlotKey, type LoadoutRow, type MenuSkinSlot } from "./menuSkins";
+import { menuLoadoutQuery, menuRarity, menuTiles, MENU_AGENT_TEAMS, MENU_SKIN_PAGE, MENU_SLOT_CATEGORY, entriesReplacedByEquip, menuAgentName, menuGunModel, menuSkinEquipBody, menuSkinItemsQuery, menuSkinName, menuSkinSlotSchema, menuSkinTypesQuery, menuSlotKey, type LoadoutRow, type MenuSkinSlot } from "./menuSkins";
 import { PROFILE_NAME_MAX, PROFILE_SECTIONS, bestNameMatch, escapeLike, hiddenForViewer, loadoutShowcase, mapWinRates, normalizeHiddenSections, profileStats, staffCard, type ProfileSection } from "./profileOverview";
 import { activeBans, bannedPlayer, checkBansSchema, issueBan, issueBanSchema, revokeAllBans, revokeAllBansSchema, revokeBans, revokeBanSchema } from "./bans";
 import { authorizationRequestSchema, resolveAuthorizations } from "./adminAuthorization";
@@ -4226,6 +4226,56 @@ export function createLegacyXRouter() {
     res.json({ slot: input.slot, group: input.group ?? null, types, equipped, equippedText });
   }));
 
+  /** The overview: every tile a team sees (guns by column, agent, gloves, knife) with what the player has equipped on it. */
+  router.get("/plugin/menu/skins/loadout", menuSkinsRateLimit, pluginRoute("skinchanger:read", async (req, res) => {
+    const input = menuLoadoutQuery.parse(req.query);
+    const bases = await cachedFor("guns:bases", async () => {
+      const { data, error } = await db().from("skinchanger_catalog_items").select("weapon_class,external_key,weapon_defindex").eq("category", "weapon").eq("is_active", true);
+      legacyXError(error, "Unable to load guns");
+      return ((data ?? []) as DbRow[]).map((row) => ({ weaponClass: textValue(row.weapon_class), model: menuGunModel(textValue(row.external_key)), defindex: row.weapon_defindex === null ? null : numberValue(row.weapon_defindex) }));
+    });
+    const models = new Map<string, string | null>(bases.map((base) => [base.weaponClass, base.model]));
+    const defindexes = new Map<string, number | null>(bases.map((base) => [base.weaponClass, base.defindex]));
+    const tiles = menuTiles(input.team, models);
+    const { data: user, error: userError } = await db().from("users").select("id").eq("steam_id", input.steam_id).maybeSingle();
+    legacyXError(userError, "Unable to resolve player");
+    if (!user) {
+      res.status(404).json({ error_code: "not_linked" });
+      return;
+    }
+    const { data: entryData, error: entryError } = await db().from("skinchanger_loadout_entries")
+      .select("slot,slot_key,team_scope,catalog_item_id")
+      .eq("user_id", textValue(user.id));
+    legacyXError(entryError, "Unable to load skinchanger loadout");
+    const entries = (entryData ?? []) as DbRow[];
+    const ids = Array.from(new Set(entries.map((entry) => textValue(entry.catalog_item_id)).filter(Boolean)));
+    const byId = new Map<string, DbRow>();
+    if (ids.length) {
+      const { data: items, error: itemsError } = await db().from("skinchanger_catalog_items").select("id,weapon_class,display_name,paint_id,weapon_defindex,metadata").in("id", ids).eq("is_active", true);
+      legacyXError(itemsError, "Unable to resolve skinchanger items");
+      for (const item of (items ?? []) as DbRow[]) byId.set(textValue(item.id), item);
+    }
+    const applies = (entry: DbRow) => entry.team_scope === input.team || entry.team_scope === "all";
+    const out = tiles.map((tile) => {
+      const entry = entries.find((candidate) => candidate.slot === tile.slot && applies(candidate)
+        && (tile.slot !== "weapon" || candidate.slot_key === `weapon:${defindexes.get(tile.weaponClass) ?? ""}`));
+      const item = entry ? byId.get(textValue(entry.catalog_item_id)) : undefined;
+      const isAgent = tile.slot === "agent";
+      return {
+        ...tile,
+        equipped: item ? {
+          itemId: textValue(item.id),
+          weaponClass: textValue(item.weapon_class),
+          skin: isAgent ? menuAgentName(textValue(item.display_name)) : menuSkinName(textValue(item.display_name)),
+          paintId: item.paint_id === null || item.paint_id === undefined ? null : numberValue(item.paint_id),
+          defindex: isAgent && item.weapon_defindex !== null && item.weapon_defindex !== undefined ? numberValue(item.weapon_defindex) : null,
+          rarity: menuRarity(recordValue(item.metadata).rarity),
+        } : null,
+      };
+    });
+    res.json({ team: input.team, tiles: out, equippedCount: out.filter((tile) => tile.equipped).length });
+  }));
+
   router.get("/plugin/menu/skins/items", menuSkinsRateLimit, pluginRoute("skinchanger:read", async (req, res) => {
     const input = menuSkinItemsQuery.parse(req.query);
     const isAgent = input.slot === "agent";
@@ -4249,6 +4299,8 @@ export function createLegacyXRouter() {
         name: isAgent ? menuAgentName(textValue(row.display_name)) : menuSkinName(textValue(row.display_name)),
         paintId: row.paint_id === null || row.paint_id === undefined ? null : numberValue(row.paint_id),
         defindex: isAgent && row.weapon_defindex !== null && row.weapon_defindex !== undefined ? numberValue(row.weapon_defindex) : null,
+        rarity: menuRarity(recordValue(row.metadata).rarity),
+        rarityName: textValue(recordValue(row.metadata).rarity),
       })),
     });
   }));

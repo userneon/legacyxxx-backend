@@ -9,7 +9,7 @@ export const MENU_SKIN_SLOTS = ["knife", "glove", "weapon", "agent"] as const;
 export type MenuSkinSlot = (typeof MENU_SKIN_SLOTS)[number];
 export const MENU_GUN_GROUPS = ["Rifles", "SMGs", "Heavy", "Pistols"] as const;
 export const MENU_AGENT_TEAMS = ["Terrorist", "Counter-Terrorist"] as const;
-export const MENU_SKIN_PAGE = 12;
+export const MENU_SKIN_PAGE = 9;
 
 /** The catalog category a skin of this slot has (a gun's skins are `weapon_skin`, its plain model is `weapon`). */
 export const MENU_SLOT_CATEGORY: Record<MenuSkinSlot, string> = { knife: "knife", glove: "glove", weapon: "weapon_skin", agent: "agent" };
@@ -69,4 +69,64 @@ export function entriesReplacedByEquip(rows: LoadoutRow[], slot: MenuSkinSlot, s
   if (slot === "agent") return [];
   if (slot === "weapon") return rows.filter((row) => row.slot === "weapon" && row.slot_key === slotKey && row.team_scope !== teamScope);
   return rows.filter((row) => row.slot === slot && !(row.slot_key === slotKey && row.team_scope === "all" && row.catalog_item_id === catalogItemId));
+}
+
+// ---- the loadout overview (like the website's Skinchanger page) -----------------------------------------------
+
+export const MENU_TEAMS = ["t", "ct"] as const;
+export type MenuTeam = (typeof MENU_TEAMS)[number];
+export const menuLoadoutQuery = z.object({ steam_id: steamId, team: z.enum(MENU_TEAMS) });
+
+/** Guns only one team can buy; the rest are for both. Same lists as the website uses. */
+const T_ONLY_GUNS = new Set(["AK-47", "Galil AR", "SG 553", "G3SG1", "Glock-18", "Tec-9", "MAC-10", "Sawed-Off"]);
+const CT_ONLY_GUNS = new Set(["AUG", "FAMAS", "M4A1-S", "M4A4", "SCAR-20", "USP-S", "P2000", "Five-SeveN", "MP9", "MAG-7"]);
+
+/** The overview has five columns; guns go to the first four in this order, the fifth holds Agent, Gloves and Knife. */
+export const MENU_COLUMN_GUNS: string[][] = [
+  ["Glock-18", "USP-S", "P2000", "P250", "Five-SeveN", "Tec-9", "CZ75-Auto", "Desert Eagle", "Dual Berettas", "R8 Revolver"],
+  ["MAC-10", "MP9", "MP7", "MP5-SD", "UMP-45", "P90", "PP-Bizon"],
+  ["AK-47", "M4A4", "M4A1-S", "Galil AR", "FAMAS", "SG 553", "AUG", "AWP", "SSG 08", "SCAR-20", "G3SG1"],
+  ["Nova", "XM1014", "Sawed-Off", "MAG-7", "M249", "Negev"],
+];
+
+export function gunIsForTeam(weaponClass: string, team: MenuTeam): boolean {
+  if (team === "t") return !CT_ONLY_GUNS.has(weaponClass);
+  return !T_ONLY_GUNS.has(weaponClass);
+}
+
+export interface MenuTile { column: number; slot: MenuSkinSlot; weaponClass: string; label: string; model: string | null }
+
+/** The tiles a team sees, column by column. `models` maps a gun class to its model name ("AK-47" -> "ak47"). */
+export function menuTiles(team: MenuTeam, models: Map<string, string | null>): MenuTile[] {
+  const tiles: MenuTile[] = [];
+  MENU_COLUMN_GUNS.forEach((column, index) => {
+    for (const weaponClass of column) {
+      if (!models.has(weaponClass) || !gunIsForTeam(weaponClass, team)) continue;
+      tiles.push({ column: index, slot: "weapon", weaponClass, label: weaponClass, model: models.get(weaponClass) ?? null });
+    }
+  });
+  tiles.push({ column: 4, slot: "agent", weaponClass: team === "t" ? "Terrorist" : "Counter-Terrorist", label: "Agent", model: null });
+  tiles.push({ column: 4, slot: "glove", weaponClass: "", label: "Gloves", model: null });
+  tiles.push({ column: 4, slot: "knife", weaponClass: "", label: "Knife", model: null });
+  return tiles;
+}
+
+/** "Mil-Spec Grade" -> "milspec" ... the class the menu's rarity dot and line use (CS2 rarity colours only as a thin mark). */
+export function menuRarity(rarity: unknown): string | null {
+  const value = String(rarity ?? "").toLowerCase();
+  if (!value) return null;
+  if (value.includes("contraband")) return "contraband";
+  if (value.includes("extraordinary")) return "extraordinary";
+  // Agents have their own names for the same ladder.
+  if (value.includes("master")) return "covert";
+  if (value.includes("superior")) return "classified";
+  if (value.includes("exceptional")) return "restricted";
+  if (value.includes("distinguished")) return "milspec";
+  if (value.includes("covert")) return "covert";
+  if (value.includes("classified")) return "classified";
+  if (value.includes("restricted")) return "restricted";
+  if (value.includes("mil")) return "milspec";
+  if (value.includes("industrial")) return "industrial";
+  if (value.includes("consumer") || value.includes("base")) return "consumer";
+  return null;
 }

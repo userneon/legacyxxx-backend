@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { entriesReplacedByEquip, menuAgentName, menuGunModel, menuSkinEquipBody, menuSkinItemsQuery, menuSkinName, menuSkinTypesQuery, menuSlotKey } from "./menuSkins";
+import { entriesReplacedByEquip, gunIsForTeam, menuRarity, menuTiles, menuAgentName, menuGunModel, menuSkinEquipBody, menuSkinItemsQuery, menuSkinName, menuSkinTypesQuery, menuSlotKey } from "./menuSkins";
 
 describe("menuSkinName", () => {
   it("drops the knife name and the wear", () => {
@@ -76,5 +76,31 @@ describe("request schemas", () => {
     expect(menuSkinItemsQuery.safeParse({ steam_id: "x", slot: "knife", weapon_class: "Karambit" }).success).toBe(false);
     expect(menuSkinEquipBody.safeParse({ steam_id: "76561198000000000", catalog_item_id: "nope" }).success).toBe(false);
     expect(menuSkinEquipBody.safeParse({ steam_id: "76561198000000000", catalog_item_id: "0b6e1b0e-6d0b-4a4b-8d1a-1f5e6a8f7c11", extra: 1 }).success).toBe(false);
+  });
+});
+
+describe("the loadout overview", () => {
+  it("keeps team-only guns to their team", () => {
+    expect(gunIsForTeam("AK-47", "t")).toBe(true);
+    expect(gunIsForTeam("AK-47", "ct")).toBe(false);
+    expect(gunIsForTeam("M4A4", "t")).toBe(false);
+    expect(gunIsForTeam("AWP", "t")).toBe(true);
+    expect(gunIsForTeam("AWP", "ct")).toBe(true);
+  });
+  it("lists a team's guns by column and ends with agent, gloves and knife", () => {
+    const models = new Map<string, string | null>([["AK-47", "ak47"], ["M4A4", "m4a1"], ["AWP", "awp"], ["Glock-18", "glock"], ["USP-S", "usp_silencer"]]);
+    const t = menuTiles("t", models);
+    expect(t.filter((tile) => tile.slot === "weapon").map((tile) => [tile.column, tile.weaponClass])).toEqual([[0, "Glock-18"], [2, "AK-47"], [2, "AWP"]]);
+    expect(t.slice(-3).map((tile) => tile.slot)).toEqual(["agent", "glove", "knife"]);
+    expect(t.find((tile) => tile.slot === "agent")?.weaponClass).toBe("Terrorist");
+    expect(menuTiles("ct", models).find((tile) => tile.slot === "agent")?.weaponClass).toBe("Counter-Terrorist");
+  });
+  it("maps the catalog's rarity names", () => {
+    expect(menuRarity("Mil-Spec Grade")).toBe("milspec");
+    expect(menuRarity("Covert")).toBe("covert");
+    expect(menuRarity("Extraordinary")).toBe("extraordinary");
+    expect(menuRarity("Master")).toBe("covert");
+    expect(menuRarity("Distinguished")).toBe("milspec");
+    expect(menuRarity(null)).toBeNull();
   });
 });
