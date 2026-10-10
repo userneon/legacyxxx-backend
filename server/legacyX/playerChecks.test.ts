@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { checkReportSchema, createCheckSchema, generateCheckCode, hashCheckCode, normalizeCheckCode, summarizeReport } from "./playerChecks";
+import { checkReportSchema, createCheckSchema, generateCheckCode, hashCheckCode, normalizeCheckCode, summarizeReport, sharesSamePc } from "./playerChecks";
 
 const STEAM = "76561198000000001";
 const report = { consent: true as const, checkerVersion: "1.0.0", steamIds: [STEAM], filesScanned: 1000, durationSeconds: 90, findings: [{ name: "cheat.exe", kind: "file" as const, confidence: "detection" as const, path: "C:\\Users\\***\\cheat.exe" }, { name: "loader", kind: "trace" as const, confidence: "suspicion" as const }] };
@@ -66,5 +66,16 @@ describe("check report", () => {
     const parsed = checkReportSchema.parse(report);
     expect(summarizeReport(parsed, STEAM)).toMatchObject({ detections: 1, suspicions: 1, matchesTarget: true });
     expect(summarizeReport(parsed, "76561198000000002").matchesTarget).toBe(false);
+  });
+});
+
+describe("same PC", () => {
+  it("needs the whole-PC value or two strong parts, never a processor alone", () => {
+    expect(sharesSamePc(["id"])).toBe(true);
+    expect(sharesSamePc(["board", "disk"])).toBe(true);
+    expect(sharesSamePc(["uuid", "bios", "cpu"])).toBe(true);
+    expect(sharesSamePc(["cpu"])).toBe(false);
+    expect(sharesSamePc(["board"])).toBe(false);
+    expect(sharesSamePc(["board", "cpu"])).toBe(false);
   });
 });

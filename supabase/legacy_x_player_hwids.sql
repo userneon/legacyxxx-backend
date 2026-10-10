@@ -16,3 +16,4 @@ ALTER TABLE legacy_x.player_hwids ENABLE ROW LEVEL SECURITY;
 REVOKE ALL ON legacy_x.player_hwids FROM PUBLIC, anon, authenticated;
 GRANT SELECT, INSERT, UPDATE, DELETE ON legacy_x.player_hwids TO service_role;
 NOTIFY pgrst, 'reload schema';
+

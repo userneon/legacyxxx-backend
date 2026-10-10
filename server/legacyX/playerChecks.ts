@@ -39,6 +39,16 @@ export const HWID_KINDS = ["id", "uuid", "board", "bios", "cpu", "disk", "machin
 /** The parts that say "same PC" (a Windows reinstall changes "machine" only, so it is kept but never used to match). */
 export const HWID_MATCH_KINDS = ["id", "uuid", "board", "bios", "cpu", "disk"] as const;
 
+/**
+ * Whether the hardware parts two accounts have in common are enough to say "the same PC": the whole-PC value, or at least two different strong parts
+ * (system id, motherboard, BIOS, a disk). A processor alone is not enough: the same model can report the same id.
+ */
+export function sharesSamePc(kinds: Iterable<string>): boolean {
+  const set = new Set(kinds);
+  if (set.has("id")) return true;
+  return ["uuid", "board", "bios", "disk"].filter((kind) => set.has(kind)).length >= 2;
+}
+
 const text = (max: number) => z.string().trim().max(max);
 
 /** What the checker program sends back. Names and masked paths only: never file contents, screenshots or keystrokes. */

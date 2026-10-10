@@ -43,7 +43,7 @@ import { issueCommPenalty, issueCommPenaltySchema, liftCommPenalties, liftCommPe
 import { createReadStream } from "node:fs";
 import { pipeline } from "node:stream/promises";
 import { checkerBase, checkerMsi, checkerSha256, zipChunks, zipLength } from "./checkerZip";
-import { CHECK_CODE_MINUTES, CHECK_MAX_DOWNLOADS, CHECK_RETENTION_DAYS, CHECK_ROLES, HWID_MATCH_KINDS, checkReportSchema, createCheckSchema, generateCheckCode, hashCheckCode, normalizeCheckCode, summarizeReport } from "./playerChecks";
+import { CHECK_CODE_MINUTES, CHECK_MAX_DOWNLOADS, CHECK_RETENTION_DAYS, CHECK_ROLES, HWID_MATCH_KINDS, checkReportSchema, createCheckSchema, generateCheckCode, hashCheckCode, normalizeCheckCode, summarizeReport, sharesSamePc } from "./playerChecks";
 import { CLAN_LOOK_ITEMS, CLAN_LOOK_KINDS, clanLookItem, clanLooksFor } from "./clanLooks";
 import { killEventSchema, killFeed } from "./killfeed";
 import { heartbeatSchema, ingestHeartbeat } from "./serverHeartbeat";
@@ -2601,6 +2601,7 @@ export function createLegacyXRouter() {
     const matchable = parts.filter((part) => (HWID_MATCH_KINDS as readonly string[]).includes(part.kind));
     const { data: mine } = await db().from("player_hwids").select("verified").eq("steam_id", target).eq("hash", parts[0].hash).maybeSingle();
     const shared = new Map<string, Set<string>>();
+    const bannedIds = new Set<string>();
     if (matchable.length > 0) {
       const { data: found } = await db().from("player_hwids").select("steam_id,kind,hash").eq("verified", true).neq("steam_id", target).in("hash", matchable.map((part) => part.hash)).limit(200);
       for (const hit of (found ?? []) as DbRow[]) {
@@ -2613,10 +2614,17 @@ export function createLegacyXRouter() {
     const ids = Array.from(shared.keys());
     const { data: users } = ids.length > 0 ? await db().from("users").select("id,steam_id,username,avatar").in("steam_id", ids) : { data: [] as DbRow[] };
     const byId = new Map(((users ?? []) as DbRow[]).map((user) => [textValue(user.steam_id), user]));
+    // Who of them is banned right now (from the penalties, not a copy).
+    const userIds = ((users ?? []) as DbRow[]).map((user) => textValue(user.id));
+    if (userIds.length > 0) {
+      const { data: bans } = await db().from("penalties").select("user_id").in("user_id", userIds).eq("type", "ban").eq("is_unbanned", false);
+      const banned = new Set(((bans ?? []) as DbRow[]).map((row) => textValue(row.user_id)));
+      for (const user of (users ?? []) as DbRow[]) if (banned.has(textValue(user.id))) bannedIds.add(textValue(user.steam_id));
+    }
     return {
       hwid: {
         saved: Boolean(mine?.verified),
-        shared: ids.map((steamId) => ({ steamId, name: byId.get(steamId) ? textValue(byId.get(steamId)?.username) : null, avatar: byId.get(steamId)?.avatar ? textValue(byId.get(steamId)?.avatar) : null, kinds: Array.from(shared.get(steamId) ?? []) })),
+        shared: ids.map((steamId) => ({ steamId, name: byId.get(steamId) ? textValue(byId.get(steamId)?.username) : null, avatar: byId.get(steamId)?.avatar ? textValue(byId.get(steamId)?.avatar) : null, kinds: Array.from(shared.get(steamId) ?? []), banned: bannedIds.has(steamId) })),
       },
     };
   };
@@ -3584,6 +3592,34 @@ export function createLegacyXRouter() {
     res.json(data ? { availability: "telemetry", cpuPercent: data.cpu_percent, memoryPercent: data.memory_percent, diskPercent: data.disk_percent, loadAverage: data.load_average, healthy: data.healthy, updatedAt: data.reported_at } : { availability: "unavailable", cpuPercent: null, memoryPercent: null, diskPercent: null, loadAverage: null, healthy: null, updatedAt: null });
   }));
 
+  /**
+   * When a player is banned: find the other accounts that ran on the same PC (their fingerprint was kept by a check).
+   * Staff are never included, and neither is anyone who is already banned. At most ten.
+   */
+  const accountsOnSamePc = async (steamId: string): Promise<string[]> => {
+    const { data: mine } = await db().from("player_hwids").select("kind,hash").eq("steam_id", steamId).eq("verified", true);
+    const own = (mine ?? []) as DbRow[];
+    if (own.length === 0) return [];
+    const strong = own.filter((part) => (HWID_MATCH_KINDS as readonly string[]).includes(textValue(part.kind)));
+    if (strong.length === 0) return [];
+    const { data: found } = await db().from("player_hwids").select("steam_id,kind,hash").eq("verified", true).neq("steam_id", steamId).in("hash", strong.map((part) => textValue(part.hash))).limit(500);
+    const kindsBy = new Map<string, Set<string>>();
+    for (const hit of (found ?? []) as DbRow[]) {
+      if (!strong.some((part) => textValue(part.kind) === textValue(hit.kind) && textValue(part.hash) === textValue(hit.hash))) continue;
+      const kinds = kindsBy.get(textValue(hit.steam_id)) ?? new Set<string>();
+      kinds.add(textValue(hit.kind));
+      kindsBy.set(textValue(hit.steam_id), kinds);
+    }
+    const candidates = Array.from(kindsBy.entries()).filter(([, kinds]) => sharesSamePc(kinds)).map(([id]) => id).slice(0, 10);
+    if (candidates.length === 0) return [];
+    const { data: users } = await db().from("users").select("id,steam_id,role").in("steam_id", candidates);
+    const players = ((users ?? []) as DbRow[]).filter((row) => textValue(row.role) === "Player");
+    if (players.length === 0) return [];
+    const { data: active } = await db().from("penalties").select("user_id").in("user_id", players.map((row) => textValue(row.id))).eq("type", "ban").eq("is_unbanned", false);
+    const alreadyBanned = new Set(((active ?? []) as DbRow[]).map((row) => textValue(row.user_id)));
+    return players.filter((row) => !alreadyBanned.has(textValue(row.id))).map((row) => textValue(row.steam_id));
+  };
+
   router.post("/staffpanel/actions", staffPanelRoute(async (req, res, staff) => {
     const input = staffPanelActionSchema.parse(req.body);
     requireStaffCapability(staff, input.type);
@@ -3607,7 +3643,22 @@ export function createLegacyXRouter() {
       metadata: { action_type: input.type, server_id: input.serverId, player_steam_id: input.playerSteamId ?? null, target_map: input.type === "map_change" ? input.map : null, map_impact_acknowledged: input.type === "map_change" ? input.mapImpactAcknowledged === true : null, timeout_seconds: input.type === "timeout" ? input.durationSeconds : null, enforce_after_seconds: input.enforceAfterSeconds ?? null },
     });
     legacyXError(audit.error, "Unable to audit server action");
-    res.status(202).json({ action: data });
+    // A ban reaches the other accounts that were seen on the same PC, the same way and for the same term.
+    const linked: string[] = [];
+    if (input.type === "ban" && input.playerSteamId) {
+      try {
+        for (const steamId of await accountsOnSamePc(input.playerSteamId)) {
+          const payload = { ...input, playerSteamId: steamId, playerName: undefined, message: `${input.message ?? "Banned"} (same PC as ${input.playerSteamId})`.slice(0, 240) };
+          const { data: extra, error: extraError } = await db().from("staff_panel_actions").insert({ server_id: input.serverId, requested_by: staff.userId, requested_by_staff_id: staff.staffId, action_type: "ban", payload, status: "pending" }).select("id").single();
+          if (extraError || !extra) continue;
+          linked.push(steamId);
+          await db().from("staff_audit_logs").insert({ staff_id: staff.staffId, event_type: "staffpanel_action_queued", target_type: "server_action", target_id: (extra as DbRow).id, metadata: { action_type: "ban", server_id: input.serverId, player_steam_id: steamId, linked_to: input.playerSteamId } });
+        }
+      } catch (failure) {
+        console.error("Unable to ban the accounts on the same PC", failure instanceof Error ? failure.message : failure);
+      }
+    }
+    res.status(202).json({ action: data, linkedBans: linked });
   }));
 
   const leaderboardHandler = asyncRoute(async (req, res) => {
