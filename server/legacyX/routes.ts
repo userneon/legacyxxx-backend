@@ -35,7 +35,7 @@ import { ANNOUNCEMENT_MAX_AGE_HOURS, ANNOUNCEMENT_PAGE, announcementRow, announc
 import { ADMIN_CALL_COOLDOWN_SECONDS, ADMIN_CALL_MAX_AGE_HOURS, ADMIN_CALL_PAGE, adminCallRow, adminCallSchema, adminCallView, parseAfter, type AdminCallRecord } from "./adminCalls";
 import { COIN_RULES, NotEnoughCoinsError, applyWalletChange, awardDiscordLink, awardMatchBonuses, awardMatchCoins, clanPrices, earnRules, loadWallet, loadWalletSummary, penalizeWallet, walletGrantSchema, walletPenaltySchema } from "./wallet";
 import { isMissingTableError, ownerLinks, ownerProfileSchema, ownerTeam, ownerUpdates } from "./ownerProfile";
-import { menuLoadoutQuery, menuRarity, menuTiles, MENU_AGENT_TEAMS, MENU_SKIN_PAGE, MENU_SLOT_CATEGORY, entriesReplacedByEquip, menuAgentName, menuGunModel, menuSkinEquipBody, menuSkinItemsQuery, menuSkinName, menuSkinSlotSchema, menuSkinTypesQuery, menuSlotKey, type LoadoutRow, type MenuSkinSlot } from "./menuSkins";
+import { menuLoadoutQuery, menuRarity, menuTiles, MENU_AGENT_TEAMS, MENU_SKIN_PAGE, MENU_SLOT_CATEGORY, entriesReplacedByEquip, menuAgentName, menuGunModel, menuSkinEquipBody, menuSkinItemsQuery, menuSkinName, menuSkinSlotSchema, menuSkinTypesQuery, menuSlotKey, sharedGunEntryMovedTo, type LoadoutRow, type MenuSkinSlot } from "./menuSkins";
 import { PROFILE_NAME_MAX, PROFILE_SECTIONS, bestNameMatch, escapeLike, hiddenForViewer, loadoutShowcase, mapWinRates, normalizeHiddenSections, profileStats, staffCard, type ProfileSection } from "./profileOverview";
 import { activeBans, bannedPlayer, checkBansSchema, issueBan, issueBanSchema, revokeAllBans, revokeAllBansSchema, revokeBans, revokeBanSchema } from "./bans";
 import { authorizationRequestSchema, resolveAuthorizations } from "./adminAuthorization";
@@ -4346,19 +4346,22 @@ export function createLegacyXRouter() {
       modelDefindex = found === undefined || found === null ? null : Number(found);
     }
     const slotKey = menuSlotKey(pickedSlot, modelDefindex, textValue(itemRow.weapon_class));
-    // Gun skins and agents belong to one team when the game says so; everything else is for both.
-    const teamScope = pickedSlot === "weapon" || pickedSlot === "agent" ? catalogTeamScope(itemRow.metadata, itemRow.weapon_class, itemRow.display_name) : "all";
+    // A gun skin or an agent belongs to one team when the game says so. Anything else follows the team tab the pick was made on
+    // (a pick without a tab is for both teams).
+    const required = pickedSlot === "weapon" || pickedSlot === "agent" ? catalogTeamScope(itemRow.metadata, itemRow.weapon_class, itemRow.display_name) : "all";
+    const teamScope = required !== "all" ? required : input.team ?? "all";
     if (pickedSlot === "agent" && teamScope === "all") apiError(400, "This agent has no team");
 
     const { data: loadout, error: loadoutError } = await db().from("skinchanger_loadouts").select("version").eq("user_id", userId).maybeSingle();
     legacyXError(loadoutError, "Unable to load the loadout");
     let version = loadout ? numberValue((loadout as DbRow).version) : 0;
     const { data: rows, error: rowsError } = await db().from("skinchanger_loadout_entries")
-      .select("slot,slot_key,team_scope,catalog_item_id")
+      .select("slot,slot_key,team_scope,catalog_item_id,options")
       .eq("user_id", userId)
       .eq("slot", pickedSlot);
     legacyXError(rowsError, "Unable to load the loadout entries");
-    for (const row of entriesReplacedByEquip((rows ?? []) as LoadoutRow[], pickedSlot, slotKey, input.catalog_item_id, teamScope)) {
+    const replaced = entriesReplacedByEquip((rows ?? []) as LoadoutRow[], pickedSlot, slotKey, input.catalog_item_id, teamScope);
+    for (const row of replaced) {
       const { data: removed, error: removeError } = await db().rpc("delete_skinchanger_loadout_entry", {
         p_user_id: userId,
         p_expected_version: version,
@@ -4367,6 +4370,17 @@ export function createLegacyXRouter() {
       });
       legacyXError(removeError, "Unable to replace the equipped item");
       version = numberValue(recordValue(removed).version);
+    }
+    // A gun that was saved for both teams keeps its skin for the team that was not picked.
+    const moved = pickedSlot === "weapon" ? sharedGunEntryMovedTo(replaced, teamScope) : null;
+    if (moved) {
+      const { data: kept, error: keepError } = await db().rpc("upsert_skinchanger_loadout_entry", {
+        p_user_id: userId,
+        p_expected_version: version,
+        p_entry: { slot: "weapon", slot_key: moved.row.slot_key, team_scope: moved.teamScope, catalog_item_id: moved.row.catalog_item_id, options: recordValue(moved.row.options) },
+      });
+      legacyXError(keepError, "Unable to keep the other team's skin");
+      version = numberValue(recordValue(kept).version);
     }
     const { data: saved, error: saveError } = await db().rpc("upsert_skinchanger_loadout_entry", {
       p_user_id: userId,

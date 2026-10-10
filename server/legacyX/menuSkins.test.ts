@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { entriesReplacedByEquip, gunIsForTeam, menuRarity, menuTiles, menuAgentName, menuGunModel, menuSkinEquipBody, menuSkinItemsQuery, menuSkinName, menuSkinTypesQuery, menuSlotKey } from "./menuSkins";
+import { entriesReplacedByEquip, sharedGunEntryMovedTo, gunIsForTeam, menuRarity, menuTiles, menuAgentName, menuGunModel, menuSkinEquipBody, menuSkinItemsQuery, menuSkinName, menuSkinTypesQuery, menuSlotKey } from "./menuSkins";
 
 describe("menuSkinName", () => {
   it("drops the knife name and the wear", () => {
@@ -62,6 +62,33 @@ describe("entriesReplacedByEquip for guns and agents", () => {
   });
   it("leaves agents to the save", () => {
     expect(entriesReplacedByEquip(rows, "agent", "agent", "z", "t")).toEqual([]);
+  });
+});
+
+describe("picks for one team", () => {
+  const knives = [
+    { slot: "knife", slot_key: "knife:500", team_scope: "t", catalog_item_id: "a" },
+    { slot: "knife", slot_key: "knife:507", team_scope: "ct", catalog_item_id: "b" },
+  ];
+  it("replaces only that team's knife", () => {
+    expect(entriesReplacedByEquip(knives, "knife", "knife:515", "z", "t").map((row) => row.catalog_item_id)).toEqual(["a"]);
+    expect(entriesReplacedByEquip(knives, "knife", "knife:515", "z", "ct").map((row) => row.catalog_item_id)).toEqual(["b"]);
+  });
+  it("keeps the same knife in place", () => {
+    expect(entriesReplacedByEquip(knives, "knife", "knife:500", "a", "t")).toEqual([]);
+  });
+  it("takes a shared gun entry out and gives it to the other team", () => {
+    const guns = [{ slot: "weapon", slot_key: "weapon:9", team_scope: "all", catalog_item_id: "g" }];
+    const removed = entriesReplacedByEquip(guns, "weapon", "weapon:9", "z", "t");
+    expect(removed.map((row) => row.catalog_item_id)).toEqual(["g"]);
+    expect(sharedGunEntryMovedTo(removed, "t")?.teamScope).toBe("ct");
+    expect(sharedGunEntryMovedTo(removed, "ct")?.teamScope).toBe("t");
+    expect(sharedGunEntryMovedTo([], "t")).toBeNull();
+  });
+  it("accepts a team on an equip request", () => {
+    const body = { steam_id: "76561198000000000", catalog_item_id: "0b6e1b0e-6d0b-4a4b-8d1a-1f5e6a8f7c11" };
+    expect(menuSkinEquipBody.safeParse({ ...body, team: "ct" }).success).toBe(true);
+    expect(menuSkinEquipBody.safeParse({ ...body, team: "both" }).success).toBe(false);
   });
 });
 

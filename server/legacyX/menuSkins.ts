@@ -31,6 +31,8 @@ export const menuSkinItemsQuery = z.object({
 export const menuSkinEquipBody = z.object({
   steam_id: steamId,
   catalog_item_id: z.string().uuid(),
+  /** The team tab the pick was made on; without it a knife, glove or gun is saved for both teams. */
+  team: z.enum(["t", "ct"]).optional(),
 }).strict();
 
 /** "★ Karambit | Fade (Factory New)" -> "Fade"; a plain "★ Karambit" is the vanilla knife. */
@@ -58,17 +60,31 @@ export function menuSlotKey(slot: MenuSkinSlot, modelDefindex: number | null, we
   return `${slot}:${raw}`;
 }
 
-export interface LoadoutRow { slot: string; slot_key: string; team_scope: string; catalog_item_id: string }
+export interface LoadoutRow { slot: string; slot_key: string; team_scope: string; catalog_item_id: string; options?: unknown }
 
 /**
- * What a pick replaces. The loadout keeps one knife and one glove per team, so a knife or glove for both teams replaces
- * every entry of that slot (except the very same one). A gun has its own entry per model: the same model for the other
- * team scope would double up, so it goes. An agent is one per team and the save replaces it by itself.
+ * What a pick replaces. The loadout keeps one knife and one glove per team scope: a pick for both teams replaces every entry of
+ * that slot (except the very same one), a pick for one team replaces that team's entry (a shared "both" entry is moved to the
+ * other team by the save itself). A gun has an entry per model and team scope: a pick for one team takes a shared entry of that
+ * model out (the route gives its skin to the other team again), a pick for both takes the single-team ones out. An agent is
+ * one per team and the save replaces it by itself.
  */
 export function entriesReplacedByEquip(rows: LoadoutRow[], slot: MenuSkinSlot, slotKey: string, catalogItemId: string, teamScope = "all"): LoadoutRow[] {
   if (slot === "agent") return [];
-  if (slot === "weapon") return rows.filter((row) => row.slot === "weapon" && row.slot_key === slotKey && row.team_scope !== teamScope);
-  return rows.filter((row) => row.slot === slot && !(row.slot_key === slotKey && row.team_scope === "all" && row.catalog_item_id === catalogItemId));
+  if (slot === "weapon") {
+    return rows.filter((row) => row.slot === "weapon" && row.slot_key === slotKey
+      && (teamScope === "all" ? row.team_scope !== "all" : row.team_scope === "all"));
+  }
+  const identical = (row: LoadoutRow) => row.slot_key === slotKey && row.catalog_item_id === catalogItemId;
+  if (teamScope === "all") return rows.filter((row) => row.slot === slot && !(identical(row) && row.team_scope === "all"));
+  return rows.filter((row) => row.slot === slot && row.team_scope === teamScope && !identical(row));
+}
+
+/** A shared ("both teams") gun entry that a one-team pick took out goes to the other team, so that team keeps its skin. */
+export function sharedGunEntryMovedTo(removed: LoadoutRow[], teamScope: string): { row: LoadoutRow; teamScope: "t" | "ct" } | null {
+  if (teamScope !== "t" && teamScope !== "ct") return null;
+  const row = removed.find((entry) => entry.team_scope === "all");
+  return row ? { row, teamScope: teamScope === "t" ? "ct" : "t" } : null;
 }
 
 // ---- the loadout overview (like the website's Skinchanger page) -----------------------------------------------
