@@ -35,7 +35,7 @@ import { ANNOUNCEMENT_MAX_AGE_HOURS, ANNOUNCEMENT_PAGE, announcementRow, announc
 import { ADMIN_CALL_COOLDOWN_SECONDS, ADMIN_CALL_MAX_AGE_HOURS, ADMIN_CALL_PAGE, adminCallRow, adminCallSchema, adminCallView, parseAfter, type AdminCallRecord } from "./adminCalls";
 import { COIN_RULES, NotEnoughCoinsError, applyWalletChange, awardDiscordLink, awardMatchBonuses, awardMatchCoins, clanPrices, earnRules, loadWallet, loadWalletSummary, penalizeWallet, walletGrantSchema, walletPenaltySchema } from "./wallet";
 import { isMissingTableError, ownerLinks, ownerProfileSchema, ownerTeam, ownerUpdates } from "./ownerProfile";
-import { MENU_SKIN_PAGE, entriesReplacedByEquip, menuSkinEquipBody, menuSkinItemsQuery, menuSkinName, menuSkinSlotSchema, menuSkinTypesQuery, menuSlotKey, type LoadoutRow } from "./menuSkins";
+import { MENU_AGENT_TEAMS, MENU_SKIN_PAGE, MENU_SLOT_CATEGORY, entriesReplacedByEquip, menuAgentName, menuGunModel, menuSkinEquipBody, menuSkinItemsQuery, menuSkinName, menuSkinSlotSchema, menuSkinTypesQuery, menuSlotKey, type LoadoutRow, type MenuSkinSlot } from "./menuSkins";
 import { PROFILE_NAME_MAX, PROFILE_SECTIONS, bestNameMatch, escapeLike, hiddenForViewer, loadoutShowcase, mapWinRates, normalizeHiddenSections, profileStats, staffCard, type ProfileSection } from "./profileOverview";
 import { activeBans, bannedPlayer, checkBansSchema, issueBan, issueBanSchema, revokeAllBans, revokeAllBansSchema, revokeBans, revokeBanSchema } from "./bans";
 import { authorizationRequestSchema, resolveAuthorizations } from "./adminAuthorization";
@@ -4145,22 +4145,50 @@ export function createLegacyXRouter() {
     keyGenerator: (req) => `menu-skins:${textValue(recordValue(req.query).steam_id) || textValue(recordValue(req.body).steam_id) || "invalid"}`,
     message: { error_code: "rate_limited" },
   });
-  const menuSkinTypesCache = new Map<string, { at: number; types: Array<{ weaponClass: string; skins: number }> }>();
+  const menuSkinTypesCache = new Map<string, { at: number; types: Array<{ weaponClass: string; skins: number; model?: string }> }>();
+  const cachedFor = async <T>(key: string, load: () => Promise<T>): Promise<T> => {
+    const hit = menuSkinTypesCache.get(key) as { at: number; types: T } | undefined;
+    if (hit && Date.now() - hit.at < 10 * 60_000) return hit.types;
+    const types = await load();
+    menuSkinTypesCache.set(key, { at: Date.now(), types: types as never });
+    return types;
+  };
+
+  /** The type list of a slot: knife / glove types, the guns of a group, or the two teams of agents. */
+  const menuSkinTypes = (slot: MenuSkinSlot, group: string | undefined) => cachedFor(`${slot}:${group ?? ""}`, async () => {
+    if (slot === "knife" || slot === "glove") {
+      const { data, error } = await db().rpc("get_skinchanger_catalog_facets", { p_category: slot });
+      legacyXError(error, "Unable to load skinchanger types");
+      const classes = (recordValue(data).weaponClasses ?? []) as Array<{ weaponClass?: string; count?: number }>;
+      // The plain "Knife" model is the default knife everyone already has, not a pick.
+      return classes.filter((entry) => entry.weaponClass && entry.weaponClass !== "Knife").map((entry) => ({ weaponClass: String(entry.weaponClass), skins: Number(entry.count ?? 0) }));
+    }
+    if (slot === "agent") {
+      const counts = await Promise.all(MENU_AGENT_TEAMS.map(async (team) => {
+        const { data, error } = await db().rpc("get_skinchanger_catalog_page", { p_category: "agent", p_weapon_class: null, p_weapon_group: null, p_team: team, p_query: null, p_limit: 1, p_offset: 0 });
+        legacyXError(error, "Unable to count agents");
+        return { weaponClass: team, skins: Number(((data ?? []) as DbRow[])[0]?.total_count ?? 0) };
+      }));
+      return counts;
+    }
+    // Guns: the plain models tell the group and the model name, the facets count each gun's skins.
+    const [{ data: bases, error: baseError }, { data: facets, error: facetError }] = await Promise.all([
+      db().from("skinchanger_catalog_items").select("weapon_class,external_key,metadata").eq("category", "weapon").eq("is_active", true),
+      db().rpc("get_skinchanger_catalog_facets", { p_category: "weapon_skin" }),
+    ]);
+    legacyXError(baseError, "Unable to load guns");
+    legacyXError(facetError, "Unable to count gun skins");
+    const counts = new Map(((recordValue(facets).weaponClasses ?? []) as Array<{ weaponClass?: string; count?: number }>).map((entry) => [String(entry.weaponClass), Number(entry.count ?? 0)]));
+    return ((bases ?? []) as DbRow[])
+      .filter((base) => textValue(recordValue(base.metadata).weaponGroup) === group && (counts.get(textValue(base.weapon_class)) ?? 0) > 0)
+      .map((base) => ({ weaponClass: textValue(base.weapon_class), skins: counts.get(textValue(base.weapon_class)) ?? 0, model: menuGunModel(textValue(base.external_key)) ?? undefined }))
+      .sort((left, right) => left.weaponClass.localeCompare(right.weaponClass));
+  });
 
   router.get("/plugin/menu/skins/types", menuSkinsRateLimit, pluginRoute("skinchanger:read", async (req, res) => {
     const input = menuSkinTypesQuery.parse(req.query);
-    let cached = menuSkinTypesCache.get(input.slot);
-    if (!cached || Date.now() - cached.at > 10 * 60_000) {
-      const { data, error } = await db().rpc("get_skinchanger_catalog_facets", { p_category: input.slot });
-      legacyXError(error, "Unable to load skinchanger types");
-      const classes = (recordValue(data).weaponClasses ?? []) as Array<{ weaponClass?: string; count?: number }>;
-      cached = {
-        at: Date.now(),
-        // The plain "Knife" model is the default knife everyone already has, not a pick.
-        types: classes.filter((entry) => entry.weaponClass && entry.weaponClass !== "Knife").map((entry) => ({ weaponClass: String(entry.weaponClass), skins: Number(entry.count ?? 0) })),
-      };
-      menuSkinTypesCache.set(input.slot, cached);
-    }
+    if (input.slot === "weapon" && !input.group) apiError(400, "Pick a gun group");
+    const types = await menuSkinTypes(input.slot, input.group);
     const { data: user, error: userError } = await db().from("users").select("id").eq("steam_id", input.steam_id).maybeSingle();
     legacyXError(userError, "Unable to resolve player");
     if (!user) {
@@ -4172,24 +4200,41 @@ export function createLegacyXRouter() {
       .eq("user_id", textValue(user.id))
       .eq("slot", input.slot);
     legacyXError(rowsError, "Unable to load skinchanger loadout");
-    const ids = ((rows ?? []) as DbRow[]).map((row) => textValue(row.catalog_item_id));
+    const entries = (rows ?? []) as DbRow[];
+    const ids = entries.map((row) => textValue(row.catalog_item_id));
+    let equippedText = "";
     let equipped: { weaponClass: string; skin: string } | null = null;
     if (ids.length) {
-      const { data: items, error: itemsError } = await db().from("skinchanger_catalog_items").select("weapon_class,display_name").in("id", ids).eq("is_active", true).limit(1);
+      const { data: items, error: itemsError } = await db().from("skinchanger_catalog_items").select("id,weapon_class,display_name").in("id", ids).eq("is_active", true);
       legacyXError(itemsError, "Unable to resolve skinchanger items");
-      const item = ((items ?? []) as DbRow[])[0];
-      if (item) equipped = { weaponClass: textValue(item.weapon_class), skin: menuSkinName(textValue(item.display_name)) };
+      const byId = new Map(((items ?? []) as DbRow[]).map((item) => [textValue(item.id), item]));
+      if (input.slot === "agent") {
+        const part = (scope: string, label: string) => {
+          const row = entries.find((entry) => entry.team_scope === scope);
+          const item = row ? byId.get(textValue(row.catalog_item_id)) : undefined;
+          return item ? `${label}: ${menuAgentName(textValue(item.display_name))}` : "";
+        };
+        equippedText = [part("t", "T"), part("ct", "CT")].filter(Boolean).join("  ·  ");
+      } else if (input.slot !== "weapon") {
+        const item = byId.get(ids[0]!);
+        if (item) {
+          equipped = { weaponClass: textValue(item.weapon_class), skin: menuSkinName(textValue(item.display_name)) };
+          equippedText = `${equipped.weaponClass} | ${equipped.skin}`;
+        }
+      }
     }
-    res.json({ slot: input.slot, types: cached.types, equipped });
+    res.json({ slot: input.slot, group: input.group ?? null, types, equipped, equippedText });
   }));
 
   router.get("/plugin/menu/skins/items", menuSkinsRateLimit, pluginRoute("skinchanger:read", async (req, res) => {
     const input = menuSkinItemsQuery.parse(req.query);
+    const isAgent = input.slot === "agent";
+    if (isAgent && !(MENU_AGENT_TEAMS as readonly string[]).includes(input.weapon_class)) apiError(400, "Pick Terrorist or Counter-Terrorist");
     const { data, error } = await db().rpc("get_skinchanger_catalog_page", {
-      p_category: input.slot,
-      p_weapon_class: input.weapon_class,
+      p_category: MENU_SLOT_CATEGORY[input.slot],
+      p_weapon_class: isAgent ? null : input.weapon_class,
       p_weapon_group: null,
-      p_team: null,
+      p_team: isAgent ? input.weapon_class : null,
       p_query: null,
       p_limit: MENU_SKIN_PAGE,
       p_offset: input.offset,
@@ -4199,7 +4244,12 @@ export function createLegacyXRouter() {
     res.json({
       total: Number(rows[0]?.total_count ?? 0),
       offset: input.offset,
-      items: rows.map((row) => ({ id: textValue(row.id), name: menuSkinName(textValue(row.display_name)), paintId: row.paint_id === null || row.paint_id === undefined ? null : numberValue(row.paint_id) })),
+      items: rows.map((row) => ({
+        id: textValue(row.id),
+        name: isAgent ? menuAgentName(textValue(row.display_name)) : menuSkinName(textValue(row.display_name)),
+        paintId: row.paint_id === null || row.paint_id === undefined ? null : numberValue(row.paint_id),
+        defindex: isAgent && row.weapon_defindex !== null && row.weapon_defindex !== undefined ? numberValue(row.weapon_defindex) : null,
+      })),
     });
   }));
 
@@ -4224,22 +4274,29 @@ export function createLegacyXRouter() {
     if (!(online ?? []).length) apiError(409, "The player is not on a server right now", "not_online");
 
     const { data: item, error: itemError } = await db().from("skinchanger_catalog_items")
-      .select("id,category,weapon_class,weapon_defindex,display_name")
+      .select("id,category,weapon_class,weapon_defindex,display_name,metadata")
       .eq("id", input.catalog_item_id)
       .eq("is_active", true)
       .maybeSingle();
     legacyXError(itemError, "Unable to validate the item");
-    const slot = menuSkinSlotSchema.safeParse(item?.category);
-    if (!item || !slot.success) apiError(400, "Only knives and gloves can be picked here");
-    const itemRow = item as DbRow;
+    const itemRow = (item ?? {}) as DbRow;
+    const category = textValue(itemRow.category);
+    const slot = (category === "weapon_skin" || category === "weapon" ? "weapon" : category) as string;
+    const slotChecked = menuSkinSlotSchema.safeParse(slot);
+    if (!item || !slotChecked.success) apiError(400, "Only knives, gloves, guns and agents can be picked here");
+    const pickedSlot = slotChecked.data as MenuSkinSlot;
     let modelDefindex = itemRow.weapon_defindex === null ? null : Number(itemRow.weapon_defindex);
-    if (modelDefindex === null && slot.data === "knife") {
+    if (modelDefindex === null && (pickedSlot === "knife" || pickedSlot === "weapon")) {
+      // A knife or gun skin has no defindex of its own: the slot is its plain model's.
       const { data: base } = await db().from("skinchanger_catalog_items").select("weapon_defindex")
-        .eq("category", slot.data).eq("weapon_class", textValue(itemRow.weapon_class)).eq("is_active", true).not("weapon_defindex", "is", null).limit(1);
+        .eq("category", pickedSlot === "knife" ? "knife" : "weapon").eq("weapon_class", textValue(itemRow.weapon_class)).eq("is_active", true).not("weapon_defindex", "is", null).limit(1);
       const found = ((base ?? []) as DbRow[])[0]?.weapon_defindex;
       modelDefindex = found === undefined || found === null ? null : Number(found);
     }
-    const slotKey = menuSlotKey(slot.data, modelDefindex, textValue(itemRow.weapon_class));
+    const slotKey = menuSlotKey(pickedSlot, modelDefindex, textValue(itemRow.weapon_class));
+    // Gun skins and agents belong to one team when the game says so; everything else is for both.
+    const teamScope = pickedSlot === "weapon" || pickedSlot === "agent" ? catalogTeamScope(itemRow.metadata, itemRow.weapon_class, itemRow.display_name) : "all";
+    if (pickedSlot === "agent" && teamScope === "all") apiError(400, "This agent has no team");
 
     const { data: loadout, error: loadoutError } = await db().from("skinchanger_loadouts").select("version").eq("user_id", userId).maybeSingle();
     legacyXError(loadoutError, "Unable to load the loadout");
@@ -4247,9 +4304,9 @@ export function createLegacyXRouter() {
     const { data: rows, error: rowsError } = await db().from("skinchanger_loadout_entries")
       .select("slot,slot_key,team_scope,catalog_item_id")
       .eq("user_id", userId)
-      .eq("slot", slot.data);
+      .eq("slot", pickedSlot);
     legacyXError(rowsError, "Unable to load the loadout entries");
-    for (const row of entriesReplacedByEquip((rows ?? []) as LoadoutRow[], slot.data, slotKey, input.catalog_item_id)) {
+    for (const row of entriesReplacedByEquip((rows ?? []) as LoadoutRow[], pickedSlot, slotKey, input.catalog_item_id, teamScope)) {
       const { data: removed, error: removeError } = await db().rpc("delete_skinchanger_loadout_entry", {
         p_user_id: userId,
         p_expected_version: version,
@@ -4262,12 +4319,19 @@ export function createLegacyXRouter() {
     const { data: saved, error: saveError } = await db().rpc("upsert_skinchanger_loadout_entry", {
       p_user_id: userId,
       p_expected_version: version,
-      p_entry: { slot: slot.data, slot_key: slotKey, team_scope: "all", catalog_item_id: input.catalog_item_id, options: {} },
+      p_entry: { slot: pickedSlot, slot_key: slotKey, team_scope: teamScope, catalog_item_id: input.catalog_item_id, options: {} },
     });
     legacyXError(saveError, "Unable to save the pick");
     const savedVersion = numberValue(recordValue(saved).version);
-    await writePluginAudit(plugin, "skinchanger.menu.equip", "skinchanger_loadouts", userId, { version: savedVersion, slot: slot.data, slotKey, catalogItemId: input.catalog_item_id });
-    res.json({ version: savedVersion, skin: menuSkinName(textValue(itemRow.display_name)), weaponClass: textValue(itemRow.weapon_class) });
+    await writePluginAudit(plugin, "skinchanger.menu.equip", "skinchanger_loadouts", userId, { version: savedVersion, slot: pickedSlot, slotKey, teamScope, catalogItemId: input.catalog_item_id });
+    const displayName = textValue(itemRow.display_name);
+    const skin = pickedSlot === "agent" ? menuAgentName(displayName) : menuSkinName(displayName);
+    res.json({
+      version: savedVersion,
+      skin,
+      weaponClass: textValue(itemRow.weapon_class),
+      label: pickedSlot === "agent" ? skin : `${textValue(itemRow.weapon_class)} | ${skin}`,
+    });
   }));
 
   router.post("/plugin/live-match/snapshots", pluginRoute("servers:write", async (req, res, plugin) => {
