@@ -3581,11 +3581,13 @@ export function createLegacyXRouter() {
   router.get("/staffpanel/overview", staffPanelRoute(async (_req, res, staff) => {
     requireStaffCapability(staff, "overview");
     const [servers, pendingActions] = await Promise.all([
-      db().from("reconnect_servers").select("server_id,name,map_name,mode,player_count,last_heartbeat_at").order("name"),
+      db().from("reconnect_servers").select("server_id,display_name,current_map,current_mode,player_count,last_heartbeat_at").order("display_name"),
       db().from("staff_panel_actions").select("id,status,action_type,server_id,created_at").in("status", ["pending", "claimed"]).order("created_at", { ascending: false }).limit(12),
     ]);
     legacyXError(servers.error || pendingActions.error, "Unable to load staff panel overview");
-    res.json({ role: staff.role, servers: servers.data ?? [], pendingActions: pendingActions.data ?? [] });
+    // The console shows name, map and mode; the table calls them display_name, current_map and current_mode.
+    const mapped = ((servers.data ?? []) as DbRow[]).map((row) => ({ server_id: textValue(row.server_id), name: textValue(row.display_name), map_name: textValue(row.current_map), mode: textValue(row.current_mode), player_count: numberValue(row.player_count), last_heartbeat_at: row.last_heartbeat_at ? textValue(row.last_heartbeat_at) : null }));
+    res.json({ role: staff.role, servers: mapped, pendingActions: pendingActions.data ?? [] });
   }));
 
   router.get("/staffpanel/servers/:serverId/roster", staffPanelRoute(async (req, res, staff) => {
