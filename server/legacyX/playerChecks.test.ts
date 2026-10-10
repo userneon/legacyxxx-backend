@@ -43,6 +43,14 @@ describe("check report", () => {
     expect(checkReportSchema.safeParse({ ...report, screenshot: "data:..." }).success).toBe(false);
     expect(checkReportSchema.safeParse({ ...report, findings: [{ name: "x", kind: "file", confidence: "detection", contents: "..." }] }).success).toBe(false);
   });
+  it("takes the hardware fingerprint as hashes only", () => {
+    const hash = "a".repeat(64);
+    expect(checkReportSchema.safeParse({ ...report, hwid: { version: 1, parts: [{ kind: "id", hash }, { kind: "board", hash }] } }).success).toBe(true);
+    // A serial number itself, an unknown part and a different version are refused.
+    expect(checkReportSchema.safeParse({ ...report, hwid: { version: 1, parts: [{ kind: "board", hash: "ABC123-serial" }] } }).success).toBe(false);
+    expect(checkReportSchema.safeParse({ ...report, hwid: { version: 1, parts: [{ kind: "mac", hash }] } }).success).toBe(false);
+    expect(checkReportSchema.safeParse({ ...report, hwid: { version: 2, parts: [{ kind: "id", hash }] } }).success).toBe(false);
+  });
   it("takes what Steam's files say about each account, and nothing it does not know", () => {
     const withSteam = { ...report, steamAccounts: [{ steamId: STEAM, accountName: "login", personaName: "Nick", lastLogin: "2026-10-01T10:00:00Z", mostRecent: true, cs2LastPlayed: "2026-10-08T20:00:00Z", cs2Hours: 812.5, launchOptions: "-novid -insecure" }], cs2: { installed: true, lastUpdated: "2026-10-05T00:00:00Z" } };
     expect(checkReportSchema.safeParse(withSteam).success).toBe(true);

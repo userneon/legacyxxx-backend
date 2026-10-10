@@ -35,6 +35,10 @@ export function hashCheckCode(normalized: string): string {
 
 export const createCheckSchema = z.object({ steamId: z.string().regex(/^\d{17}$/, "A Steam ID has 17 digits") }).strict();
 
+export const HWID_KINDS = ["id", "uuid", "board", "bios", "cpu", "disk", "machine"] as const;
+/** The parts that say "same PC" (a Windows reinstall changes "machine" only, so it is kept but never used to match). */
+export const HWID_MATCH_KINDS = ["id", "uuid", "board", "bios", "cpu", "disk"] as const;
+
 const text = (max: number) => z.string().trim().max(max);
 
 /** What the checker program sends back. Names and masked paths only: never file contents, screenshots or keystrokes. */
@@ -60,6 +64,17 @@ export const checkReportSchema = z
           .strict(),
       )
       .max(10)
+      .optional(),
+    /**
+     * A fingerprint of the PC: the program hashes each hardware serial number on the PC and sends the hashes (never the numbers). "id" is all of the
+     * stable parts together; the others are single parts, so a PC that changed one disk still matches on the board and the CPU. Optional.
+     */
+    hwid: z
+      .object({
+        version: z.literal(1),
+        parts: z.array(z.object({ kind: z.enum(HWID_KINDS), hash: z.string().regex(/^[0-9a-f]{64}$/) }).strict()).min(1).max(12),
+      })
+      .strict()
       .optional(),
     cs2: z.object({ installed: z.boolean(), lastUpdated: z.string().datetime().optional() }).strict().optional(),
     filesScanned: z.number().int().min(0).max(100_000_000),

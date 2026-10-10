@@ -43,7 +43,7 @@ import { issueCommPenalty, issueCommPenaltySchema, liftCommPenalties, liftCommPe
 import { createReadStream } from "node:fs";
 import { pipeline } from "node:stream/promises";
 import { checkerBase, checkerMsi, checkerSha256, zipChunks, zipLength } from "./checkerZip";
-import { CHECK_CODE_MINUTES, CHECK_MAX_DOWNLOADS, CHECK_RETENTION_DAYS, CHECK_ROLES, checkReportSchema, createCheckSchema, generateCheckCode, hashCheckCode, normalizeCheckCode, summarizeReport } from "./playerChecks";
+import { CHECK_CODE_MINUTES, CHECK_MAX_DOWNLOADS, CHECK_RETENTION_DAYS, CHECK_ROLES, HWID_MATCH_KINDS, checkReportSchema, createCheckSchema, generateCheckCode, hashCheckCode, normalizeCheckCode, summarizeReport } from "./playerChecks";
 import { CLAN_LOOK_ITEMS, CLAN_LOOK_KINDS, clanLookItem, clanLooksFor } from "./clanLooks";
 import { killEventSchema, killFeed } from "./killfeed";
 import { heartbeatSchema, ingestHeartbeat } from "./serverHeartbeat";
@@ -2592,6 +2592,35 @@ export function createLegacyXRouter() {
     return names;
   };
 
+  /** What is known about the PC's fingerprint: is it kept for the player, and which other players have run on the same hardware. */
+  const hwidView = async (row: DbRow) => {
+    const report = row.report as DbRow | null;
+    const parts = (report?.hwid as { parts?: Array<{ kind: string; hash: string }> } | undefined)?.parts;
+    if (!parts || parts.length === 0) return {};
+    const target = textValue(row.target_steam_id);
+    const matchable = parts.filter((part) => (HWID_MATCH_KINDS as readonly string[]).includes(part.kind));
+    const { data: mine } = await db().from("player_hwids").select("verified").eq("steam_id", target).eq("hash", parts[0].hash).maybeSingle();
+    const shared = new Map<string, Set<string>>();
+    if (matchable.length > 0) {
+      const { data: found } = await db().from("player_hwids").select("steam_id,kind,hash").eq("verified", true).neq("steam_id", target).in("hash", matchable.map((part) => part.hash)).limit(200);
+      for (const hit of (found ?? []) as DbRow[]) {
+        if (!matchable.some((part) => part.kind === textValue(hit.kind) && part.hash === textValue(hit.hash))) continue;
+        const kinds = shared.get(textValue(hit.steam_id)) ?? new Set<string>();
+        kinds.add(textValue(hit.kind));
+        shared.set(textValue(hit.steam_id), kinds);
+      }
+    }
+    const ids = Array.from(shared.keys());
+    const { data: users } = ids.length > 0 ? await db().from("users").select("id,steam_id,username,avatar").in("steam_id", ids) : { data: [] as DbRow[] };
+    const byId = new Map(((users ?? []) as DbRow[]).map((user) => [textValue(user.steam_id), user]));
+    return {
+      hwid: {
+        saved: Boolean(mine?.verified),
+        shared: ids.map((steamId) => ({ steamId, name: byId.get(steamId) ? textValue(byId.get(steamId)?.username) : null, avatar: byId.get(steamId)?.avatar ? textValue(byId.get(steamId)?.avatar) : null, kinds: Array.from(shared.get(steamId) ?? []) })),
+      },
+    };
+  };
+
   router.post("/checks", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
     await requireCheckStaff(user.id);
     const { steamId } = createCheckSchema.parse(req.body);
@@ -2626,7 +2655,7 @@ export function createLegacyXRouter() {
     legacyXError(error, "Unable to load the check");
     if (!data) apiError(404, "Check not found");
     const names = await namesOf([textValue(data.requested_by), data.target_user_id ? textValue(data.target_user_id) : ""]);
-    res.json(mapCheck(data as DbRow, names, true));
+    res.json({ ...mapCheck(data as DbRow, names, true), ...(await hwidView(data as DbRow)) });
   }));
   router.delete("/checks/:id", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
     const role = await requireCheckStaff(user.id);
@@ -2691,6 +2720,13 @@ export function createLegacyXRouter() {
     const { data: updated, error } = await db().from("player_checks").update({ status: "completed", completed_at: new Date().toISOString(), checker_version: report.checkerVersion, report: summarizeReport(report, textValue(data.target_steam_id), steamBans) }).eq("id", textValue(data.id)).eq("status", "pending").select("id");
     legacyXError(error, "Unable to save the report");
     if (!updated || updated.length === 0) apiError(409, "This code was already used", "check_code_used");
+    // The PC's fingerprint is kept for the player who was asked: confirmed when their Steam account was on the PC, otherwise kept apart.
+    if (report.hwid) {
+      const verified = report.steamIds.includes(textValue(data.target_steam_id));
+      const now = new Date().toISOString();
+      const { error: hwidError } = await db().from("player_hwids").upsert(report.hwid.parts.map((part) => ({ steam_id: textValue(data.target_steam_id), kind: part.kind, hash: part.hash, verified, check_id: textValue(data.id), last_seen: now })), { onConflict: "steam_id,kind,hash" });
+      if (hwidError) console.error("Unable to keep the hardware fingerprint", hwidError.message);
+    }
     res.status(201).json({ received: true });
   }));
 
