@@ -153,25 +153,16 @@ function requireStaffCapability(staff: StaffPrincipal, capability: string) {
   }
 }
 
+/**
+ * Who is using the server console: the signed-in user, if they are an active Owner or Manager. The console used to ask for a second, short Steam sign-in
+ * of its own; the site's own sign-in is enough now (owner's decision, 2026-10-10). Every action is still queued, audited and limited by role.
+ */
 async function requireFreshStaffSession(req: ApiRequest): Promise<StaffPrincipal> {
-  const raw = parseCookieHeader(req.headers.cookie ?? "").legacyx_staff_session;
-  if (!raw) apiError(401, "Fresh Staff Panel Steam authentication is required");
-
-  const db = legacyXDb();
-  const { data: session, error: sessionError } = await db
-    .from("staff_sessions")
-    .select("staff_id,expires_at,revoked_at")
-    .eq("session_hash", sha256(raw))
-    .maybeSingle();
-  legacyXError(sessionError, "Unable to verify staff session");
-  if (!session || session.revoked_at || new Date(session.expires_at).getTime() <= Date.now()) {
-    apiError(401, "Fresh Staff Panel Steam authentication is required");
-  }
-
-  const { data: staff, error: staffError } = await db
+  const user = await requireUser(req);
+  const { data: staff, error: staffError } = await legacyXDb()
     .from("staff")
     .select("id,user_id,role,permissions,status,users(username)")
-    .eq("id", session.staff_id)
+    .eq("user_id", user.id)
     .eq("status", "active")
     .maybeSingle();
   legacyXError(staffError, "Unable to verify staff access");
@@ -182,7 +173,7 @@ async function requireFreshStaffSession(req: ApiRequest): Promise<StaffPrincipal
     userId: staff.user_id,
     role: staff.role,
     permissions: Array.isArray(staff.permissions) ? staff.permissions.filter((value): value is string => typeof value === "string") : [],
-    username: relatedUser && typeof relatedUser.username === "string" ? relatedUser.username : "Staff",
+    username: relatedUser && typeof relatedUser.username === "string" ? relatedUser.username : user.username,
   };
 }
 
