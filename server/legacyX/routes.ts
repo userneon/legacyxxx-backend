@@ -3710,31 +3710,23 @@ export function createLegacyXRouter() {
   }));
 
   /**
-   * When a player is banned: find the other accounts that ran on the same PC (their fingerprint was kept by a check).
-   * Staff are never included, and neither is anyone who is already banned. At most ten.
+   * When a player who was scanned is banned: every other account the scans brought to light goes with them. That is the accounts found on the PC in their
+   * checks, and the accounts whose kept fingerprint says "same PC". Staff and accounts that are already banned are left out. At most ten.
    */
   const accountsOnSamePc = async (steamId: string): Promise<string[]> => {
-    const { data: mine } = await db().from("player_hwids").select("kind,hash").eq("steam_id", steamId).eq("verified", true);
-    const own = (mine ?? []) as DbRow[];
-    if (own.length === 0) return [];
-    const strong = own.filter((part) => (HWID_MATCH_KINDS as readonly string[]).includes(textValue(part.kind)));
-    if (strong.length === 0) return [];
-    const { data: found } = await db().from("player_hwids").select("steam_id,kind,hash").eq("verified", true).neq("steam_id", steamId).in("hash", strong.map((part) => textValue(part.hash))).limit(500);
-    const kindsBy = new Map<string, Set<string>>();
-    for (const hit of (found ?? []) as DbRow[]) {
-      if (!strong.some((part) => textValue(part.kind) === textValue(hit.kind) && textValue(part.hash) === textValue(hit.hash))) continue;
-      const kinds = kindsBy.get(textValue(hit.steam_id)) ?? new Set<string>();
-      kinds.add(textValue(hit.kind));
-      kindsBy.set(textValue(hit.steam_id), kinds);
+    const candidates = new Set<string>();
+    // Found on the player's PC by their own checks.
+    const { data: checks } = await db().from("player_checks").select("report").eq("target_steam_id", steamId).eq("status", "completed").order("created_at", { ascending: false }).limit(5);
+    for (const row of (checks ?? []) as DbRow[]) {
+      const ids = (row.report as { steamIds?: unknown } | null)?.steamIds;
+      if (Array.isArray(ids)) for (const id of ids) if (typeof id === "string" && /^\d{17}$/.test(id)) candidates.add(id);
     }
-    const candidates = Array.from(kindsBy.entries()).filter(([, kinds]) => sharesSamePc(kinds)).map(([id]) => id).slice(0, 10);
-    if (candidates.length === 0) return [];
-    const { data: users } = await db().from("users").select("id,steam_id,role").in("steam_id", candidates);
-    const players = ((users ?? []) as DbRow[]).filter((row) => textValue(row.role) === "Player");
-    if (players.length === 0) return [];
-    const { data: active } = await db().from("penalties").select("user_id").in("user_id", players.map((row) => textValue(row.id))).eq("type", "ban").eq("is_unbanned", false);
-    const alreadyBanned = new Set(((active ?? []) as DbRow[]).map((row) => textValue(row.user_id)));
-    return players.filter((row) => !alreadyBanned.has(textValue(row.id))).map((row) => textValue(row.steam_id));
+    // Seen on the same hardware, by checks of other players.
+    const { data: mine } = await db().from("player_hwids").select("kind,hash").eq("steam_id", steamId).eq("verified", true);
+    const own = ((mine ?? []) as DbRow[]).map((part) => ({ kind: textValue(part.kind), hash: textValue(part.hash) }));
+    if (own.length > 0) for (const id of await samePcSteamIds(steamId, own, true)) candidates.add(id);
+    candidates.delete(steamId);
+    return eligibleToBan(Array.from(candidates).slice(0, 10));
   };
 
   router.post("/staffpanel/actions", staffPanelRoute(async (req, res, staff) => {
