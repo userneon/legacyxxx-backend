@@ -2631,17 +2631,50 @@ export function createLegacyXRouter() {
       const { data: mine } = await db().from("penalties").select("id").eq("user_id", textValue(me.id)).eq("type", "ban").eq("is_unbanned", false).limit(1);
       if ((mine ?? []).length > 0) return null;
     }
-    const { data: staff } = await db().from("staff").select("id").eq("user_id", requestedBy).eq("status", "active").maybeSingle();
-    const { data: server } = await db().schema("legacy_x").from("reconnect_servers").select("server_id").limit(1).maybeSingle();
-    if (!staff || !server) return null;
     const bannedUser = ((otherUsers ?? []) as DbRow[]).find((row) => banRows.some((ban) => textValue(ban.user_id) === textValue(row.id)));
     const matched = bannedUser ? textValue(bannedUser.steam_id) : others[0];
     const permanent = banRows.some((ban) => ban.is_permanent === true);
-    const payload = { serverId: textValue(server.server_id), type: "ban", playerSteamId: steamId, message: `Same PC as banned account ${matched}`.slice(0, 240), banTerm: permanent ? "permanent" : "7d", enforceAfterSeconds: 10 };
+    const queued = await queueBan(steamId, requestedBy, `Same PC as banned account ${matched}`, permanent, { same_pc_as_banned: matched, trigger: "check_completed" });
+    return queued ? matched : null;
+  };
+
+  /** Which of these accounts may be banned automatically: not staff, and not already banned. Accounts that never signed in to the site have no role and may be. */
+  const eligibleToBan = async (steamIds: string[]): Promise<string[]> => {
+    if (steamIds.length === 0) return [];
+    const { data: users } = await db().from("users").select("id,steam_id,role").in("steam_id", steamIds);
+    const rows = (users ?? []) as DbRow[];
+    const staffIds = new Set(rows.filter((row) => textValue(row.role) !== "Player").map((row) => textValue(row.steam_id)));
+    const { data: active } = rows.length > 0 ? await db().from("penalties").select("user_id").in("user_id", rows.map((row) => textValue(row.id))).eq("type", "ban").eq("is_unbanned", false) : { data: [] as DbRow[] };
+    const bannedUserIds = new Set(((active ?? []) as DbRow[]).map((row) => textValue(row.user_id)));
+    const bannedIds = new Set(rows.filter((row) => bannedUserIds.has(textValue(row.id))).map((row) => textValue(row.steam_id)));
+    return steamIds.filter((id) => !staffIds.has(id) && !bannedIds.has(id));
+  };
+
+  /** Queues a ban for the server in the name of the staff member who asked for the check, the way a ban from the staff panel is. */
+  const queueBan = async (steamId: string, requestedBy: string, message: string, permanent: boolean, meta: Record<string, unknown>): Promise<boolean> => {
+    const { data: staff } = await db().from("staff").select("id").eq("user_id", requestedBy).eq("status", "active").maybeSingle();
+    const { data: server } = await db().schema("legacy_x").from("reconnect_servers").select("server_id").limit(1).maybeSingle();
+    if (!staff || !server) return false;
+    const payload = { serverId: textValue(server.server_id), type: "ban", playerSteamId: steamId, message: message.slice(0, 240), banTerm: permanent ? "permanent" : "7d", enforceAfterSeconds: 10 };
     const { data: action, error } = await db().from("staff_panel_actions").insert({ server_id: payload.serverId, requested_by: requestedBy, requested_by_staff_id: textValue(staff.id), action_type: "ban", payload, status: "pending" }).select("id").single();
-    if (error || !action) return null;
-    await db().from("staff_audit_logs").insert({ staff_id: textValue(staff.id), event_type: "staffpanel_action_queued", target_type: "server_action", target_id: (action as DbRow).id, metadata: { action_type: "ban", server_id: payload.serverId, player_steam_id: steamId, same_pc_as_banned: matched, trigger: "check_completed" } });
-    return matched;
+    if (error || !action) return false;
+    await db().from("staff_audit_logs").insert({ staff_id: textValue(staff.id), event_type: "staffpanel_action_queued", target_type: "server_action", target_id: (action as DbRow).id, metadata: { action_type: "ban", server_id: payload.serverId, player_steam_id: steamId, ...meta } });
+    return true;
+  };
+
+  /**
+   * A check found a cheat on this PC and the player's own Steam account was on it: that account is banned, and so are the other accounts that were
+   * on the same PC (earlier checks, clean then). The hardware itself is not banned; nothing is kept against it.
+   */
+  const banCheaterAndAlts = async (steamId: string, parts: Array<{ kind: string; hash: string }>, requestedBy: string): Promise<string[]> => {
+    const alts = await samePcSteamIds(steamId, parts, true);
+    const eligible = await eligibleToBan([steamId, ...alts.slice(0, 10)]);
+    const banned: string[] = [];
+    for (const id of eligible) {
+      const ok = await queueBan(id, requestedBy, id === steamId ? "Cheat found by the checker" : `Same PC as ${steamId} (cheat found)`, true, { trigger: "check_cheat_found", ...(id === steamId ? {} : { same_pc_as: steamId }) });
+      if (ok) banned.push(id);
+    }
+    return banned;
   };
 
   /** What is known about the PC's fingerprint: is it kept for the player, and which other players have run on the same hardware. */
@@ -2795,16 +2828,28 @@ export function createLegacyXRouter() {
     if (!updated || updated.length === 0) apiError(409, "This code was already used", "check_code_used");
     // The PC's fingerprint is kept for the player who was asked: confirmed when their Steam account was on the PC, otherwise kept apart.
     if (report.hwid) {
-      const verified = report.steamIds.includes(textValue(data.target_steam_id));
+      const target = textValue(data.target_steam_id);
       const now = new Date().toISOString();
-      const { error: hwidError } = await db().from("player_hwids").upsert(report.hwid.parts.map((part) => ({ steam_id: textValue(data.target_steam_id), kind: part.kind, hash: part.hash, verified, check_id: textValue(data.id), last_seen: now })), { onConflict: "steam_id,kind,hash" });
+      // Every Steam account that was on this PC is tied to its fingerprint (confirmed); the asked player is kept apart when their account was not on it.
+      const accounts = Array.from(new Set(report.steamIds));
+      const rows = [...accounts, ...(accounts.includes(target) ? [] : [target])].flatMap((steamId) => report.hwid!.parts.map((part) => ({ steam_id: steamId, kind: part.kind, hash: part.hash, verified: accounts.includes(steamId), check_id: textValue(data.id), last_seen: now })));
+      const { error: hwidError } = await db().from("player_hwids").upsert(rows, { onConflict: "steam_id,kind,hash" });
       if (hwidError) console.error("Unable to keep the hardware fingerprint", hwidError.message);
-      // The same PC as an account that is banned: this account is banned too, whether or not its own Steam account was found on the PC.
-      try {
-        const matched = await banIfOnBannedPc(textValue(data.target_steam_id), report.hwid.parts, textValue(data.requested_by));
-        if (matched) console.warn(`Banned ${textValue(data.target_steam_id)}: same PC as banned account ${matched}`);
-      } catch (failure) {
-        console.error("Unable to check the fingerprint against banned accounts", failure instanceof Error ? failure.message : failure);
+      // Automatic bans are off until CHECK_AUTO_BAN=on is set (the verdicts are made by rules that have not been tried on real players yet).
+      if (process.env.CHECK_AUTO_BAN?.trim().toLowerCase() === "on") {
+        try {
+          const requestedBy = textValue(data.requested_by);
+          // The same PC as an account that is banned: this account is banned too, whether or not its own Steam account was found on the PC.
+          const matched = await banIfOnBannedPc(target, report.hwid.parts, requestedBy);
+          if (matched) console.warn(`Banned ${target}: same PC as banned account ${matched}`);
+          // A cheat was found (a detection, not a suspicion) and the asked player's own account was on the PC: ban it and the accounts that shared the PC.
+          if (accounts.includes(target) && report.findings.some((finding) => finding.confidence === "detection")) {
+            const banned = await banCheaterAndAlts(target, report.hwid.parts, requestedBy);
+            if (banned.length > 0) console.warn(`Cheat found on the PC of ${target}: banned ${banned.join(", ")}`);
+          }
+        } catch (failure) {
+          console.error("Unable to apply the automatic bans", failure instanceof Error ? failure.message : failure);
+        }
       }
     }
     res.status(201).json({ received: true });
