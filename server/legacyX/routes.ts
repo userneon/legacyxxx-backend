@@ -4199,7 +4199,7 @@ export function createLegacyXRouter() {
     res.json({
       total: Number(rows[0]?.total_count ?? 0),
       offset: input.offset,
-      items: rows.map((row) => ({ id: textValue(row.id), name: menuSkinName(textValue(row.display_name)), image: staticStorageUrl(req, textValue(row.image_key) || null) })),
+      items: rows.map((row) => ({ id: textValue(row.id), name: menuSkinName(textValue(row.display_name)), paintId: row.paint_id === null || row.paint_id === undefined ? null : numberValue(row.paint_id) })),
     });
   }));
 
