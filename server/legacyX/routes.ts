@@ -35,6 +35,7 @@ import { ANNOUNCEMENT_MAX_AGE_HOURS, ANNOUNCEMENT_PAGE, announcementRow, announc
 import { ADMIN_CALL_COOLDOWN_SECONDS, ADMIN_CALL_MAX_AGE_HOURS, ADMIN_CALL_PAGE, adminCallRow, adminCallSchema, adminCallView, parseAfter, type AdminCallRecord } from "./adminCalls";
 import { COIN_RULES, NotEnoughCoinsError, applyWalletChange, awardDiscordLink, awardMatchBonuses, awardMatchCoins, clanPrices, earnRules, loadWallet, loadWalletSummary, penalizeWallet, walletGrantSchema, walletPenaltySchema } from "./wallet";
 import { isMissingTableError, ownerLinks, ownerProfileSchema, ownerTeam, ownerUpdates } from "./ownerProfile";
+import { ADMIN_PANEL_PAGE, adminBanItem, adminBansQuery, adminLoginItem, adminLoginsQuery } from "./adminPanel";
 import { menuLoadoutQuery, menuRarity, menuTiles, MENU_AGENT_TEAMS, MENU_SKIN_PAGE, MENU_SLOT_CATEGORY, entriesReplacedByEquip, menuAgentName, menuGunModel, menuSkinEquipBody, menuSkinItemsQuery, menuSkinName, menuSkinSlotSchema, menuSkinTypesQuery, menuSlotKey, sharedGunEntryMovedTo, type LoadoutRow, type MenuSkinSlot } from "./menuSkins";
 import { PROFILE_NAME_MAX, PROFILE_SECTIONS, bestNameMatch, escapeLike, hiddenForViewer, loadoutShowcase, mapWinRates, normalizeHiddenSections, profileStats, staffCard, type ProfileSection } from "./profileOverview";
 import { activeBans, bannedPlayer, checkBansSchema, issueBan, issueBanSchema, revokeAllBans, revokeAllBansSchema, revokeBans, revokeBanSchema } from "./bans";
@@ -4070,6 +4071,82 @@ export function createLegacyXRouter() {
     const input = authorizationRequestSchema.parse(req.body);
     res.set("Cache-Control", "no-store");
     res.json({ serverId: input.serverId, checkedAt: new Date().toISOString(), players: await resolveAuthorizations(db(), input) });
+  }));
+
+  // LegacyX-Hud's in-game admin panel reads these (a game server token with admin:read). Read-only; lifting a ban is /plugin/bans/revoke.
+  const adminPanelRateLimit = rateLimit({
+    windowMs: 1_000,
+    limit: process.env.NODE_ENV === "test" ? 1_000 : 6,
+    standardHeaders: "draft-8",
+    legacyHeaders: false,
+    keyGenerator: (req) => `admin-panel:${textValue(recordValue(req.query).steam_id) || req.ip || "unknown"}`,
+    message: { error_code: "rate_limited" },
+  });
+  const userNames = async (ids: string[]) => {
+    const unique = Array.from(new Set(ids.filter(Boolean)));
+    if (unique.length === 0) return new Map<string, string>();
+    const { data, error } = await db().from("users").select("id,username").in("id", unique);
+    legacyXError(error, "Unable to load player names");
+    return new Map(((data ?? []) as DbRow[]).map((row) => [textValue(row.id), textValue(row.username)]));
+  };
+  router.get("/plugin/admin/bans", adminPanelRateLimit, pluginRoute("admin:read", async (req, res) => {
+    const input = adminBansQuery.parse(req.query);
+    const now = new Date();
+    const nowIso = now.toISOString();
+    const startOfDay = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())).toISOString();
+    const columns = "id,steam_id,user_id,reason,is_permanent,expires_at,issued_by,issuer_steam_id,source,revoked_at,revoked_by,revoke_reason,created_at";
+    const active = () => db().from("bans").select("id", { count: "exact", head: true }).is("revoked_at", null).or(`is_permanent.eq.true,expires_at.gt.${nowIso}`);
+    let list = db().from("bans").select(columns).order("created_at", { ascending: false }).range(input.offset, input.offset + ADMIN_PANEL_PAGE - 1);
+    if (input.filter === "active") list = list.is("revoked_at", null).or(`is_permanent.eq.true,expires_at.gt.${nowIso}`);
+    else if (input.filter === "lifted") list = list.not("revoked_at", "is", null);
+    else if (input.filter === "expired") list = list.is("revoked_at", null).eq("is_permanent", false).lte("expires_at", nowIso);
+    else list = list.eq("issuer_steam_id", input.steam_id);
+    const [rows, activeCount, permanent, today, mine] = await Promise.all([
+      list,
+      active(),
+      active().eq("is_permanent", true),
+      db().from("bans").select("id", { count: "exact", head: true }).gte("created_at", startOfDay),
+      active().eq("issuer_steam_id", input.steam_id),
+    ]);
+    legacyXError(rows.error, "Unable to load bans");
+    for (const counted of [activeCount, permanent, today, mine]) legacyXError(counted.error, "Unable to count bans");
+    const data = (rows.data ?? []) as DbRow[];
+    const names = await userNames(data.flatMap((row) => [textValue(row.user_id), textValue(row.issued_by), textValue(row.revoked_by)]));
+    res.set("Cache-Control", "no-store");
+    res.json({
+      stats: { active: activeCount.count ?? 0, today: today.count ?? 0, permanent: permanent.count ?? 0, mine: mine.count ?? 0 },
+      items: data.map((row) => adminBanItem(row, names, now)),
+      hasMore: data.length === ADMIN_PANEL_PAGE,
+    });
+  }));
+  router.get("/plugin/admin/logins", adminPanelRateLimit, pluginRoute("admin:read", async (req, res) => {
+    const input = adminLoginsQuery.parse(req.query);
+    let query = db().schema("legacy_x").from("reconnect_sessions").select("steam_id,player_name,server_id,connected_at,disconnected_at,updated_at").order("connected_at", { ascending: false }).range(input.offset, input.offset + 9);
+    if (input.server_id) query = query.eq("server_id", input.server_id);
+    if (input.online) query = query.is("disconnected_at", null).gte("updated_at", new Date(Date.now() - 10 * 60_000).toISOString());
+    const { data, error } = await query;
+    legacyXError(error, "Unable to load logins");
+    const rows = (data ?? []) as DbRow[];
+    const serverIds = Array.from(new Set(rows.map((row) => textValue(row.server_id))));
+    const { data: servers, error: serversError } = serverIds.length
+      ? await db().schema("legacy_x").from("reconnect_servers").select("server_id,display_name").in("server_id", serverIds)
+      : { data: [], error: null };
+    legacyXError(serversError, "Unable to load servers");
+    const serverNames = new Map(((servers ?? []) as DbRow[]).map((row) => [textValue(row.server_id), textValue(row.display_name) || textValue(row.server_id)]));
+    res.set("Cache-Control", "no-store");
+    res.json({ items: rows.map((row) => adminLoginItem(row, serverNames)), hasMore: rows.length === 10 });
+  }));
+  router.get("/plugin/admin/staff", adminPanelRateLimit, pluginRoute("admin:read", async (_req, res) => {
+    const { data, error } = await db().from("staff").select("user_id,role,status").eq("status", "active").order("role", { ascending: true }).limit(50);
+    legacyXError(error, "Unable to load staff");
+    const rows = (data ?? []) as DbRow[];
+    const { data: users, error: usersError } = rows.length
+      ? await db().from("users").select("id,username,steam_id").in("id", rows.map((row) => textValue(row.user_id)))
+      : { data: [], error: null };
+    legacyXError(usersError, "Unable to load staff names");
+    const byId = new Map(((users ?? []) as DbRow[]).map((row) => [textValue(row.id), row]));
+    res.set("Cache-Control", "no-store");
+    res.json({ items: rows.map((row) => ({ player: textValue(byId.get(textValue(row.user_id))?.username) || "Unknown", steamId: textValue(byId.get(textValue(row.user_id))?.steam_id) || null, role: textValue(row.role) })) });
   }));
 
   // In-game !xp / !rank: the player's rank on the Legacy-X ladder (the same source as the website).
