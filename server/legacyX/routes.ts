@@ -35,6 +35,7 @@ import { ANNOUNCEMENT_MAX_AGE_HOURS, ANNOUNCEMENT_PAGE, announcementRow, announc
 import { ADMIN_CALL_COOLDOWN_SECONDS, ADMIN_CALL_MAX_AGE_HOURS, ADMIN_CALL_PAGE, adminCallRow, adminCallSchema, adminCallView, parseAfter, type AdminCallRecord } from "./adminCalls";
 import { COIN_RULES, NotEnoughCoinsError, applyWalletChange, awardDiscordLink, awardMatchBonuses, awardMatchCoins, clanPrices, earnRules, loadWallet, loadWalletSummary, penalizeWallet, walletGrantSchema, walletPenaltySchema } from "./wallet";
 import { isMissingTableError, ownerLinks, ownerProfileSchema, ownerTeam, ownerUpdates } from "./ownerProfile";
+import { MENU_SKIN_PAGE, entriesReplacedByEquip, menuSkinEquipBody, menuSkinItemsQuery, menuSkinName, menuSkinSlotSchema, menuSkinTypesQuery, menuSlotKey, type LoadoutRow } from "./menuSkins";
 import { PROFILE_NAME_MAX, PROFILE_SECTIONS, bestNameMatch, escapeLike, hiddenForViewer, loadoutShowcase, mapWinRates, normalizeHiddenSections, profileStats, staffCard, type ProfileSection } from "./profileOverview";
 import { activeBans, bannedPlayer, checkBansSchema, issueBan, issueBanSchema, revokeAllBans, revokeAllBansSchema, revokeBans, revokeBanSchema } from "./bans";
 import { authorizationRequestSchema, resolveAuthorizations } from "./adminAuthorization";
@@ -4134,6 +4135,140 @@ export function createLegacyXRouter() {
     });
     res.json({ entries });
   }));
+  // The in-game menu's Skins tab (knives and gloves). Reading needs skinchanger:read; equipping needs skinchanger:write and a
+  // player who is on a server right now, so a token cannot change the look of someone who is not playing.
+  const menuSkinsRateLimit = rateLimit({
+    windowMs: 1_000,
+    limit: process.env.NODE_ENV === "test" ? 1_000 : 4,
+    standardHeaders: "draft-8",
+    legacyHeaders: false,
+    keyGenerator: (req) => `menu-skins:${textValue(recordValue(req.query).steam_id) || textValue(recordValue(req.body).steam_id) || "invalid"}`,
+    message: { error_code: "rate_limited" },
+  });
+  const menuSkinTypesCache = new Map<string, { at: number; types: Array<{ weaponClass: string; skins: number }> }>();
+
+  router.get("/plugin/menu/skins/types", menuSkinsRateLimit, pluginRoute("skinchanger:read", async (req, res) => {
+    const input = menuSkinTypesQuery.parse(req.query);
+    let cached = menuSkinTypesCache.get(input.slot);
+    if (!cached || Date.now() - cached.at > 10 * 60_000) {
+      const { data, error } = await db().rpc("get_skinchanger_catalog_facets", { p_category: input.slot });
+      legacyXError(error, "Unable to load skinchanger types");
+      const classes = (recordValue(data).weaponClasses ?? []) as Array<{ weaponClass?: string; count?: number }>;
+      cached = {
+        at: Date.now(),
+        // The plain "Knife" model is the default knife everyone already has, not a pick.
+        types: classes.filter((entry) => entry.weaponClass && entry.weaponClass !== "Knife").map((entry) => ({ weaponClass: String(entry.weaponClass), skins: Number(entry.count ?? 0) })),
+      };
+      menuSkinTypesCache.set(input.slot, cached);
+    }
+    const { data: user, error: userError } = await db().from("users").select("id").eq("steam_id", input.steam_id).maybeSingle();
+    legacyXError(userError, "Unable to resolve player");
+    if (!user) {
+      res.status(404).json({ error_code: "not_linked" });
+      return;
+    }
+    const { data: rows, error: rowsError } = await db().from("skinchanger_loadout_entries")
+      .select("catalog_item_id,team_scope")
+      .eq("user_id", textValue(user.id))
+      .eq("slot", input.slot);
+    legacyXError(rowsError, "Unable to load skinchanger loadout");
+    const ids = ((rows ?? []) as DbRow[]).map((row) => textValue(row.catalog_item_id));
+    let equipped: { weaponClass: string; skin: string } | null = null;
+    if (ids.length) {
+      const { data: items, error: itemsError } = await db().from("skinchanger_catalog_items").select("weapon_class,display_name").in("id", ids).eq("is_active", true).limit(1);
+      legacyXError(itemsError, "Unable to resolve skinchanger items");
+      const item = ((items ?? []) as DbRow[])[0];
+      if (item) equipped = { weaponClass: textValue(item.weapon_class), skin: menuSkinName(textValue(item.display_name)) };
+    }
+    res.json({ slot: input.slot, types: cached.types, equipped });
+  }));
+
+  router.get("/plugin/menu/skins/items", menuSkinsRateLimit, pluginRoute("skinchanger:read", async (req, res) => {
+    const input = menuSkinItemsQuery.parse(req.query);
+    const { data, error } = await db().rpc("get_skinchanger_catalog_page", {
+      p_category: input.slot,
+      p_weapon_class: input.weapon_class,
+      p_weapon_group: null,
+      p_team: null,
+      p_query: null,
+      p_limit: MENU_SKIN_PAGE,
+      p_offset: input.offset,
+    });
+    legacyXError(error, "Unable to load skinchanger items");
+    const rows = (data ?? []) as Array<DbRow & { total_count?: number | string }>;
+    res.json({
+      total: Number(rows[0]?.total_count ?? 0),
+      offset: input.offset,
+      items: rows.map((row) => ({ id: textValue(row.id), name: menuSkinName(textValue(row.display_name)) })),
+    });
+  }));
+
+  router.post("/plugin/menu/skins/equip", menuSkinsRateLimit, pluginRoute("skinchanger:write", async (req, res, plugin) => {
+    const input = menuSkinEquipBody.parse(req.body);
+    const { data: user, error: userError } = await db().from("users").select("id").eq("steam_id", input.steam_id).maybeSingle();
+    legacyXError(userError, "Unable to resolve player");
+    if (!user) {
+      res.status(404).json({ error_code: "not_linked" });
+      return;
+    }
+    const userId = textValue(user.id);
+    const since = new Date(Date.now() - 2 * 60 * 60_000).toISOString();
+    const { data: online, error: onlineError } = await db().from("skinchanger_server_sessions")
+      .select("server_id")
+      .eq("steam_id", input.steam_id)
+      .is("disconnected_at", null)
+      .gte("last_seen_at", since)
+      .limit(1);
+    legacyXError(onlineError, "Unable to check the player's session");
+    if (!(online ?? []).length) apiError(409, "The player is not on a server right now", "not_online");
+
+    const { data: item, error: itemError } = await db().from("skinchanger_catalog_items")
+      .select("id,category,weapon_class,weapon_defindex,display_name")
+      .eq("id", input.catalog_item_id)
+      .eq("is_active", true)
+      .maybeSingle();
+    legacyXError(itemError, "Unable to validate the item");
+    const slot = menuSkinSlotSchema.safeParse(item?.category);
+    if (!item || !slot.success) apiError(400, "Only knives and gloves can be picked here");
+    const itemRow = item as DbRow;
+    let modelDefindex = itemRow.weapon_defindex === null ? null : Number(itemRow.weapon_defindex);
+    if (modelDefindex === null && slot.data === "knife") {
+      const { data: base } = await db().from("skinchanger_catalog_items").select("weapon_defindex")
+        .eq("category", slot.data).eq("weapon_class", textValue(itemRow.weapon_class)).eq("is_active", true).not("weapon_defindex", "is", null).limit(1);
+      const found = ((base ?? []) as DbRow[])[0]?.weapon_defindex;
+      modelDefindex = found === undefined || found === null ? null : Number(found);
+    }
+    const slotKey = menuSlotKey(slot.data, modelDefindex, textValue(itemRow.weapon_class));
+
+    const { data: loadout, error: loadoutError } = await db().from("skinchanger_loadouts").select("version").eq("user_id", userId).maybeSingle();
+    legacyXError(loadoutError, "Unable to load the loadout");
+    let version = loadout ? numberValue((loadout as DbRow).version) : 0;
+    const { data: rows, error: rowsError } = await db().from("skinchanger_loadout_entries")
+      .select("slot,slot_key,team_scope,catalog_item_id")
+      .eq("user_id", userId)
+      .eq("slot", slot.data);
+    legacyXError(rowsError, "Unable to load the loadout entries");
+    for (const row of entriesReplacedByEquip((rows ?? []) as LoadoutRow[], slot.data, slotKey, input.catalog_item_id)) {
+      const { data: removed, error: removeError } = await db().rpc("delete_skinchanger_loadout_entry", {
+        p_user_id: userId,
+        p_expected_version: version,
+        p_slot_key: row.slot_key,
+        p_team_scope: row.team_scope,
+      });
+      legacyXError(removeError, "Unable to replace the equipped item");
+      version = numberValue(recordValue(removed).version);
+    }
+    const { data: saved, error: saveError } = await db().rpc("upsert_skinchanger_loadout_entry", {
+      p_user_id: userId,
+      p_expected_version: version,
+      p_entry: { slot: slot.data, slot_key: slotKey, team_scope: "all", catalog_item_id: input.catalog_item_id, options: {} },
+    });
+    legacyXError(saveError, "Unable to save the pick");
+    const savedVersion = numberValue(recordValue(saved).version);
+    await writePluginAudit(plugin, "skinchanger.menu.equip", "skinchanger_loadouts", userId, { version: savedVersion, slot: slot.data, slotKey, catalogItemId: input.catalog_item_id });
+    res.json({ version: savedVersion, skin: menuSkinName(textValue(itemRow.display_name)), weaponClass: textValue(itemRow.weapon_class) });
+  }));
+
   router.post("/plugin/live-match/snapshots", pluginRoute("servers:write", async (req, res, plugin) => {
     const input = z.object({ event_id: pluginEventIdSchema, server_id: z.string().trim().min(1).max(120), live_match: liveMatchSnapshotV1Schema }).strict().parse(req.body);
     const pluginId = req.header("x-plugin-id")?.trim() || plugin.name;
