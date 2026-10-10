@@ -16,7 +16,7 @@ import { createClient } from "@supabase/supabase-js";
 import { createHash, randomBytes } from "node:crypto";
 import { writeFileSync } from "node:fs";
 
-const SCOPES = ["admin:read", "bans:read", "bans:write", "stats:write", "matches:write", "servers:write", "skinchanger:read"];
+const SCOPES = ["admin:read", "bans:read", "bans:write", "stats:write", "matches:write", "servers:write", "skinchanger:read", "skinchanger:write"];
 const MODES = ["competitive_5v5", "fun", "proleague"];
 const usage = () => {
   console.error('Usage: node --env-file=.env scripts/create-game-server.mjs <host> <port>[:mode[:name]] [...] [--prefix <id-prefix>]');
