@@ -3543,7 +3543,7 @@ export function createLegacyXRouter() {
           return;
         }
         res.cookie("legacyx_staff_session", staffSession, staffSessionCookieOptions(15 * 60 * 1000));
-        res.redirect(302, new URL("/staffpanel?reauth=done", redirect).toString());
+        res.redirect(302, new URL("/staff?reauth=done", redirect).toString());
         return;
       }
       const [accessToken, refreshToken] = await Promise.all([issueAccessToken(principal), createRefreshSession(principal.id)]);
@@ -3572,7 +3572,7 @@ export function createLegacyXRouter() {
         return;
       }
       const code = status >= 500 ? "staff_setup_required" : "staff_auth_failed";
-      res.redirect(302, new URL(`/staffpanel?staff_error=${code}&trace=${trace}`, redirect).toString());
+      res.redirect(302, new URL(`/staff?staff_error=${code}&trace=${trace}`, redirect).toString());
     }
   }));
 
