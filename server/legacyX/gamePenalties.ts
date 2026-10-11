@@ -59,3 +59,30 @@ export async function liftCommPenalties(db: Db, input: z.infer<typeof liftCommPe
   legacyXError(error, "Unable to lift penalty");
   return { lifted: (data ?? []).length };
 }
+
+/** Every mute and gag still in force, for a game server's own copy: the database is the only place they are kept. */
+export async function listActiveCommPenalties(db: Db, now = new Date(), limit = 1000) {
+  const { data, error } = await db
+    .from("penalties")
+    .select("type,reason,is_permanent,expires_at,created_at,admin_name,users!penalties_user_id_fkey(steam_id,username)")
+    .in("type", ["comm", "gag"])
+    .eq("is_unbanned", false)
+    .or(`is_permanent.eq.true,expires_at.gt.${now.toISOString()}`)
+    .order("created_at", { ascending: false })
+    .limit(limit);
+  legacyXError(error, "Unable to list mutes and gags");
+  return ((data ?? []) as any[]).flatMap((row) => {
+    const user = Array.isArray(row.users) ? row.users[0] : row.users;
+    if (!user?.steam_id) return [];
+    return [{
+      steamId: String(user.steam_id),
+      name: String(user.username ?? ""),
+      type: row.type === "gag" ? "gag" : "comm",
+      reason: String(row.reason ?? ""),
+      isPermanent: Boolean(row.is_permanent),
+      expiresAt: (row.expires_at as string | null) ?? null,
+      createdAt: String(row.created_at ?? ""),
+      issuer: String(row.admin_name ?? ""),
+    }];
+  });
+}

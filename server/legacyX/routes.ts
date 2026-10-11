@@ -42,7 +42,7 @@ import { PROFILE_NAME_MAX, PROFILE_SECTIONS, bestNameMatch, escapeLike, hiddenFo
 import { activeBans, bannedPlayer, checkBansSchema, issueBan, issueBanSchema, issueIpBan, issueIpBanSchema, listActiveBans, revokeAllBans, revokeAllBansSchema, revokeBans, revokeBanSchema, revokeIpBans, revokeIpBanSchema } from "./bans";
 import { authorizationRequestSchema, resolveAuthorizations } from "./adminAuthorization";
 import { completeLink, createLinkRequest, discordLinkedUserIds, discordIdSchema, isLinkToken, linkCallbackUrl, linkRequestSchema, linkStartUrl, linkResultPage, listLinks, pendingLinkRequest, returnToMatches, unlink } from "./discordLinks";
-import { issueCommPenalty, issueCommPenaltySchema, liftCommPenalties, liftCommPenaltySchema } from "./gamePenalties";
+import { issueCommPenalty, issueCommPenaltySchema, liftCommPenalties, liftCommPenaltySchema, listActiveCommPenalties } from "./gamePenalties";
 import { createReadStream } from "node:fs";
 import { pipeline } from "node:stream/promises";
 import { loadCheckerRules, probesOf } from "./checkerRules";
@@ -4080,6 +4080,10 @@ export function createLegacyXRouter() {
     await writePluginAudit(plugin, `${input.type}.issue`, "penalties", penalty.penaltyId, { steamId: input.steamId, durationMinutes: input.durationMinutes, reason: input.reason, issuer: input.issuerName })
       .catch((error) => console.error("[legacy-x-api] Unable to audit penalty", error));
     res.status(201).json({ penalty });
+  }));
+  router.get("/plugin/penalties/active", pluginRoute("bans:read", async (_req, res) => {
+    res.set("Cache-Control", "no-store");
+    res.json({ penalties: await listActiveCommPenalties(db()) });
   }));
   router.post("/plugin/penalties/revoke", pluginRoute("bans:write", async (req, res, plugin) => {
     const input = liftCommPenaltySchema.parse(req.body);
