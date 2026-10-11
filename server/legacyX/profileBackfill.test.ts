@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isBare, pickToBackfill } from "./profileBackfill";
+import { isBare, pickMissing, pickToBackfill } from "./profileBackfill";
 
 describe("isBare", () => {
   it("is an account with no picture or the placeholder name", () => {
@@ -20,5 +20,18 @@ describe("pickToBackfill", () => {
     expect(pickToBackfill(["a"], 0, 3, seen)).toEqual(["a"]);
     expect(pickToBackfill(["a"], 59 * 60_000, 3, seen)).toEqual([]);
     expect(pickToBackfill(["a"], 61 * 60_000, 3, seen)).toEqual(["a"]);
+  });
+});
+
+describe("pickMissing", () => {
+  it("skips known players and tries a new one once an hour", () => {
+    const seen = new Map<string, number>();
+    const known = new Set(["a"]);
+    expect(pickMissing(["a", "b", "c"], known, 0, 10, seen)).toEqual(["b", "c"]);
+    expect(pickMissing(["b"], known, 59 * 60_000, 10, seen)).toEqual([]);
+    expect(pickMissing(["b"], known, 61 * 60_000, 10, seen)).toEqual(["b"]);
+  });
+  it("creates at most a handful per heartbeat", () => {
+    expect(pickMissing(["a", "b", "c", "d"], new Set(), 0, 2, new Map())).toEqual(["a", "b"]);
   });
 });
