@@ -22,7 +22,7 @@ export function pickToBackfill(steamIds: string[], now = Date.now(), limit = PER
     seen.set(id, now);
     picked.push(id);
   }
-  if (seen.size > 5000) for (const [id, at] of seen) if (now - at >= RETRY_AFTER_MS) seen.delete(id);
+  if (seen.size > 5000) Array.from(seen.entries()).forEach(([id, at]) => { if (now - at >= RETRY_AFTER_MS) seen.delete(id); });
   return picked;
 }
 
