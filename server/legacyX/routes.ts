@@ -35,6 +35,7 @@ import { ANNOUNCEMENT_MAX_AGE_HOURS, ANNOUNCEMENT_PAGE, announcementRow, announc
 import { ADMIN_CALL_COOLDOWN_SECONDS, ADMIN_CALL_MAX_AGE_HOURS, ADMIN_CALL_PAGE, adminCallRow, adminCallSchema, adminCallView, parseAfter, type AdminCallRecord } from "./adminCalls";
 import { COIN_RULES, NotEnoughCoinsError, applyWalletChange, awardDiscordLink, awardMatchBonuses, awardMatchCoins, clanPrices, earnRules, loadWallet, loadWalletSummary, penalizeWallet, walletGrantSchema, walletPenaltySchema } from "./wallet";
 import { isMissingTableError, ownerLinks, ownerProfileSchema, ownerTeam, ownerUpdates } from "./ownerProfile";
+import { liftInfo } from "./penaltyLift";
 import { ADMIN_PANEL_PAGE, adminBanItem, adminBansQuery, adminLoginItem, adminLoginsQuery } from "./adminPanel";
 import { menuLoadoutQuery, menuRarity, menuTiles, MENU_AGENT_TEAMS, MENU_SKIN_PAGE, MENU_SLOT_CATEGORY, entriesReplacedByEquip, menuAgentName, menuGunModel, menuSkinEquipBody, menuSkinItemsQuery, menuSkinName, menuSkinSlotSchema, menuSkinTypesQuery, menuSlotKey, sharedGunEntryMovedTo, type LoadoutRow, type MenuSkinSlot } from "./menuSkins";
 import { PROFILE_NAME_MAX, PROFILE_SECTIONS, bestNameMatch, escapeLike, hiddenForViewer, loadoutShowcase, mapWinRates, normalizeHiddenSections, profileStats, staffCard, type ProfileSection } from "./profileOverview";
@@ -593,12 +594,12 @@ function mapClanMember(member: DbRow) {
   return { id: textValue(user.id || member.user_id), steamId: textValue(user.steam_id), name: textValue(user.username), role: textValue(member.role), avatar: textValue(user.avatar), description: "" };
 }
 
-function mapPenalty(penalty: DbRow, adminProfiles: Map<string, { steamId: string; avatar: string }> = new Map(), moderationStatuses: Map<string, ModerationStatus> = new Map()) {
+function mapPenalty(penalty: DbRow, adminProfiles: Map<string, { steamId: string; avatar: string }> = new Map(), moderationStatuses: Map<string, ModerationStatus> = new Map(), lifts: Map<string, { liftedBy: string | null; liftedAt: string | null }> = new Map()) {
   const user = firstRow(penalty.users) ?? {};
   const admin = textValue(penalty.admin_name);
   const issuer = adminProfiles.get(admin);
   const userId = textValue(user.id || penalty.user_id);
-  return { id: textValue(penalty.id), type: textValue(penalty.type), player: textValue(user.username), playerSteamId: textValue(user.steam_id) || undefined, avatar: textValue(user.avatar), moderationStatus: moderationStatuses.get(userId) ?? "Clear", reason: textValue(penalty.reason), term: textValue(penalty.term), isPermanent: Boolean(penalty.is_permanent), isUnbanned: Boolean(penalty.is_unbanned), admin, adminSteamId: issuer?.steamId || undefined, adminAvatar: issuer?.avatar || undefined, expiresAt: timestampValue(penalty.expires_at) || null, date: timestampValue(penalty.created_at) };
+  return { id: textValue(penalty.id), type: textValue(penalty.type), player: textValue(user.username), playerSteamId: textValue(user.steam_id) || undefined, avatar: textValue(user.avatar), moderationStatus: moderationStatuses.get(userId) ?? "Clear", reason: textValue(penalty.reason), term: textValue(penalty.term), isPermanent: Boolean(penalty.is_permanent), isUnbanned: Boolean(penalty.is_unbanned), admin, adminSteamId: issuer?.steamId || undefined, adminAvatar: issuer?.avatar || undefined, expiresAt: timestampValue(penalty.expires_at) || null, date: timestampValue(penalty.created_at), ...(lifts.get(textValue(penalty.id)) ?? {}) };
 }
 
 function activePenaltyStatus(penalty: DbRow): ModerationStatus | undefined {
@@ -638,7 +639,31 @@ function mapNotification(notification: DbRow) {
   };
 }
 
+/** Who lifted each lifted penalty and when, from the ban row that was lifted with it (see penaltyLift.ts). */
+async function resolveLifts(rows: DbRow[], database: ReturnType<typeof legacyXDb>) {
+  const lifts = new Map<string, { liftedBy: string | null; liftedAt: string | null }>();
+  const liftedIds = rows.filter(row => Boolean(row.is_unbanned)).map(row => textValue(row.id)).filter(Boolean);
+  if (liftedIds.length === 0) return lifts;
+  // The public list can hold many lifted penalties: ask in batches so the request stays short.
+  const bans: DbRow[] = [];
+  for (let start = 0; start < liftedIds.length; start += 100) {
+    const { data, error } = await database.from("bans").select("penalty_id,revoked_by,revoke_reason,revoked_at").in("penalty_id", liftedIds.slice(start, start + 100)).not("revoked_at", "is", null);
+    legacyXError(error, "Unable to resolve who lifted penalties");
+    bans.push(...((data ?? []) as DbRow[]));
+  }
+  const staffIds = Array.from(new Set(bans.map(ban => textValue(ban.revoked_by)).filter(Boolean)));
+  const names = new Map<string, string>();
+  if (staffIds.length) {
+    const { data: users, error: usersError } = await database.from("users").select("id,username").in("id", staffIds);
+    legacyXError(usersError, "Unable to resolve staff names");
+    for (const user of (users ?? []) as DbRow[]) names.set(textValue(user.id), textValue(user.username));
+  }
+  for (const ban of bans) lifts.set(textValue(ban.penalty_id), liftInfo({ revoked_by: textValue(ban.revoked_by) || null, revoke_reason: textValue(ban.revoke_reason) || null, revoked_at: timestampValue(ban.revoked_at) || null }, names));
+  return lifts;
+}
+
 async function mapPenaltiesWithProfileIdentities(rows: DbRow[], database: ReturnType<typeof legacyXDb>) {
+  const lifts = await resolveLifts(rows, database);
   const adminNames = Array.from(new Set(rows.map(row => textValue(row.admin_name)).filter(Boolean)));
   const adminProfiles = new Map<string, { steamId: string; avatar: string }>();
   if (adminNames.length) {
@@ -647,7 +672,7 @@ async function mapPenaltiesWithProfileIdentities(rows: DbRow[], database: Return
     for (const user of (data ?? []) as DbRow[]) adminProfiles.set(textValue(user.username), { steamId: textValue(user.steam_id), avatar: textValue(user.avatar) });
   }
   const moderationStatuses = await resolveModerationStatuses(rows.map(row => textValue(row.user_id)), database);
-  return rows.map(row => mapPenalty(row, adminProfiles, moderationStatuses));
+  return rows.map(row => mapPenalty(row, adminProfiles, moderationStatuses, lifts));
 }
 
 function mapFeedback(feedback: DbRow, reviewerProfiles: Map<string, { steamId: string; avatar: string }> = new Map()) {
