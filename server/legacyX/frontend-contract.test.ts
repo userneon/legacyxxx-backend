@@ -28,7 +28,7 @@ const skinchangerEndpoints: Endpoint[] = [
   { method: "PUT", path: "/skinchanger/loadout" },
   { method: "PUT", path: "/skinchanger/loadout/entry" },
   { method: "DELETE", path: "/skinchanger/loadout/entry" },
-  { method: "GET", path: "/cosmetics" },
+  { method: "GET", path: "/cosmetics", public: true },
   { method: "POST", path: "/cosmetics/frost-ring/buy" },
   { method: "PUT", path: "/cosmetics/equip" },
   { method: "GET", path: "/skinchanger/collections" },
@@ -116,7 +116,7 @@ describe("frontend API endpoint inventory", () => {
   });
 
   it("registers each production Skinchanger user endpoint and rejects missing authentication", async () => {
-    for (const endpoint of skinchangerEndpoints) {
+    for (const endpoint of skinchangerEndpoints.filter(endpoint => !endpoint.public)) {
       const response = await fetch(`${baseUrl}${endpoint.path}`, {
         method: endpoint.method,
         headers: endpoint.method === "GET" ? undefined : { "content-type": "application/json" },

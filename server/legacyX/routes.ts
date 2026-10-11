@@ -1751,12 +1751,14 @@ export function createLegacyXRouter() {
     ...(item.glow ? { glow: textValue(item.glow) } : {}),
     ...(item.fx ? { fx: textValue(item.fx) } : {}),
   });
-  router.get("/cosmetics", userRoute(async (_req, res, user) => {
+  // Visitors see the whole catalogue too (audit 2026-10-11: a shop behind a sign-in wall sells nothing); owning and wearing need an account.
+  router.get("/cosmetics", optionalUserRoute(async (_req, res, user) => {
+    const none = { data: [] as DbRow[], error: null };
     const [catalog, owned, worn, equippedRows, everyOwned, players] = await Promise.all([
       loadCosmeticCatalog(),
-      db().from("cosmetic_owned").select("item_id").eq("user_id", user.id),
-      equippedCosmeticsFor([user.id]),
-      db().from("cosmetic_equipped").select("kind,item_id").eq("user_id", user.id),
+      user ? db().from("cosmetic_owned").select("item_id").eq("user_id", user.id) : Promise.resolve(none),
+      user ? equippedCosmeticsFor([user.id]) : Promise.resolve(new Map()),
+      user ? db().from("cosmetic_equipped").select("kind,item_id").eq("user_id", user.id) : Promise.resolve(none),
       db().from("cosmetic_owned").select("item_id").limit(100000),
       db().from("users").select("id", { count: "exact", head: true }),
     ]);
@@ -1769,7 +1771,7 @@ export function createLegacyXRouter() {
     const ofKind = (kind: CosmeticKind) => catalog.filter((item) => item.kind === kind).map((item) => cosmeticView(item, ownedIds, owners));
     res.json({
       players: players.error ? null : players.count ?? 0,
-      equippedFrame: worn.get(user.id)?.frame ?? null,
+      equippedFrame: user ? worn.get(user.id)?.frame ?? null : null,
       equippedNameColor: wearing.get("name_color") ?? null,
       equippedNameGlow: wearing.get("name_glow") ?? null,
       frames: ofKind("frame"),
