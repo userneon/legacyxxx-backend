@@ -41,7 +41,7 @@ import { menuLoadoutQuery, menuRarity, menuTiles, MENU_AGENT_TEAMS, MENU_SKIN_PA
 import { PROFILE_NAME_MAX, PROFILE_SECTIONS, bestNameMatch, escapeLike, hiddenForViewer, loadoutShowcase, mapWinRates, normalizeHiddenSections, profileStats, staffCard, type ProfileSection } from "./profileOverview";
 import { activeBans, bannedPlayer, checkBansSchema, issueBan, issueBanSchema, issueIpBan, issueIpBanSchema, listActiveBans, revokeAllBans, revokeAllBansSchema, revokeBans, revokeBanSchema, revokeIpBans, revokeIpBanSchema } from "./bans";
 import { authorizationRequestSchema, resolveAuthorizations } from "./adminAuthorization";
-import { completeLink, createLinkRequest, discordLinkedUserIds, discordIdSchema, isLinkToken, linkCallbackUrl, linkRequestSchema, linkStartUrl, linkResultPage, listLinks, pendingLinkRequest, returnToMatches, unlink } from "./discordLinks";
+import { completeLink, discordLinkedUserIds, discordIdSchema, isLinkToken, linkCallbackUrl, linkResultPage, listLinks, pendingLinkRequest, returnToMatches, unlink } from "./discordLinks";
 import { issueCommPenalty, issueCommPenaltySchema, liftCommPenalties, liftCommPenaltySchema, listActiveCommPenalties } from "./gamePenalties";
 import { createReadStream } from "node:fs";
 import { pipeline } from "node:stream/promises";
@@ -359,7 +359,6 @@ const faceitLinkSchema = z.object({ nickname: z.string().trim().min(1).max(64).r
 const linksSchema = z.object({ links: z.array(z.string().url().max(2048)).max(20) });
 const clanSchema = z.object({ name: z.string().trim().min(3).max(24), tag: z.string().trim().toUpperCase().regex(/^[A-Z0-9]{2,5}$/, "Tag is 2-5 letters or numbers"), region: z.string().trim().min(2).max(64).optional(), joinMode: z.enum(["open", "request"]).default("open"), maxPlayers: z.number().int().min(2).max(50).default(10) }).strict();
 const feedbackSchema = z.object({ name: z.string().trim().min(1).max(64).optional(), rating: z.number().int().min(1).max(5), message: z.string().trim().min(1).max(4000) });
-const pluginServerSchema = z.object({ id: z.string().uuid().optional(), name: z.string().trim().min(1).max(100), map: z.string().trim().min(1).max(64), mode: z.string().trim().min(1).max(64), max_players: z.number().int().min(0).max(256), current_players: z.number().int().min(0).max(256), ping: z.number().int().min(0).max(10000).default(0), status: z.enum(["online", "offline", "full"]), ip_address: z.string().max(255).optional(), port: z.number().int().min(1).max(65535).optional() });
 const pluginEventIdSchema = z.string().trim().min(8).max(220).regex(/^[A-Za-z0-9:_-]+$/, "event_id contains unsupported characters");
 const liveMatchPlayerSchema = z.object({
   steam_id: z.string().regex(/^\d{15,20}$/),
@@ -570,12 +569,6 @@ function mapServer(server: DbRow) {
 }
 
 type ModerationStatus = "Banned" | "Muted" | "Clear";
-
-function mapLeader(stats: DbRow, index: number, moderationStatuses: Map<string, ModerationStatus> = new Map()) {
-  const user = firstRow(stats.users) ?? {};
-  const userId = textValue(user.id || stats.user_id);
-  return { id: userId, steamId: textValue(user.steam_id), rank: index + 1, name: textValue(user.username), level: numberValue(user.level), experience: numberValue(stats.experience), kills: numberValue(stats.kills), deaths: numberValue(stats.deaths), kd: numberValue(stats.kd_ratio), headshots: numberValue(stats.headshots), playedHours: numberValue(stats.played_hours), lastPlayed: timestampValue(stats.last_played_at), avatar: textValue(user.avatar), moderationStatus: moderationStatuses.get(userId) ?? "Clear" };
-}
 
 function mapLeaderFromUser(user: DbRow, index: number) {
   const stats = statsRow(user);
@@ -2259,27 +2252,6 @@ export function createLegacyXRouter() {
     res.status(204).end();
   }));
 
-  const frontendLeaderboard = userRoute(async (req, res) => {
-    z.object({ mode: playModeSchema.optional(), region: z.string().trim().min(1).max(64).optional() }).parse(req.query);
-    const { data, error } = await db().from("player_stats").select("*,users!inner(id,steam_id,username,avatar,level)").order("rating", { ascending: false });
-    legacyXError(error, "Unable to load leaderboard");
-    const rows = (data ?? []) as DbRow[];
-    const moderationStatuses = await resolveModerationStatuses(rows.map(row => textValue(row.user_id)), db());
-    res.json(rows.map((row, index) => mapLeader(row, index, moderationStatuses)));
-  });
-  router.get("/leaderboard", frontendLeaderboard);
-  router.get("/players/leaderboard", frontendLeaderboard);
-  router.get("/players/:playerId", userRoute(async (req, res) => {
-    const playerId = userIdSchema.parse(req.params.playerId);
-    const { data, error } = await db().from("player_stats").select("*,users!inner(id,steam_id,username,avatar,level)").order("rating", { ascending: false });
-    legacyXError(error, "Unable to load player");
-    const rows = (data ?? []) as DbRow[];
-    const index = rows.findIndex(row => textValue(row.user_id) === playerId);
-    if (index < 0) apiError(404, "Player was not found");
-    const moderationStatuses = await resolveModerationStatuses([textValue(rows[index]!.user_id)], db());
-    res.json(mapLeader(rows[index]!, index, moderationStatuses));
-  }));
-
   // ---- Clans ----------------------------------------------------------------------------------------------------
   // Roles: leader (the owner), co-leader (manages requests, invitations and members), member. Staff can moderate any clan.
   const loadClanBasics = async (clanId: string) => {
@@ -3859,20 +3831,6 @@ export function createLegacyXRouter() {
     res.status(201).json({ contentId: data });
   }));
 
-  router.post("/plugin/maps", pluginRoute("maps:write", async (req, res, plugin) => {
-    const input = z.object({ id: z.string().trim().min(1).max(64), label: z.string().trim().min(1).max(100) }).parse(req.body);
-    const { data, error } = await db().from("maps").upsert(input, { onConflict: "id" }).select("*").single();
-    legacyXError(error, "Unable to upsert map");
-    await writePluginAudit(plugin, "map.upsert", "maps", null, { map: input.id });
-    res.status(201).json({ map: data });
-  }));
-  router.post("/plugin/servers", pluginRoute("servers:write", async (req, res, plugin) => {
-    const input = pluginServerSchema.parse(req.body);
-    const { data, error } = await db().from("game_servers").insert(input).select("*").single();
-    legacyXError(error, "Unable to create game server");
-    await writePluginAudit(plugin, "server.create", "game_servers", data.id, { name: data.name, status: data.status });
-    res.status(201).json({ server: data });
-  }));
   // Every CS2 server (LegacyX-Status) every 30 s: identity, map, mode and who is on it.
   router.post("/plugin/servers/heartbeat", pluginRoute("servers:write", async (req, res) => {
     const input = heartbeatSchema.parse(req.body);
@@ -3884,14 +3842,6 @@ export function createLegacyXRouter() {
     void ensureAccounts(onServer).then(() => backfillProfiles(onServer)).catch(() => undefined);
     res.json(result);
   }));
-  router.put("/plugin/servers/:serverId/status", pluginRoute("servers:write", async (req, res, plugin) => {
-    const input = pluginServerSchema.omit({ id: true, name: true, map: true, mode: true }).parse(req.body);
-    const { data, error } = await db().from("game_servers").update(input).eq("id", req.params.serverId).select("*").single();
-    legacyXError(error, "Unable to update game server status");
-    await writePluginAudit(plugin, "server.status.update", "game_servers", data.id, { status: data.status, currentPlayers: data.current_players });
-    res.json({ server: data });
-  }));
-
   router.post("/plugin/match-core/events", pluginRoute("matches:write", async (req, res, plugin) => {
     const parsed = matchCoreEventSchema.parse(req.body);
     const input = { ...parsed, event_type: parsed.event_type ?? parsed.event! };
@@ -3997,14 +3947,6 @@ export function createLegacyXRouter() {
     await writePluginAudit(plugin, "ban.revoke", "ban", null, { steamId: input.steamId, ...result, issuer: input.issuerName, reason: input.reason ?? null })
       .catch((error) => console.error("[legacy-x-api] Unable to audit ban lift", error));
     res.json({ ...result, player: await bannedPlayer(db(), input.steamId) });
-  }));
-  // Discord /link: the bot asks for a one-time URL; the player opens it and signs in with Steam. The
-  // public link lives under /auth/steam so it shares the auth rate limit and the legacyx.cc callback proxy.
-  router.post("/plugin/discord/link-requests", pluginRoute("discord:link", async (req, res) => {
-    const input = linkRequestSchema.parse(req.body);
-    const { token, expiresAt } = await createLinkRequest(db(), input);
-    res.set("Cache-Control", "no-store");
-    res.status(201).json({ url: linkStartUrl(steamOpenIdOrigin(req), token), expiresAt });
   }));
   router.get("/plugin/discord/links", pluginRoute("discord:link", async (_req, res) => {
     res.set("Cache-Control", "no-store");

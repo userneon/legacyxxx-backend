@@ -48,12 +48,6 @@ describe("LEGACY-X REST API", () => {
     expect(Array.isArray(payload)).toBe(true);
   });
 
-  it("rejects unsupported frontend leaderboard modes after authentication", async () => {
-    const response = await fetch(`${baseUrl}/leaderboard?mode=unsupported`, { headers: await frontendAuthHeaders() });
-
-    expect(response.status).toBe(400);
-  });
-
   it("uses the configured legacyx.cc Steam realm origin for the OpenID callback", async () => {
     const response = await fetch(`${baseUrl}/auth/steam`, { redirect: "manual" });
 
@@ -99,7 +93,7 @@ describe("LEGACY-X REST API", () => {
   });
 
   it("rejects plugin writes without a bearer token before any database write", async () => {
-    const response = await fetch(`${baseUrl}/plugin/maps`, {
+    const response = await fetch(`${baseUrl}/plugin/servers/heartbeat`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ id: "de_test", label: "Test" }),
@@ -165,7 +159,7 @@ describe("LEGACY-X REST API", () => {
   });
 
   integrationIt("rejects an invalid plugin bearer token before any database write", async () => {
-    const response = await fetch(`${baseUrl}/plugin/maps`, {
+    const response = await fetch(`${baseUrl}/plugin/servers/heartbeat`, {
       method: "POST",
       headers: {
         authorization: "Bearer invalid-plugin-token",
