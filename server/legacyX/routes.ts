@@ -53,6 +53,7 @@ import { CLAN_LOOK_ITEMS, CLAN_LOOK_KINDS, clanLookItem, clanLooksFor } from "./
 import { killEventSchema, killFeed } from "./killfeed";
 import { heartbeatSchema, ingestHeartbeat } from "./serverHeartbeat";
 import { backfillProfiles, ensureAccounts } from "./profileBackfill";
+import { EXP_CHANGE_WINDOW_MS, latestExpChanges } from "./expChange";
 import { mapPlayServer, pickQuickJoin, sortPlayServers, type PlayMode } from "./play";
 import { bracketRounds, checkInOpen, groupTeams, mapTournamentMatch as mapTournamentPlayerMatch, mapTournamentSummary, nextMatchFor, tournamentPhase } from "./tournaments";
 
@@ -976,7 +977,16 @@ export function createLegacyXRouter() {
     const linked = await discordLinkedUserIds(db());
     const clanTags = await clanTagsFor(((data ?? []) as DbRow[]).map((row) => textValue(row.user_id)));
     const worn = await equippedCosmeticsFor(((data ?? []) as DbRow[]).map((row) => textValue(row.user_id)));
-    const rows = ((data ?? []) as DbRow[]).map((row): DbRow => ({ ...row, discord_linked: linked.has(textValue(row.user_id)), clan_tag: clanTags.get(textValue(row.user_id))?.tag ?? null, frame: worn.get(textValue(row.user_id))?.frame ?? null, name_style: worn.get(textValue(row.user_id))?.nameStyle ?? null }));
+    // The EXP change of each player's latest ranked match (last two days), for the up/down colour on Home. Best effort.
+    const expChanges = await (async () => {
+      const ids = ((data ?? []) as DbRow[]).map((row) => textValue(row.user_id)).filter(Boolean);
+      if (ids.length === 0) return new Map<string, number>();
+      const since = new Date(Date.now() - EXP_CHANGE_WINDOW_MS).toISOString();
+      const result = await db().from("competitive_match_exp").select("user_id,exp_delta,created_at").in("user_id", ids).eq("counts_as_ranked", true).gte("created_at", since).order("created_at", { ascending: false }).limit(2000);
+      if (result.error) { console.warn("[legacy-x-api] exp changes unavailable", result.error.message); return new Map<string, number>(); }
+      return latestExpChanges((result.data ?? []) as Array<{ user_id: string; exp_delta: number; created_at: string }>);
+    })();
+    const rows = ((data ?? []) as DbRow[]).map((row): DbRow => ({ ...row, exp_change: expChanges.get(textValue(row.user_id)) ?? null, discord_linked: linked.has(textValue(row.user_id)), clan_tag: clanTags.get(textValue(row.user_id))?.tag ?? null, frame: worn.get(textValue(row.user_id))?.frame ?? null, name_style: worn.get(textValue(row.user_id))?.nameStyle ?? null }));
     if (sort === "exp") {
       res.json({ sort, minimumMatches: 0, entries: rows });
       return;
