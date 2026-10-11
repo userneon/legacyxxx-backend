@@ -4212,9 +4212,9 @@ export function createLegacyXRouter() {
     if (pluginId !== "legacyx-skinbridge") apiError(403, "LegacyX SkinBridge plugin identity is required");
     const { data: user, error } = await db().from("users").select("id").eq("steam_id", steamId).maybeSingle();
     legacyXError(error, "Unable to resolve player");
-    // The plugin owns every player-facing string, so only a machine-readable code is returned.
+    // A player who has never signed in on the website has nothing equipped: an empty loadout, so there is nothing to apply.
     if (!user) {
-      res.status(404).json({ error_code: "not_linked" });
+      res.json({ entries: [] });
       return;
     }
     const result = await loadSkinchangerLoadout(req, textValue(user.id));
@@ -4293,13 +4293,10 @@ export function createLegacyXRouter() {
     const types = await menuSkinTypes(input.slot, input.group);
     const { data: user, error: userError } = await db().from("users").select("id").eq("steam_id", input.steam_id).maybeSingle();
     legacyXError(userError, "Unable to resolve player");
-    if (!user) {
-      res.status(404).json({ error_code: "not_linked" });
-      return;
-    }
+    // A player who has never signed in on the website has nothing equipped yet: an empty loadout, not an error.
     const { data: rows, error: rowsError } = await db().from("skinchanger_loadout_entries")
       .select("catalog_item_id,team_scope")
-      .eq("user_id", textValue(user.id))
+      .eq("user_id", user ? textValue(user.id) : "00000000-0000-0000-0000-000000000000")
       .eq("slot", input.slot);
     legacyXError(rowsError, "Unable to load skinchanger loadout");
     const entries = (rows ?? []) as DbRow[];
@@ -4341,13 +4338,9 @@ export function createLegacyXRouter() {
     const tiles = menuTiles(input.team, models);
     const { data: user, error: userError } = await db().from("users").select("id").eq("steam_id", input.steam_id).maybeSingle();
     legacyXError(userError, "Unable to resolve player");
-    if (!user) {
-      res.status(404).json({ error_code: "not_linked" });
-      return;
-    }
     const { data: entryData, error: entryError } = await db().from("skinchanger_loadout_entries")
       .select("slot,slot_key,team_scope,catalog_item_id")
-      .eq("user_id", textValue(user.id));
+      .eq("user_id", user ? textValue(user.id) : "00000000-0000-0000-0000-000000000000");
     legacyXError(entryError, "Unable to load skinchanger loadout");
     const entries = (entryData ?? []) as DbRow[];
     const ids = Array.from(new Set(entries.map((entry) => textValue(entry.catalog_item_id)).filter(Boolean)));
@@ -4411,11 +4404,7 @@ export function createLegacyXRouter() {
     const input = menuSkinEquipBody.parse(req.body);
     const { data: user, error: userError } = await db().from("users").select("id").eq("steam_id", input.steam_id).maybeSingle();
     legacyXError(userError, "Unable to resolve player");
-    if (!user) {
-      res.status(404).json({ error_code: "not_linked" });
-      return;
-    }
-    const userId = textValue(user.id);
+    let userId = user ? textValue(user.id) : "";
     // Servers report who is on them every few seconds (reconnect_sessions); an open session seen in the last 10 minutes is "online".
     const since = new Date(Date.now() - 10 * 60_000).toISOString();
     const { data: online, error: onlineError } = await db().from("reconnect_sessions")
@@ -4426,6 +4415,15 @@ export function createLegacyXRouter() {
       .limit(1);
     legacyXError(onlineError, "Unable to check the player's session");
     if (!(online ?? []).length) apiError(409, "The player is not on a server right now", "not_online");
+    // A player who is on a server but has never signed in on the website gets an account the first time they pick something
+    // (as bans and match results already do); signing in later with the same Steam account picks it up.
+    if (!userId) {
+      const { data: created, error: createError } = await db().rpc("ensure_steam_user", { p_steam_id: input.steam_id, p_username: `Steam ${input.steam_id}`, p_avatar: "" });
+      legacyXError(createError, "Unable to create the player");
+      if (!created) apiError(500, "The player could not be created");
+      userId = textValue(created);
+      await syncSteamUserProfile(input.steam_id).catch(() => undefined);
+    }
 
     const { data: item, error: itemError } = await db().from("skinchanger_catalog_items")
       .select("id,category,weapon_class,weapon_defindex,display_name,metadata")
