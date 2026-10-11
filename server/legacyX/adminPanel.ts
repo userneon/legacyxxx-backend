@@ -41,8 +41,9 @@ export function adminBanItem(row: BanRow, names: Map<string, string>, now = new 
   const state = banState(row, now);
   return {
     id: String(row.id),
-    steamId: String(row.steam_id),
-    player: names.get(String(row.user_id ?? "")) ?? `Steam ${row.steam_id}`,
+    // The key the panel's Unban button hands to css_unban: the SteamID, or the address of an IP-only ban.
+    steamId: String(row.steam_id ?? row.ip_address ?? ""),
+    player: names.get(String(row.user_id ?? "")) ?? (row.steam_id ? `Steam ${row.steam_id}` : `IP ${row.ip_address}`),
     reason: String(row.reason ?? ""),
     permanent: Boolean(row.is_permanent),
     expiresAt: row.expires_at ?? null,

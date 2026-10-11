@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { activeBans, bannedPlayer, banTerm, checkBansSchema, issueBan, issueBanSchema, revokeBans } from "./bans";
+import { activeBans, bannedPlayer, banTerm, checkBansSchema, issueBan, issueBanSchema, issueIpBan, revokeBans, revokeIpBans } from "./bans";
 
 type Call = { table: string; op: string; payload?: unknown; filters: Array<[string, string, unknown]> };
 
@@ -80,7 +80,7 @@ describe("central bans", () => {
       "bans.select": [{ data: [{ steam_id: "76561198000000001", reason: "old", is_permanent: true, expires_at: null }, { steam_id: "76561198000000002", reason: "cheat", is_permanent: true, expires_at: null }], error: null }],
       "staff.select": [{ data: [{ role: "OWNER", users: [{ steam_id: "76561198000000001" }] }], error: null }],
     });
-    const bans = await activeBans(db, ["76561198000000001", "76561198000000002"], now);
+    const { bans } = await activeBans(db, ["76561198000000001", "76561198000000002"], now);
     expect(bans.map((ban) => ban.steamId)).toEqual(["76561198000000002"]);
   });
 
@@ -120,10 +120,39 @@ describe("central bans", () => {
         error: null,
       }],
     });
-    const bans = await activeBans(db, ["76561198000000001", "76561198000000002", "76561198000000003"], now);
+    const { bans } = await activeBans(db, ["76561198000000001", "76561198000000002", "76561198000000003"], now);
     expect(bans).toEqual([
       { steamId: "76561198000000001", reason: "cheat", isPermanent: true, expiresAt: null },
       { steamId: "76561198000000003", reason: "toxic", isPermanent: false, expiresAt: "2026-09-28T00:00:00.000Z" },
     ]);
+  });
+
+  it("records an IP ban without a player or a penalty", async () => {
+    const { db, calls } = fakeDb({ "bans.insert": [{ data: { id: "ban-9" }, error: null }] });
+    const result = await issueIpBan(db, { ip: "103.57.94.142", durationMinutes: 0, reason: "alt account", issuerName: "staffer (in-game)" }, now);
+    expect(result).toMatchObject({ banId: "ban-9", ip: "103.57.94.142", isPermanent: true, expiresAt: null });
+    expect(calls.map((call) => call.table)).toEqual(["bans"]);
+    expect(calls[0].payload).toMatchObject({ steam_id: null, ip_address: "103.57.94.142", is_permanent: true });
+  });
+
+  it("reports IP bans still in force, once per address", async () => {
+    const { db } = fakeDb({
+      "bans.select": [{
+        data: [
+          { ip_address: "103.57.94.142", reason: "alt", is_permanent: true, expires_at: null },
+          { ip_address: "103.57.94.142", reason: "older", is_permanent: true, expires_at: null },
+          { ip_address: "10.0.0.2", reason: "expired", is_permanent: false, expires_at: "2026-09-01T00:00:00.000Z" },
+        ],
+        error: null,
+      }],
+    });
+    const { ipBans } = await activeBans(db, [], now, ["103.57.94.142", "10.0.0.2"]);
+    expect(ipBans).toEqual([{ ip: "103.57.94.142", reason: "alt", isPermanent: true, expiresAt: null }]);
+  });
+
+  it("lifts the active bans of an IP", async () => {
+    const { db, calls } = fakeDb({ "bans.update": [{ data: [{ id: "ban-9" }], error: null }] });
+    expect(await revokeIpBans(db, { ip: "103.57.94.142", issuerName: "staffer (in-game)" }, now)).toEqual({ bansLifted: 1 });
+    expect(calls[0]).toMatchObject({ table: "bans", op: "update", filters: [["eq", "ip_address", "103.57.94.142"], ["is", "revoked_at", null]] });
   });
 });

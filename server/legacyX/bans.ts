@@ -26,6 +26,23 @@ export const issueBanSchema = z.object({
   issuerSteamId: steamId64.optional(),
 });
 
+const ipv4 = z.string().regex(/^\d{1,3}(\.\d{1,3}){3}$/, "IPv4 address is required");
+
+/** An IP ban: every player connecting from the address is refused. No penalty record, since no player is named. */
+export const issueIpBanSchema = z.object({
+  ip: ipv4,
+  /** 0 = permanent. Up to one year. */
+  durationMinutes: z.number().int().min(0).max(525_600).default(0),
+  reason: z.string().trim().min(1).max(200),
+  issuerName: z.string().trim().min(1).max(64),
+  issuerSteamId: steamId64.optional(),
+});
+
+export const revokeIpBanSchema = z.object({
+  ip: ipv4,
+  issuerName: z.string().trim().min(1).max(64),
+});
+
 export const revokeBanSchema = z.object({
   steamId: steamId64,
   issuerName: z.string().trim().min(1).max(64),
@@ -33,8 +50,10 @@ export const revokeBanSchema = z.object({
 });
 
 export const checkBansSchema = z.object({
-  steamIds: z.array(steamId64).min(1).max(128),
-});
+  steamIds: z.array(steamId64).max(128).default([]),
+  /** Addresses of the connected players; a match is an IP ban. */
+  ips: z.array(ipv4).max(128).default([]),
+}).refine((value) => value.steamIds.length + value.ips.length > 0, "Give at least one SteamID or IP");
 
 // Bans issued this way carry the lowest staff immunity, so any staff member can review or lift
 // them, and permanent ones go to the review queue like other permanent bans below manager rank.
@@ -105,6 +124,39 @@ export async function issueBan(db: Db, input: z.infer<typeof issueBanSchema>, no
   return { banId: ban!.id as string, penaltyId: penalty.id as string, userId: userId as string, isPermanent, expiresAt, term: banTerm(input.durationMinutes) };
 }
 
+export async function issueIpBan(db: Db, input: z.infer<typeof issueIpBanSchema>, now = new Date()) {
+  const isPermanent = input.durationMinutes === 0;
+  const expiresAt = isPermanent ? null : new Date(now.getTime() + input.durationMinutes * 60_000).toISOString();
+  const { data, error } = await db
+    .from("bans")
+    .insert({
+      steam_id: null,
+      ip_address: input.ip,
+      reason: input.reason,
+      is_permanent: isPermanent,
+      expires_at: expiresAt,
+      issuer_immunity: ISSUER_IMMUNITY,
+      source: "game",
+      issuer_steam_id: input.issuerSteamId ?? null,
+      review_status: "none",
+    })
+    .select("id")
+    .single();
+  legacyXError(error, "Unable to record IP ban");
+  return { banId: data!.id as string, ip: input.ip, isPermanent, expiresAt, term: banTerm(input.durationMinutes) };
+}
+
+export async function revokeIpBans(db: Db, input: z.infer<typeof revokeIpBanSchema>, now = new Date()) {
+  const { data, error } = await db
+    .from("bans")
+    .update({ revoked_at: now.toISOString(), revoke_reason: `Lifted by ${input.issuerName}`.slice(0, 240) })
+    .eq("ip_address", input.ip)
+    .is("revoked_at", null)
+    .select("id");
+  legacyXError(error, "Unable to lift IP bans");
+  return { bansLifted: (data ?? []).length };
+}
+
 export async function revokeBans(db: Db, input: z.infer<typeof revokeBanSchema>, now = new Date()) {
   const nowIso = now.toISOString();
   const reason = input.reason ?? `Lifted by ${input.issuerName}`;
@@ -172,23 +224,60 @@ export async function revokeAllBans(db: Db, input: z.infer<typeof revokeAllBansS
 }
 
 export type ActiveBan = { steamId: string; reason: string; isPermanent: boolean; expiresAt: string | null };
+export type ActiveIpBan = { ip: string; reason: string; isPermanent: boolean; expiresAt: string | null };
 
-/** Active bans among the given SteamIDs (not lifted, not expired). */
-export async function activeBans(db: Db, steamIds: string[], now = new Date()): Promise<ActiveBan[]> {
-  const { data, error } = await db
-    .from("bans")
-    .select("steam_id,reason,is_permanent,expires_at")
-    .in("steam_id", steamIds)
-    .is("revoked_at", null);
-  legacyXError(error, "Unable to read bans");
+const stillActive = (row: { is_permanent?: boolean | null; expires_at?: string | null }, now: Date) =>
+  Boolean(row.is_permanent) || Boolean(row.expires_at && Date.parse(row.expires_at) > now.getTime());
+
+/** Active bans among the given SteamIDs and IPs (not lifted, not expired). */
+export async function activeBans(db: Db, steamIds: string[], now = new Date(), ips: string[] = []): Promise<{ bans: ActiveBan[]; ipBans: ActiveIpBan[] }> {
+  const [bySteam, byIp] = await Promise.all([
+    steamIds.length > 0 ? db.from("bans").select("steam_id,reason,is_permanent,expires_at").in("steam_id", steamIds).is("revoked_at", null) : Promise.resolve({ data: [], error: null }),
+    ips.length > 0 ? db.from("bans").select("ip_address,reason,is_permanent,expires_at").in("ip_address", ips).is("revoked_at", null) : Promise.resolve({ data: [], error: null }),
+  ]);
+  legacyXError(bySteam.error ?? byIp.error, "Unable to read bans");
   // An owner is never kicked, even if an older ban row exists for them.
   const owners = await ownerSteamIds(db, steamIds);
   const seen = new Set<string>();
-  return (data ?? [])
+  const bans = ((bySteam.data ?? []) as any[])
     .filter((row) => !owners.has(row.steam_id))
-    .filter((row) => row.is_permanent || (row.expires_at && Date.parse(row.expires_at) > now.getTime()))
+    .filter((row) => stillActive(row, now))
     .filter((row) => !seen.has(row.steam_id) && seen.add(row.steam_id))
-    .map((row) => ({ steamId: row.steam_id, reason: row.reason, isPermanent: Boolean(row.is_permanent), expiresAt: row.expires_at ?? null }));
+    .map((row) => ({ steamId: row.steam_id as string, reason: row.reason as string, isPermanent: Boolean(row.is_permanent), expiresAt: (row.expires_at as string | null) ?? null }));
+  const seenIps = new Set<string>();
+  const ipBans = ((byIp.data ?? []) as any[])
+    .filter((row) => stillActive(row, now))
+    .filter((row) => !seenIps.has(row.ip_address) && seenIps.add(row.ip_address))
+    .map((row) => ({ ip: row.ip_address as string, reason: row.reason as string, isPermanent: Boolean(row.is_permanent), expiresAt: (row.expires_at as string | null) ?? null }));
+  return { bans, ipBans };
+}
+
+/** Every active ban, for a game server's own list (!unban menu, ban info). Newest first. */
+export async function listActiveBans(db: Db, now = new Date(), limit = 500) {
+  const { data, error } = await db
+    .from("bans")
+    .select("steam_id,ip_address,reason,is_permanent,expires_at,created_at,user_id")
+    .is("revoked_at", null)
+    .or(`is_permanent.eq.true,expires_at.gt.${now.toISOString()}`)
+    .order("created_at", { ascending: false })
+    .limit(limit);
+  legacyXError(error, "Unable to list bans");
+  const rows = (data ?? []) as any[];
+  const userIds = Array.from(new Set(rows.map((row) => row.user_id).filter(Boolean)));
+  const names = new Map<string, string>();
+  if (userIds.length > 0) {
+    const users = await db.from("users").select("id,username").in("id", userIds);
+    legacyXError(users.error, "Unable to read banned players");
+    for (const user of (users.data ?? []) as any[]) names.set(String(user.id), String(user.username ?? ""));
+  }
+  return rows.map((row) => ({
+    steamId: (row.steam_id as string | null) ?? null,
+    ip: (row.ip_address as string | null) ?? null,
+    name: names.get(String(row.user_id ?? "")) ?? "",
+    reason: row.reason as string,
+    isPermanent: Boolean(row.is_permanent),
+    expiresAt: (row.expires_at as string | null) ?? null,
+  }));
 }
 
 /** Name and avatar for the ban card (the Discord bot draws them). Null if the player has no row. */

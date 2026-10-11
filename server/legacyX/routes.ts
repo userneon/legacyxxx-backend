@@ -39,7 +39,7 @@ import { liftInfo } from "./penaltyLift";
 import { ADMIN_PANEL_PAGE, adminBanItem, adminBansQuery, adminLoginItem, adminLoginsQuery } from "./adminPanel";
 import { menuLoadoutQuery, menuRarity, menuTiles, MENU_AGENT_TEAMS, MENU_SKIN_PAGE, MENU_SLOT_CATEGORY, entriesReplacedByEquip, menuAgentName, menuGunModel, menuSkinEquipBody, menuSkinItemsQuery, menuSkinName, menuSkinSlotSchema, menuSkinTypesQuery, menuSlotKey, sharedGunEntryMovedTo, type LoadoutRow, type MenuSkinSlot } from "./menuSkins";
 import { PROFILE_NAME_MAX, PROFILE_SECTIONS, bestNameMatch, escapeLike, hiddenForViewer, loadoutShowcase, mapWinRates, normalizeHiddenSections, profileStats, staffCard, type ProfileSection } from "./profileOverview";
-import { activeBans, bannedPlayer, checkBansSchema, issueBan, issueBanSchema, revokeAllBans, revokeAllBansSchema, revokeBans, revokeBanSchema } from "./bans";
+import { activeBans, bannedPlayer, checkBansSchema, issueBan, issueBanSchema, issueIpBan, issueIpBanSchema, listActiveBans, revokeAllBans, revokeAllBansSchema, revokeBans, revokeBanSchema, revokeIpBans, revokeIpBanSchema } from "./bans";
 import { authorizationRequestSchema, resolveAuthorizations } from "./adminAuthorization";
 import { completeLink, createLinkRequest, discordLinkedUserIds, discordIdSchema, isLinkToken, linkCallbackUrl, linkRequestSchema, linkStartUrl, linkResultPage, listLinks, pendingLinkRequest, returnToMatches, unlink } from "./discordLinks";
 import { issueCommPenalty, issueCommPenaltySchema, liftCommPenalties, liftCommPenaltySchema } from "./gamePenalties";
@@ -4090,7 +4090,26 @@ export function createLegacyXRouter() {
   }));
   router.post("/plugin/bans/check", pluginRoute("bans:read", async (req, res) => {
     const input = checkBansSchema.parse(req.body);
-    res.json({ bans: await activeBans(db(), input.steamIds) });
+    res.json(await activeBans(db(), input.steamIds, new Date(), input.ips));
+  }));
+  // A game server's own copy of the ban list (the !unban menu, ban info): the database is the only place bans are kept.
+  router.get("/plugin/bans/active", pluginRoute("bans:read", async (_req, res) => {
+    res.set("Cache-Control", "no-store");
+    res.json({ bans: await listActiveBans(db()) });
+  }));
+  router.post("/plugin/bans/ip", pluginRoute("bans:write", async (req, res, plugin) => {
+    const input = issueIpBanSchema.parse(req.body);
+    const ban = await issueIpBan(db(), input);
+    await writePluginAudit(plugin, "ban.ip_issue", "ban", ban.banId, { ip: input.ip, durationMinutes: input.durationMinutes, reason: input.reason, issuer: input.issuerName })
+      .catch((error) => console.error("[legacy-x-api] Unable to audit IP ban", error));
+    res.status(201).json({ ban });
+  }));
+  router.post("/plugin/bans/ip/revoke", pluginRoute("bans:write", async (req, res, plugin) => {
+    const input = revokeIpBanSchema.parse(req.body);
+    const result = await revokeIpBans(db(), input);
+    await writePluginAudit(plugin, "ban.ip_revoke", "ban", null, { ip: input.ip, ...result, issuer: input.issuerName })
+      .catch((error) => console.error("[legacy-x-api] Unable to audit IP ban lift", error));
+    res.json(result);
   }));
 
   // LegacyX-Admin asks which connected players are staff on its server; it grants in-game permissions only for authorized answers.
@@ -4123,7 +4142,7 @@ export function createLegacyXRouter() {
     const now = new Date();
     const nowIso = now.toISOString();
     const startOfDay = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())).toISOString();
-    const columns = "id,steam_id,user_id,reason,is_permanent,expires_at,issued_by,issuer_steam_id,source,revoked_at,revoked_by,revoke_reason,created_at";
+    const columns = "id,steam_id,ip_address,user_id,reason,is_permanent,expires_at,issued_by,issuer_steam_id,source,revoked_at,revoked_by,revoke_reason,created_at";
     const active = () => db().from("bans").select("id", { count: "exact", head: true }).is("revoked_at", null).or(`is_permanent.eq.true,expires_at.gt.${nowIso}`);
     let list = db().from("bans").select(columns).order("created_at", { ascending: false }).range(input.offset, input.offset + ADMIN_PANEL_PAGE - 1);
     if (input.filter === "active") list = list.is("revoked_at", null).or(`is_permanent.eq.true,expires_at.gt.${nowIso}`);
