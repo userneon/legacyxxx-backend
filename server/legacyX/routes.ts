@@ -1073,7 +1073,7 @@ export function createLegacyXRouter() {
     res.json({ profile: data });
   }));
   router.get("/public/matches/:matchId/maps/:mapNumber", asyncRoute(async (req, res) => {
-    const matchId = z.string().uuid("matchId must be a Legacy-X match id").parse(req.params.matchId);
+    const matchId = z.string().uuid("matchId must be a LEGACY-X match id").parse(req.params.matchId);
     const mapNumber = z.coerce.number().int().min(0).max(99).parse(req.params.mapNumber);
     const [core, results] = await Promise.all([
       db().from("core_matches").select("id,map_name,map_number,matchzy_local_id,finished_at,result").eq("id", matchId).maybeSingle(),
@@ -4169,7 +4169,7 @@ export function createLegacyXRouter() {
     res.json({ items: rows.map((row) => ({ player: textValue(byId.get(textValue(row.user_id))?.username) || "Unknown", steamId: textValue(byId.get(textValue(row.user_id))?.steam_id) || null, role: textValue(row.role) })) });
   }));
 
-  // In-game !xp / !rank: the player's rank on the Legacy-X ladder (the same source as the website).
+  // In-game !xp / !rank: the player's rank on the LEGACY-X ladder (the same source as the website).
   router.get("/plugin/community/players/:steamId", pluginRoute("stats:write", async (req, res) => {
     const steamId = String(req.params.steamId || "").trim();
     if (!/^\d{15,20}$/.test(steamId)) apiError(400, "steamId must be a 15-20 digit SteamID64");

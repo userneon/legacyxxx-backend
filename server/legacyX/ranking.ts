@@ -1,5 +1,5 @@
 /**
- * Legacy-X rank system v1.0 — the EXP formula from docs/design/RANK-SYSTEM.md.
+ * LEGACY-X rank system v1.0 — the EXP formula from docs/design/RANK-SYSTEM.md.
  *
  * Pure functions only: no database, no clock, no randomness. The route layer loads the
  * players' EXP at match start, calls {@link calculateMatchExp}, and hands the result to

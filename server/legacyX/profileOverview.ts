@@ -99,7 +99,7 @@ export function loadoutShowcase(entries: Row[]) {
 
 const ROLE_BLURB: Record<string, string> = {
   Owner: "Runs the servers and the community.",
-  Founder: "Founded Legacy-X.",
+  Founder: "Founded LEGACY-X.",
   Manager: "Keeps staff and events running.",
   Admin: "Moderates matches and handles reports.",
   Developer: "Builds the website, plugins and bots.",
@@ -108,7 +108,7 @@ const ROLE_BLURB: Record<string, string> = {
 
 export function staffCard(role: string, penaltiesIssued: number) {
   if (!role || role === "Player") return null;
-  return { role, description: ROLE_BLURB[role] ?? "Part of the Legacy-X team.", penaltiesIssued };
+  return { role, description: ROLE_BLURB[role] ?? "Part of the LEGACY-X team.", penaltiesIssued };
 }
 
 /** A profile address that is a player's name: not "me", not a SteamID64, not a user ID. */

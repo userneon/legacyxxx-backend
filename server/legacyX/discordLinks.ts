@@ -100,7 +100,7 @@ const text = (value: unknown) => (typeof value === "string" ? value : "");
 const num = (value: unknown) => (typeof value === "number" && Number.isFinite(value) ? value : Number(value) || 0);
 const one = (value: unknown): Row => (Array.isArray(value) ? (value[0] as Row) ?? {} : (value as Row) ?? {});
 
-/** Every link (or one Discord account's) with the player's current Legacy-X rank. */
+/** Every link (or one Discord account's) with the player's current LEGACY-X rank. */
 export async function listLinks(db: Db, discordId?: string): Promise<DiscordLink[]> {
   let query = db.from("discord_links").select("user_id,discord_id,discord_name,linked_at,users(steam_id,username)").order("linked_at", { ascending: true }).limit(5000);
   if (discordId) query = query.eq("discord_id", discordId);
@@ -155,7 +155,7 @@ h1{margin:0 0 8px;font-size:20px;color:${accent}}p{margin:0;color:#9ca3af}`;
   const styleHash = createHash("sha256").update(style).digest("base64");
   const html = `<!doctype html>
 <html lang="mn"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="robots" content="noindex"><title>${escapeHtml(title)} · Legacy-X</title>
+<meta name="robots" content="noindex"><title>${escapeHtml(title)} · LEGACY-X</title>
 <style>${style}</style></head>
 <body><main><h1>${escapeHtml(title)}</h1><p>${escapeHtml(message)}</p></main></body></html>`;
   const csp = `default-src 'none'; style-src 'sha256-${styleHash}'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'`;
