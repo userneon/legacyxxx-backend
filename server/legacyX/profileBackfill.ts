@@ -9,7 +9,7 @@ import { legacyXDb } from "./supabase";
  */
 
 const RETRY_AFTER_MS = 60 * 60_000;
-const PER_HEARTBEAT = 3;
+const PER_HEARTBEAT = 5;
 const tried = new Map<string, number>();
 
 /** Which of these Steam IDs may be tried now: not tried in the last hour, at most `limit`. Marks them as tried. */
@@ -62,7 +62,10 @@ export async function ensureAccounts(steamIds: string[]): Promise<number> {
   let created = 0;
   for (const steamId of pickMissing(unique, known)) {
     const { error: createError } = await db.rpc("ensure_steam_user", { p_steam_id: steamId, p_username: `Steam ${steamId}`, p_avatar: "" });
-    if (!createError) created += 1;
+    if (createError) continue;
+    created += 1;
+    // Name and picture right away, so the leaderboard never shows the placeholder for them.
+    await syncSteamUserProfile(steamId).catch(() => undefined);
   }
   return created;
 }
