@@ -43,6 +43,19 @@ export function validateProductionRuntime() {
   }
 }
 
+/**
+ * The website's waiting times (one review a week, a day after leaving a clan, one clan rename a week) start with the
+ * launch on 2026-12-01; until then they are off so the site can be tried freely. COOLDOWNS_START overrides the date
+ * (an ISO date, "now" for always on, "never" for always off).
+ */
+export const COOLDOWNS_DEFAULT_START = "2026-12-01T00:00:00Z";
+export function cooldownsActive(now = Date.now(), setting = process.env.COOLDOWNS_START?.trim() || COOLDOWNS_DEFAULT_START) {
+  if (setting === "now") return true;
+  if (setting === "never") return false;
+  const start = Date.parse(setting);
+  return Number.isFinite(start) ? now >= start : now >= Date.parse(COOLDOWNS_DEFAULT_START);
+}
+
 export function runtimePort() {
   const value = process.env.PORT ?? "3000";
   const port = Number.parseInt(value, 10);

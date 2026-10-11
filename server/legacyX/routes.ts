@@ -1,6 +1,6 @@
 import express, { Router, type NextFunction, type Request, type Response } from "express";
 import { randomBytes } from "node:crypto";
-import rateLimit from "express-rate-limit";
+import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import { z } from "zod";
 import { authorizeUrl, consumeOAuthState, createOAuthState, discordOAuthConfig, fetchDiscordIdentity, isOAuthState, linkDiscordAccount, ownDiscordLink, removeOwnDiscordLink } from "./discordOAuth";
 import { isReaction, tallyReactions } from "./reactions";
@@ -23,7 +23,7 @@ import {
   type LegacyUser,
   type PluginPrincipal,
 } from "./auth";
-import { apiAuthRateLimitMax, apiRateLimitMax, apiSensitiveRateLimitMax, apiSessionRateLimitMax, isDeferredFeatureEnabled, publicDeferredFeatureFlags, type DeferredFeatureKey } from "./config";
+import { apiAuthRateLimitMax, apiRateLimitMax, apiSensitiveRateLimitMax, apiSessionRateLimitMax, cooldownsActive, isDeferredFeatureEnabled, publicDeferredFeatureFlags, type DeferredFeatureKey } from "./config";
 import { getFaceitProfileSnapshot, getFaceitProfileSnapshotForSteamId, resolveFaceitNickname } from "./faceit";
 import { legacyXDb, legacyXError } from "./supabase";
 import { resolveSteamProfileMedia } from "./steamBackground";
@@ -844,7 +844,7 @@ export function createLegacyXRouter() {
   });
   router.get("/public/features", (_req, res) => {
     res.setHeader("Cache-Control", "no-store");
-    res.json({ features: publicDeferredFeatureFlags() });
+    res.json({ features: publicDeferredFeatureFlags(), cooldowns: cooldownsActive() });
   });
   router.use((req, _res, next) => {
     const feature = deferredFeatureForRequest(req);
@@ -2329,7 +2329,7 @@ export function createLegacyXRouter() {
   };
   const waitAfterLeaving = async (userId: string) => {
     const { data } = await db().from("clan_audit").select("created_at").eq("actor_id", userId).eq("action", "left").order("created_at", { ascending: false }).limit(1).maybeSingle();
-    if (leaveCooldownLeftMs(data?.created_at as string | undefined) > 0) apiError(409, "Wait a day after leaving a clan before joining another", "clan_cooldown");
+    if (cooldownsActive() && leaveCooldownLeftMs(data?.created_at as string | undefined) > 0) apiError(409, "Wait a day after leaving a clan before joining another", "clan_cooldown");
   };
 
   router.get("/clans", optionalUserRoute(async (req, res) => {
@@ -2460,7 +2460,7 @@ export function createLegacyXRouter() {
     const input = z.object({ name: clanSchema.shape.name.optional(), tag: clanSchema.shape.tag.optional() }).strict().refine((value) => value.name !== undefined || value.tag !== undefined, "A name or a tag is required").parse(req.body);
     const clan = await requireClanLeader(clanId, user.id);
     const { data: last } = await db().from("clan_audit").select("created_at").eq("clan_id", clanId).eq("action", "renamed").order("created_at", { ascending: false }).limit(1).maybeSingle();
-    if (last && Date.now() - Date.parse(String(last.created_at)) < CLAN_LIMITS.renameCooldownDays * 86_400_000) apiError(409, "A clan can change its name or tag once a week", "clan_rename_cooldown");
+    if (cooldownsActive() && last && Date.now() - Date.parse(String(last.created_at)) < CLAN_LIMITS.renameCooldownDays * 86_400_000) apiError(409, "A clan can change its name or tag once a week", "clan_rename_cooldown");
     const next = { name: input.name ?? textValue(clan.name), tag: input.tag ?? textValue(clan.tag) };
     if (next.name === textValue(clan.name) && next.tag === textValue(clan.tag)) apiError(409, "Nothing changed", "clan_rejected");
     const ref = `clan-rename:${clanId}:${Date.now()}`;
@@ -3475,6 +3475,13 @@ export function createLegacyXRouter() {
   }));
   router.post("/feedback", userRoute(async (req, res, user) => {
     const input = z.object({ rating: z.number().int().min(1).max(5), message: z.string().trim().min(1).max(4000) }).parse(req.body);
+    // Before the launch the weekly limit is off, so a review is written directly; from then on the database function enforces it.
+    if (!cooldownsActive()) {
+      const { data: row, error: insertError } = await db().from("feedback").insert({ user_id: user.id, name: user.username, rating: input.rating, message: input.message }).select("id,user_id,name,rating,message,created_at").single();
+      legacyXError(insertError, "Unable to submit feedback");
+      res.status(201).json(mapFeedback(row as DbRow, new Map([[user.id, { steamId: user.steamId, avatar: "" }]])));
+      return;
+    }
     const { data, error } = await db().rpc("submit_feedback_weekly", {
       p_user_id: user.id,
       p_name: user.username,
@@ -4138,7 +4145,7 @@ export function createLegacyXRouter() {
     limit: process.env.NODE_ENV === "test" ? 1_000 : 6,
     standardHeaders: "draft-8",
     legacyHeaders: false,
-    keyGenerator: (req) => `admin-panel:${textValue(recordValue(req.query).steam_id) || req.ip || "unknown"}`,
+    keyGenerator: (req) => `admin-panel:${textValue(recordValue(req.query).steam_id) || (req.ip ? ipKeyGenerator(req.ip) : "unknown")}`,
     message: { error_code: "rate_limited" },
   });
   const userNames = async (ids: string[]) => {

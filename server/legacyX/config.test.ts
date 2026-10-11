@@ -32,3 +32,19 @@ describe("VPS runtime configuration", () => {
     expect(() => apiRateLimitMax()).toThrow(/API_RATE_LIMIT_MAX/);
   });
 });
+
+describe("cooldownsActive", () => {
+  const launch = Date.parse("2026-12-01T00:00:00Z");
+  it("is off until the launch day and on from then", async () => {
+    const { cooldownsActive } = await import("./config");
+    expect(cooldownsActive(launch - 1, "2026-12-01T00:00:00Z")).toBe(false);
+    expect(cooldownsActive(launch, "2026-12-01T00:00:00Z")).toBe(true);
+  });
+  it("can be forced on or off, and an unreadable date falls back to the launch day", async () => {
+    const { cooldownsActive } = await import("./config");
+    expect(cooldownsActive(0, "now")).toBe(true);
+    expect(cooldownsActive(launch + 1e9, "never")).toBe(false);
+    expect(cooldownsActive(launch - 1, "soon")).toBe(false);
+    expect(cooldownsActive(launch, "soon")).toBe(true);
+  });
+});

@@ -81,7 +81,7 @@ describe("frontend API endpoint inventory", () => {
     });
     try {
       const featureResponse = await fetch(`${baseUrl}/public/features`);
-      await expect(featureResponse.json()).resolves.toEqual({ features: { clan: false, staffPanel: false } });
+      await expect(featureResponse.json()).resolves.toEqual({ features: { clan: false, staffPanel: false }, cooldowns: expect.any(Boolean) });
       for (const path of ["/clans", "/staffpanel/access"]) {
         const response = await fetch(`${baseUrl}${path}`);
         expect(response.status, path).toBe(404);
