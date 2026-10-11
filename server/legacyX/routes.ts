@@ -967,7 +967,7 @@ export function createLegacyXRouter() {
     const limit = readLadderLimit(req.query.limit);
     const { data, error } = await db().from("competitive_leaderboard").select("position,user_id,steam_id,username,avatar,current_exp,rank_id,rank_slug,rank_name,rank_image_key,pro_league_unlocked,matches_completed,wins,losses,kills,assists,headshot_kills,deaths,kd_ratio,win_rate,played_hours,last_match_at").order("position").limit(sort === "exp" ? limit : 1000);
     legacyXError(error, "Unable to load competitive leaderboard");
-    const linked = await discordLinkedUserIds(db());
+    const linked = await discordLinkedUserIds(db(), ((data ?? []) as DbRow[]).map((row) => textValue(row.user_id)).filter(Boolean));
     const clanTags = await clanTagsFor(((data ?? []) as DbRow[]).map((row) => textValue(row.user_id)));
     const worn = await equippedCosmeticsFor(((data ?? []) as DbRow[]).map((row) => textValue(row.user_id)));
     // The EXP change of each player's latest ranked match (last two days), for the up/down colour on Home. Best effort.

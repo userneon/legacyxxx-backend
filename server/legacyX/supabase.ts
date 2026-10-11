@@ -31,7 +31,10 @@ export function legacyXError(error: { message?: string; code?: string } | null, 
     P0001: "The requested operation conflicts with the current data state",
     P0002: "The requested resource was not found",
   };
-  const message = error.code ? safeMessages[error.code] ?? fallback : fallback;
+  // Our own database functions RAISE short English sentences ("Clan is full", "Loadout contains an unsupported catalog item"):
+  // those tell the player what went wrong, so they pass through. Postgres's own texts start in lower case and stay hidden.
+  const ownMessage = (error.code === "P0001" || error.code === "22023") && /^[A-Z][^\n]{3,160}$/.test(error.message ?? "") ? error.message! : null;
+  const message = ownMessage ?? (error.code ? safeMessages[error.code] ?? fallback : fallback);
   const code = error.code === "23505" || error.code === "P0001"
     ? 409
     : error.code === "23503" || error.code === "23514" || error.code === "22023"

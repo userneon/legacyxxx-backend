@@ -167,8 +167,11 @@ h1{margin:0 0 8px;font-size:20px;color:${accent}}p{margin:0;color:#9ca3af}`;
  * mark on profiles and the leaderboard), never the Discord name or ID. If the table cannot be read the marks are
  * simply left off: this must never break the page it decorates.
  */
-export async function discordLinkedUserIds(db: Db): Promise<Set<string>> {
-  const { data, error } = await db.from("discord_links").select("user_id").limit(10000);
+export async function discordLinkedUserIds(db: Db, userIds?: string[]): Promise<Set<string>> {
+  if (userIds && userIds.length === 0) return new Set();
+  // With a page's players given (up to 200, so the request URL stays short), only their links are read, not the whole table.
+  const query = db.from("discord_links").select("user_id");
+  const { data, error } = await (userIds && userIds.length <= 200 ? query.in("user_id", userIds) : query.limit(10000));
   if (error) return new Set();
   return new Set((data ?? []).map((row: { user_id: unknown }) => String(row.user_id)));
 }

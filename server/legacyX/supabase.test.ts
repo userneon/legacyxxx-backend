@@ -13,4 +13,14 @@ describe("Supabase error boundary", () => {
       expect(apiError.message).not.toContain("internal_table_pkey");
     }
   });
+
+  it("passes our own database messages through and keeps Postgres's own text hidden", () => {
+    const thrown = (error: { code: string; message: string }) => {
+      try { legacyXError(error, "Unable to save"); } catch (caught) { return caught as Error & { statusCode?: number }; }
+      throw new Error("Expected legacyXError to throw");
+    };
+    expect(thrown({ code: "P0001", message: "Clan is full" })).toMatchObject({ message: "Clan is full", statusCode: 409 });
+    expect(thrown({ code: "22023", message: "Loadout contains an unsupported catalog item" })).toMatchObject({ message: "Loadout contains an unsupported catalog item", statusCode: 400 });
+    expect(thrown({ code: "22023", message: "invalid parameter value for internal_column" }).message).toBe("The request contains invalid parameters");
+  });
 });
