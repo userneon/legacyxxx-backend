@@ -3531,6 +3531,11 @@ export function createLegacyXRouter() {
     const staffPanel = req.query.staffpanel === "1";
     const redirect = postLoginRedirect();
     try {
+      // The assertion must have been issued for this very callback. Steam signs an assertion for whichever site asked for it, so
+      // without this check a page that makes a visitor sign in with Steam could replay the answer here and log in as them.
+      const loginOrigin = steamOpenIdOrigin(req);
+      const expectedReturn = `${loginOrigin}/api/v1/auth/steam/callback${staffPanel ? "?staffpanel=1" : ""}`;
+      if (!returnToMatches(req.query as Record<string, unknown>, expectedReturn)) apiError(401, "Steam response was not issued for this sign-in");
       const steamId = await verifySteamCallback(req.query as Record<string, unknown>);
       let userId: string | null = null;
       if (staffPanel) {

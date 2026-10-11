@@ -53,4 +53,13 @@ describe("plugin token hashing", () => {
 
     await expect(verifySteamCallback({ "openid.claimed_id": "https://invalid.example/123" })).rejects.toMatchObject({ statusCode: 401 });
   });
+
+  it("rejects a Steam response that did not come from Steam's own endpoint or names another identity, before asking Steam", async () => {
+    const id = "76561198000000001";
+    const claimed = `https://steamcommunity.com/openid/id/${id}`;
+    const good = { "openid.mode": "id_res", "openid.op_endpoint": "https://steamcommunity.com/openid/login", "openid.claimed_id": claimed, "openid.identity": claimed };
+    await expect(verifySteamCallback({ ...good, "openid.op_endpoint": "https://evil.example/openid/login" })).rejects.toMatchObject({ statusCode: 401 });
+    await expect(verifySteamCallback({ ...good, "openid.identity": "https://steamcommunity.com/openid/id/76561198000000002" })).rejects.toMatchObject({ statusCode: 401 });
+    await expect(verifySteamCallback({ ...good, "openid.mode": "cancel" })).rejects.toMatchObject({ statusCode: 401 });
+  });
 });

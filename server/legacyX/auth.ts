@@ -157,6 +157,11 @@ export async function verifySteamCallback(query: Record<string, unknown>) {
   const match = claimedId.match(/^https?:\/\/steamcommunity\.com\/openid\/id\/(\d{17})$/);
   if (!match) throw Object.assign(new Error("Steam did not provide a valid claimed identity"), { statusCode: 401 });
 
+  // A positive assertion from Steam's own endpoint, about the identity it claims.
+  if (steamQueryValue(query["openid.mode"]) !== "id_res" || steamQueryValue(query["openid.op_endpoint"]) !== "https://steamcommunity.com/openid/login" || steamQueryValue(query["openid.identity"]) !== claimedId) {
+    throw Object.assign(new Error("Steam did not provide a valid sign-in response"), { statusCode: 401 });
+  }
+
   const params = new URLSearchParams();
   for (const [key, value] of Object.entries(query)) {
     if (key.startsWith("openid.")) params.set(key, steamQueryValue(value));
