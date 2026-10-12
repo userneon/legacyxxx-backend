@@ -3526,7 +3526,7 @@ export function createLegacyXRouter() {
   }));
   // The Creators page: every content creator with their account, rank and channel links, main creators first.
   router.get("/public/creators", asyncRoute(async (_req, res) => {
-    const { data, error } = await db().from("content_creators").select("user_id,tier,bio,links,sort,created_at,users!inner(id,steam_id,username,avatar)").limit(200);
+    const { data, error } = await db().from("content_creators").select("user_id,tier,bio,links,sort,created_at,users!content_creators_user_id_fkey!inner(id,steam_id,username,avatar)").limit(200);
     legacyXError(error, "Unable to load creators");
     const rows = (data ?? []) as DbRow[];
     const ids = rows.map((row) => textValue(row.user_id));
