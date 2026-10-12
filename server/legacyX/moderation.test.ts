@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mayApproveLifts, mayModerate, mayModerateClans, needsLiftApproval, mayTouchBan, needsReview, termFields } from "./moderation";
+import { mayApproveLifts, mayModerate, mayModerateClans, needsLiftApproval, mayTouchBan, mayPenalize, needsReview, termFields } from "./moderation";
 
 describe("website moderation rules", () => {
   it("lets Owners, Managers and Admins in, and nobody else", () => {
@@ -49,5 +49,18 @@ describe("website moderation rules", () => {
     expect(mayApproveLifts("MANAGER")).toBe(true);
     expect(mayApproveLifts("ADMIN")).toBe(false);
     expect(mayApproveLifts(null)).toBe(false);
+  });
+
+  it("keeps staff out of reach of anyone with less immunity", () => {
+    const mainCreator = { role: "MANAGER", immunity: 400 };
+    expect(mayPenalize(mainCreator, null)).toBe(true);
+    expect(mayPenalize(mainCreator, { role: "ADMIN", immunity: 500 })).toBe(false);
+    expect(mayPenalize(mainCreator, { role: "ADMIN", immunity: null })).toBe(false);
+    expect(mayPenalize({ role: "MANAGER", immunity: 750 }, { role: "ADMIN", immunity: 500 })).toBe(true);
+    expect(mayPenalize({ role: "ADMIN", immunity: 500 }, { role: "MANAGER", immunity: 750 })).toBe(false);
+    expect(mayPenalize({ role: "MANAGER", immunity: 750 }, { role: "MANAGER", immunity: 750 })).toBe(false);
+    expect(mayPenalize({ role: "OWNER", immunity: 1000 }, { role: "MANAGER", immunity: 750 })).toBe(true);
+    expect(mayPenalize({ role: "OWNER", immunity: 1000 }, { role: "OWNER", immunity: 1000 })).toBe(false);
+    expect(mayPenalize(mainCreator, { role: "DEVELOPER", immunity: 0 })).toBe(true);
   });
 });

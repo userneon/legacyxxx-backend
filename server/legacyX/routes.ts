@@ -4,7 +4,7 @@ import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import { z } from "zod";
 import { authorizeUrl, consumeOAuthState, createOAuthState, discordOAuthConfig, fetchDiscordIdentity, isOAuthState, linkDiscordAccount, ownDiscordLink, removeOwnDiscordLink } from "./discordOAuth";
 import { isReaction, tallyReactions } from "./reactions";
-import { mayApproveLifts, mayModerate, mayModerateClans, mayTouchBan, needsLiftApproval, needsReview, termFields, type ModerationCapability } from "./moderation";
+import { mayApproveLifts, mayModerate, mayModerateClans, mayPenalize, mayTouchBan, needsLiftApproval, needsReview, termFields, type ModerationCapability } from "./moderation";
 import { CLAN_LIMITS, canManage, canRemove, clanRole, describeClanAction, leaveCooldownLeftMs } from "./clans";
 import { CLAN_ART_LIMITS, artMarker, artUrl, checkClanArt, type ClanArtKind } from "./clanArt";
 import { parseCookieHeader } from "../_core/cookieHeader";
@@ -3304,6 +3304,14 @@ export function createLegacyXRouter() {
     if (!staff || !mayModerate(textValue(staff.role), staff.permissions, capability)) apiError(403, "Staff access is required");
     return staff;
   };
+  /** A penalty on a staff member needs more immunity than theirs (see mayPenalize). */
+  const requireMayPenalize = async (actor: DbRow, steamId: string) => {
+    const { data: account } = await db().from("users").select("id").eq("steam_id", steamId).maybeSingle();
+    if (!account) return;
+    const { data: grant } = await db().from("staff").select("role,immunity").eq("user_id", textValue((account as DbRow).id)).eq("status", "active").maybeSingle();
+    const target = grant ? { role: textValue((grant as DbRow).role), immunity: numberValue((grant as DbRow).immunity) } : null;
+    if (!mayPenalize({ role: textValue(actor.role), immunity: numberValue(actor.immunity) }, target)) apiError(403, "You cannot penalize a staff member with as much or more immunity than yours");
+  };
   const auditPenalty = async (actorId: string, action: string, targetId: string, metadata: Record<string, unknown>) => {
     const { error } = await db().from("audit_logs").insert({ actor_type: "user", actor_id: actorId, action, target_type: "penalty", target_id: targetId, metadata });
     if (error) console.error("[legacy-x-api] Unable to audit penalty change", error);
@@ -3439,6 +3447,7 @@ export function createLegacyXRouter() {
   router.post("/moderation/penalties", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
     const input = z.object({ steamId: z.string().regex(/^7656119\d{10}$/, "SteamID64 is required"), type: z.enum(["ban", "comm", "gag"]), durationMinutes: z.number().int().min(0).max(525_600), reason: z.string().trim().min(1).max(200) }).strict().parse(req.body);
     const staff = await requireModerator(user.id, input.type === "ban" ? "ban" : "mute");
+    await requireMayPenalize(staff, input.steamId);
     const issued = input.type === "ban"
       ? await issueBan(db(), { steamId: input.steamId, durationMinutes: input.durationMinutes, reason: input.reason, issuerName: user.username, source: "panel", issuerSteamId: user.steamId || undefined })
       : await issueCommPenalty(db(), { steamId: input.steamId, type: input.type, durationMinutes: input.durationMinutes, reason: input.reason, issuerName: user.username });
@@ -3869,6 +3878,11 @@ export function createLegacyXRouter() {
   router.post("/staffpanel/actions", staffPanelRoute(async (req, res, staff) => {
     const input = staffPanelActionSchema.parse(req.body);
     requireStaffCapability(staff, input.type);
+    // Punishing a player in game (ban, mute, kick) follows the same immunity rule as the penalty box.
+    if (input.playerSteamId && ["ban", "mute", "kick", "rename"].includes(input.type)) {
+      const actor = await loadModerator(staff.userId);
+      if (actor) await requireMayPenalize(actor, input.playerSteamId);
+    }
     const { data: targetServer, error: targetServerError } = await db().schema("legacy_x").from("reconnect_servers").select("server_id").eq("server_id", input.serverId).maybeSingle();
     legacyXError(targetServerError, "Unable to validate target server");
     if (!targetServer) apiError(404, "Target server was not found");

@@ -52,3 +52,21 @@ export function needsLiftApproval(role: string | null | undefined, isOwn: boolea
 export function mayApproveLifts(role: string | null | undefined) {
   return role === "OWNER" || role === "MANAGER";
 }
+
+const ROLE_IMMUNITY: Record<string, number> = { OWNER: 1000, MANAGER: 750, ADMIN: 500 };
+
+/**
+ * Whether a moderator may penalize this player. Players (no active staff grant) always may be; a staff member only by someone whose
+ * immunity reaches theirs, so an Admin cannot ban a Manager and a Main Content Creator (immunity below Admin) cannot touch staff at all.
+ * An Owner may penalize anyone but another Owner.
+ */
+export function mayPenalize(
+  actor: { role: string | null | undefined; immunity: number | null | undefined },
+  target: { role: string | null | undefined; immunity: number | null | undefined } | null,
+) {
+  if (!target || !target.role) return true;
+  const targetImmunity = target.immunity ?? ROLE_IMMUNITY[target.role] ?? 0;
+  if (targetImmunity <= 0) return true;
+  if (actor.role === "OWNER") return target.role !== "OWNER";
+  return (actor.immunity ?? ROLE_IMMUNITY[actor.role ?? ""] ?? 0) > targetImmunity;
+}
