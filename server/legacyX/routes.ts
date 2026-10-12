@@ -3668,12 +3668,34 @@ export function createLegacyXRouter() {
     requireStaffCapability(staff, "overview");
     const [servers, pendingActions] = await Promise.all([
       db().from("reconnect_servers").select("server_id,display_name,current_map,current_mode,player_count,last_heartbeat_at").order("display_name"),
-      db().from("staff_panel_actions").select("id,status,action_type,server_id,created_at").in("status", ["pending", "claimed"]).order("created_at", { ascending: false }).limit(12),
+      db().from("staff_panel_actions").select("id,status,action_type,server_id,created_at,completed_at,result").order("created_at", { ascending: false }).limit(12),
     ]);
     legacyXError(servers.error || pendingActions.error, "Unable to load staff panel overview");
     // The console shows name, map and mode; the table calls them display_name, current_map and current_mode.
     const mapped = ((servers.data ?? []) as DbRow[]).map((row) => ({ server_id: textValue(row.server_id), name: textValue(row.display_name), map_name: textValue(row.current_map), mode: textValue(row.current_mode), player_count: numberValue(row.player_count), last_heartbeat_at: row.last_heartbeat_at ? textValue(row.last_heartbeat_at) : null }));
     res.json({ role: staff.role, servers: mapped, pendingActions: pendingActions.data ?? [] });
+  }));
+
+  // The game server (LegacyX-Admin) takes the console's actions for itself every few seconds and reports how each went. An action
+  // that waited more than two minutes is cancelled instead: a stop or a map change queued while the server was down must never
+  // fire later by surprise.
+  const STAFF_ACTION_MAX_WAIT_MS = 120_000;
+  router.post("/plugin/staffpanel/claim", pluginRoute("servers:write", async (req, res) => {
+    const { serverId } = z.object({ serverId: staffPanelServerSchema }).parse(req.body);
+    const now = new Date();
+    const cutoff = new Date(now.getTime() - STAFF_ACTION_MAX_WAIT_MS).toISOString();
+    await db().from("staff_panel_actions").update({ status: "cancelled", completed_at: now.toISOString(), result: { ok: false, message: "Cancelled: the server did not take it within two minutes." } }).eq("server_id", serverId).eq("status", "pending").lt("created_at", cutoff);
+    const { data, error } = await db().from("staff_panel_actions").update({ status: "claimed", claimed_at: now.toISOString() }).eq("server_id", serverId).eq("status", "pending").gte("created_at", cutoff).select("id,action_type,payload,created_at");
+    legacyXError(error, "Unable to claim server actions");
+    res.set("Cache-Control", "no-store");
+    res.json({ actions: ((data ?? []) as DbRow[]).sort((a, b) => Date.parse(textValue(a.created_at)) - Date.parse(textValue(b.created_at))).map((row) => ({ id: textValue(row.id), type: textValue(row.action_type), payload: recordValue(row.payload) })) });
+  }));
+  router.post("/plugin/staffpanel/actions/:actionId/result", pluginRoute("servers:write", async (req, res) => {
+    const actionId = userIdSchema.parse(req.params.actionId);
+    const input = z.object({ serverId: staffPanelServerSchema, ok: z.boolean(), message: z.string().trim().max(300).default("") }).parse(req.body);
+    const { error } = await db().from("staff_panel_actions").update({ status: input.ok ? "completed" : "failed", completed_at: new Date().toISOString(), result: { ok: input.ok, message: input.message } }).eq("id", actionId).eq("server_id", input.serverId).eq("status", "claimed");
+    legacyXError(error, "Unable to record the action result");
+    res.json({ ok: true });
   }));
 
   router.get("/staffpanel/servers/:serverId/roster", staffPanelRoute(async (req, res, staff) => {
