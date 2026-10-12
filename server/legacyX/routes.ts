@@ -143,7 +143,7 @@ const inGameAdminPermissionsSchema = z.array(inGameAdminPermissionSchema).max(13
 const inGameAdminImmunitySchema = z.number().int().min(0).max(1000);
 const inGameAdminStaminaSchema = z.number().int().min(0).max(1000);
 const staffRoleNumericDefaults = { OWNER: 1000, MANAGER: 750, ADMIN: 500, DEVELOPER: 0, DESIGNER: 0 } as const;
-const staffMemberCreateSchema = z.object({ userId: z.string().uuid(), role: staffDirectoryRoleSchema, permissions: staffPermissionListSchema.default([]), gamePermissions: inGameAdminPermissionsSchema.default([]), stamina: inGameAdminStaminaSchema.optional(), immunity: inGameAdminImmunitySchema.optional(), status: staffDirectoryStatusSchema.default("active") }).strict();
+const staffMemberCreateSchema = z.object({ userId: z.string().uuid().optional(), steamId: z.string().regex(/^7656119\d{10}$/, "Enter a SteamID64").optional(), role: staffDirectoryRoleSchema, permissions: staffPermissionListSchema.default([]), gamePermissions: inGameAdminPermissionsSchema.default([]), stamina: inGameAdminStaminaSchema.optional(), immunity: inGameAdminImmunitySchema.optional(), status: staffDirectoryStatusSchema.default("active") }).strict().refine((value) => Boolean(value.userId || value.steamId), "Give the player's SteamID64");
 const staffMemberUpdateSchema = z.object({ role: staffDirectoryRoleSchema.optional(), permissions: staffPermissionListSchema.optional(), gamePermissions: inGameAdminPermissionsSchema.optional(), stamina: inGameAdminStaminaSchema.optional(), immunity: inGameAdminImmunitySchema.optional(), status: staffDirectoryStatusSchema.optional() }).strict().refine((value) => Object.keys(value).length > 0, "At least one staff field is required");
 const staffMaintenanceSchema = z.object({ website: z.literal("legacyx.cc"), enabled: z.boolean() }).strict();
 
@@ -3718,7 +3718,18 @@ export function createLegacyXRouter() {
     }));
   }));
   router.post("/staffpanel/staff", ownerPanelRoute(async (req, res, staff) => {
-    const input = staffMemberCreateSchema.parse(req.body);
+    const parsed = staffMemberCreateSchema.parse(req.body);
+    // The Staff page adds by SteamID; the player needs a LEGACY-X account (signed in once, or played on a server).
+    let userId = parsed.userId ?? "";
+    if (!userId) {
+      const { data: account, error: accountError } = await db().from("users").select("id").eq("steam_id", parsed.steamId!).maybeSingle();
+      legacyXError(accountError, "Unable to find the player");
+      if (!account) apiError(404, "No LEGACY-X account has that SteamID");
+      userId = textValue((account as DbRow).id);
+    }
+    const { data: existing } = await db().from("staff").select("id").eq("user_id", userId).maybeSingle();
+    if (existing) apiError(409, "This player is already on the staff list. Edit them there instead");
+    const input = { ...parsed, userId };
     const numericDefault = staffRoleNumericDefaults[input.role];
     const stamina = input.stamina ?? numericDefault;
     const immunity = input.immunity ?? numericDefault;
