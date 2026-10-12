@@ -41,6 +41,7 @@ import { menuLoadoutQuery, menuRarity, menuTiles, MENU_AGENT_TEAMS, MENU_SKIN_PA
 import { PROFILE_NAME_MAX, PROFILE_SECTIONS, bestNameMatch, escapeLike, hiddenForViewer, loadoutShowcase, mapWinRates, normalizeHiddenSections, profileStats, staffCard, type ProfileSection } from "./profileOverview";
 import { activeBans, bannedPlayer, checkBansSchema, issueBan, issueBanSchema, issueIpBan, issueIpBanSchema, listActiveBans, revokeAllBans, revokeAllBansSchema, revokeBans, revokeBanSchema, revokeIpBans, revokeIpBanSchema } from "./bans";
 import { authorizationRequestSchema, resolveAuthorizations } from "./adminAuthorization";
+import { CREATOR_TIER_LABEL, cleanCreatorLinks, creatorTier, sortCreators, upsertCreatorSchema } from "./creators";
 import { completeLink, discordLinkedUserIds, discordIdSchema, isLinkToken, linkCallbackUrl, linkResultPage, listLinks, pendingLinkRequest, returnToMatches, unlink } from "./discordLinks";
 import { issueCommPenalty, issueCommPenaltySchema, liftCommPenalties, liftCommPenaltySchema, listActiveCommPenalties } from "./gamePenalties";
 import { createReadStream } from "node:fs";
@@ -1291,6 +1292,10 @@ export function createLegacyXRouter() {
     }
 
     const ownerExtras = role === "Owner" ? await loadOwnerProfileExtras(userId, viewer?.id ?? null) : {};
+    // Content creator badge and channel links; best effort, so a missing table never breaks the profile.
+    const creatorResult = await db().from("content_creators").select("tier,bio,links").eq("user_id", userId).maybeSingle();
+    const creatorRow = creatorResult.error ? null : (creatorResult.data as DbRow | null);
+    const creatorTierValue = creatorTier(creatorRow?.tier);
     const penalties = await mapPenaltiesWithProfileIdentities((penaltiesResult.data ?? []) as DbRow[], db());
     const activePenalty = penalties.find((penalty) => !penalty.isUnbanned && (penalty.isPermanent || !penalty.expiresAt || Date.parse(String(penalty.expiresAt)) > Date.now()));
     res.json({
@@ -1331,8 +1336,9 @@ export function createLegacyXRouter() {
       penaltyCount: penalties.length,
       loadout: loadout ? loadoutShowcase(loadout.entries as DbRow[]) : null,
       staff: staffCard(role, penaltyCount.count ?? 0),
+      creator: creatorTierValue ? { tier: creatorTierValue, label: CREATOR_TIER_LABEL[creatorTierValue], bio: textValue(creatorRow?.bio), links: cleanCreatorLinks(creatorRow?.links) } : null,
       presence,
-      discordLinked: (await discordLinkedUserIds(db())).has(userId),
+      discordLinked: (await discordLinkedUserIds(db(), [userId])).has(userId),
       clan: (await clanTagsFor([userId])).get(userId) ?? null,
       ...ownerExtras,
     });
@@ -3496,6 +3502,40 @@ export function createLegacyXRouter() {
     legacyXError(error, "Unable to search clans");
     res.json({ clans: ((data ?? []) as DbRow[]).map(mapClanCard) });
   }));
+  // The Creators page: every content creator with their account, rank and channel links, main creators first.
+  router.get("/public/creators", asyncRoute(async (_req, res) => {
+    const { data, error } = await db().from("content_creators").select("user_id,tier,bio,links,sort,created_at,users!inner(id,steam_id,username,avatar)").limit(200);
+    legacyXError(error, "Unable to load creators");
+    const rows = (data ?? []) as DbRow[];
+    const ids = rows.map((row) => textValue(row.user_id));
+    const ranks = ids.length ? await db().from("competitive_player_profiles").select("user_id,rank_id,rank_name,rank_image_key").in("user_id", ids) : { data: [], error: null };
+    const rankOf = new Map(((ranks.error ? [] : ranks.data) ?? []).map((row: DbRow) => [textValue(row.user_id), row]));
+    const worn = await equippedCosmeticsFor(ids);
+    const creators = sortCreators(rows.flatMap((row) => {
+      const tier = creatorTier(row.tier);
+      const account = firstRow(row.users) ?? {};
+      if (!tier) return [];
+      const rank = rankOf.get(textValue(row.user_id));
+      return [{
+        userId: textValue(row.user_id),
+        steamId: textValue(account.steam_id),
+        username: textValue(account.username),
+        avatar: textValue(account.avatar) || null,
+        tier,
+        label: CREATOR_TIER_LABEL[tier],
+        bio: textValue(row.bio),
+        links: cleanCreatorLinks(row.links),
+        rank: rank ? { id: numberValue(rank.rank_id), name: textValue(rank.rank_name), imageKey: textValue(rank.rank_image_key) || null } : null,
+        frame: worn.get(textValue(row.user_id))?.frame ?? null,
+        nameStyle: worn.get(textValue(row.user_id))?.nameStyle ?? null,
+        sort: numberValue(row.sort),
+        createdAt: textValue(row.created_at),
+      }];
+    }));
+    res.set("Cache-Control", "public, max-age=60");
+    res.json({ creators });
+  }));
+
   router.get("/community/content", asyncRoute(async (_req, res) => {
     const [creators, partners] = await Promise.all([
       db().from("community_creators").select("id,name,handle,url").order("created_at"),
@@ -3746,6 +3786,30 @@ export function createLegacyXRouter() {
     candidates.delete(steamId);
     return eligibleToBan(Array.from(candidates).slice(0, 10));
   };
+
+  // Owners and Managers add, edit and remove content creators. A creator gets a badge and a place on the Creators page, no permissions.
+  const creatorTarget = async (steamId: string) => {
+    if (!/^7656119\d{10}$/.test(steamId)) apiError(400, "Enter a SteamID64");
+    const { data, error } = await db().from("users").select("id,username").eq("steam_id", steamId).maybeSingle();
+    legacyXError(error, "Unable to find the player");
+    if (!data) apiError(404, "No LEGACY-X account has that SteamID");
+    return data as DbRow;
+  };
+  router.put("/staffpanel/creators/:steamId", staffPanelRoute(async (req, res, staff) => {
+    const target = await creatorTarget(String(req.params.steamId));
+    const input = upsertCreatorSchema.parse(req.body);
+    const { error } = await db().from("content_creators").upsert({ user_id: textValue(target.id), tier: input.tier, bio: input.bio, links: input.links, sort: input.sort, added_by: staff.userId, updated_at: new Date().toISOString() }, { onConflict: "user_id" });
+    legacyXError(error, "Unable to save the creator");
+    console.log(`[legacy-x-api] creator ${input.tier} set for ${textValue(target.username)} by ${staff.username}`);
+    res.json({ ok: true, tier: input.tier, label: CREATOR_TIER_LABEL[input.tier] });
+  }));
+  router.delete("/staffpanel/creators/:steamId", staffPanelRoute(async (req, res, staff) => {
+    const target = await creatorTarget(String(req.params.steamId));
+    const { error } = await db().from("content_creators").delete().eq("user_id", textValue(target.id));
+    legacyXError(error, "Unable to remove the creator");
+    console.log(`[legacy-x-api] creator removed for ${textValue(target.username)} by ${staff.username}`);
+    res.json({ ok: true });
+  }));
 
   router.post("/staffpanel/actions", staffPanelRoute(async (req, res, staff) => {
     const input = staffPanelActionSchema.parse(req.body);
