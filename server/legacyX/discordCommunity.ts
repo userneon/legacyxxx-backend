@@ -96,32 +96,32 @@ async function endStoppedBoosts(db: Db, current: Set<string>) {
   }
 }
 
-export interface CommunityEntry { position: number; discordId: string; name: string; username: string; avatar: string; steamId: string | null; boosting: boolean; boosts: number; boostingSince: string | null; invites: number }
+export interface CommunityEntry { position: number; discordId: string; name: string; username: string; avatar: string; steamId: string; boosting: boolean; boosts: number; boostingSince: string | null; invites: number }
 
-/** Every Discord member the bot has reported, ranked by boosts or by invites (ties: the earlier booster, then the name); members with none show 0.
- *  A member who linked Discord to a LEGACY-X profile carries its Steam ID, so the page can open the profile. */
+/** Every member who linked Discord to a LEGACY-X profile, ranked by boosts or by invites (ties: the earlier booster, then the name);
+ *  those with none show 0. Discord members who never linked are not listed. */
 export async function loadCommunity(db: Db, sort: "boosts" | "invites", limit = 1000): Promise<CommunityEntry[]> {
   const column = sort === "boosts" ? "boosts" : "invites";
-  const { data, error } = await db.from("discord_community_stats").select("discord_id,boosts,boosting_since,invites,boosting,display_name,username,avatar").order(column, { ascending: false }).order("display_name", { ascending: true }).limit(1000);
-  legacyXError(error, "Unable to load Discord community stats");
-  const stats = (data ?? []) as Row[];
-  if (stats.length === 0) return [];
-  const links: Row[] = [];
-  const discordIds = stats.map((row) => text(row.discord_id));
+  const { data: links, error: linkError } = await db.from("discord_links").select("discord_id,discord_name,users(steam_id,username,avatar)").limit(5000);
+  legacyXError(linkError, "Unable to load Discord links");
+  const linked = (links ?? []) as Row[];
+  if (linked.length === 0) return [];
+  const stats = new Map<string, Row>();
+  const discordIds = linked.map((link) => text(link.discord_id));
   for (let index = 0; index < discordIds.length; index += 200) {
-    const { data: rows, error: linkError } = await db.from("discord_links").select("discord_id,discord_name,users(steam_id,username,avatar)").in("discord_id", discordIds.slice(index, index + 200));
-    legacyXError(linkError, "Unable to load Discord links");
-    links.push(...((rows ?? []) as Row[]));
+    const { data, error } = await db.from("discord_community_stats").select("discord_id,boosts,boosting_since,invites,boosting,display_name,username,avatar").in("discord_id", discordIds.slice(index, index + 200));
+    legacyXError(error, "Unable to load Discord community stats");
+    for (const row of (data ?? []) as Row[]) stats.set(text(row.discord_id), row);
   }
   const user = (link: Row) => (Array.isArray(link.users) ? (link.users[0] as Row) : (link.users as Row)) ?? {};
-  const byDiscord = new Map(links.map((link) => [text(link.discord_id), link]));
-  const entries = stats.flatMap((row) => {
-    const link = byDiscord.get(text(row.discord_id));
-    const profile = link ? user(link) : {};
-    const username = text(row.username) || text(link?.discord_name);
-    const name = text(row.display_name) || username;
-    if (!name) return [];
-    return [{ discordId: text(row.discord_id), name, username, avatar: text(row.avatar), steamId: text(profile.steam_id) || null, boosting: row.boosting === true, boosts: num(row.boosts), boostingSince: row.boosting_since ? text(row.boosting_since) : null, invites: num(row.invites) }];
+  const entries = linked.flatMap((link) => {
+    const profile = user(link);
+    const steamId = text(profile.steam_id);
+    if (!steamId) return [];
+    const row = stats.get(text(link.discord_id)) ?? {};
+    const username = text(row.username) || text(link.discord_name);
+    const name = text(row.display_name) || username || text(profile.username);
+    return [{ discordId: text(link.discord_id), name, username, avatar: text(row.avatar) || text(profile.avatar), steamId, boosting: row.boosting === true, boosts: num(row.boosts), boostingSince: row.boosting_since ? text(row.boosting_since) : null, invites: num(row.invites) }];
   });
   entries.sort((a, b) => b[column] - a[column] || (a.boostingSince ?? "9").localeCompare(b.boostingSince ?? "9") || a.name.localeCompare(b.name));
   return entries.slice(0, limit).map((entry, index) => ({ position: index + 1, ...entry }));
