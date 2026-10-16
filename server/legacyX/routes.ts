@@ -837,6 +837,8 @@ export function createLegacyXRouter() {
       res.setHeader("Access-Control-Allow-Credentials", "true");
       res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type");
       res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
+      // Without this the browser asks permission again before every request (browsers keep an answer for only 5 seconds by default).
+      res.setHeader("Access-Control-Max-Age", "7200");
       res.setHeader("Vary", "Origin");
       if (req.method === "OPTIONS") return res.sendStatus(204);
     }
