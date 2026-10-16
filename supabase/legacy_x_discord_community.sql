@@ -11,4 +11,8 @@ CREATE TABLE IF NOT EXISTS legacy_x.discord_community_stats (
 ALTER TABLE legacy_x.discord_community_stats ENABLE ROW LEVEL SECURITY;
 REVOKE ALL ON legacy_x.discord_community_stats FROM PUBLIC, anon, authenticated;
 GRANT SELECT, INSERT, UPDATE, DELETE ON legacy_x.discord_community_stats TO service_role;
+-- Added later: the member's Discord profile, so the page can show who they are even before they link a LEGACY-X profile. Safe to re-run.
+ALTER TABLE legacy_x.discord_community_stats ADD COLUMN IF NOT EXISTS display_name text NOT NULL DEFAULT '' CHECK (char_length(display_name) <= 64);
+ALTER TABLE legacy_x.discord_community_stats ADD COLUMN IF NOT EXISTS username text NOT NULL DEFAULT '' CHECK (char_length(username) <= 64);
+ALTER TABLE legacy_x.discord_community_stats ADD COLUMN IF NOT EXISTS avatar text NOT NULL DEFAULT '' CHECK (avatar = '' OR avatar ~ '^https://cdn\.discordapp\.com/');
 NOTIFY pgrst, 'reload schema';

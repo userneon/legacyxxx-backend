@@ -25,3 +25,15 @@ describe("mergeCommunity", () => {
     expect(() => parse({ boosters: [{ discordId: "abc" }] })).toThrow();
   });
 });
+
+describe("mergeCommunity profiles", () => {
+  it("keeps the newest name, username and Discord avatar", () => {
+    const avatar = "https://cdn.discordapp.com/avatars/1/a.png?size=128";
+    const first = mergeCommunity([], parse({ boosters: [{ discordId: A, name: "Old", username: "old", avatar }] }));
+    const next = mergeCommunity(first, parse({ inviters: [{ discordId: A, uses: 2, name: "New Name", username: "newname" }] }));
+    expect(next[0]).toMatchObject({ name: "New Name", username: "newname", avatar, invites: 2 });
+  });
+  it("rejects an avatar that is not on Discord's CDN", () => {
+    expect(() => parse({ boosters: [{ discordId: A, avatar: "https://evil.example/a.png" }] })).toThrow();
+  });
+});
