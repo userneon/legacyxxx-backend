@@ -1,4 +1,4 @@
--- More name colours and glows: 33 colours and 39 glows, so there are 50 of each. Plain colours need no `fx`; the new `fx` keys
+-- More name colours and glows: 34 colours and 39 glows, so there are 50 of each. Plain colours need no `fx`; the new `fx` keys
 -- (sunrise, ocean, lava, candy, toxic, midnight, rosegold, platinum, spectrum, galaxy for colours; halo, breathe, spark for glows)
 -- are drawn by the website's name-effects.css, and a page that does not know a key ignores it. Safe to re-run.
 INSERT INTO legacy_x.cosmetic_items (id, kind, name_en, name_mn, unlock, price, requirement, sort, color, glow, fx, rarity) VALUES
@@ -35,6 +35,7 @@ INSERT INTO legacy_x.cosmetic_items (id, kind, name_en, name_mn, unlock, price, 
   ('color-pearl', 'name_color', 'Pearl', 'Сувд', 'coin', 250, '', 70, '#f5f5f4', NULL, NULL, 1),
   ('color-copper', 'name_color', 'Copper', 'Зэс', 'coin', 250, '', 71, '#d98a5f', NULL, NULL, 1),
   ('color-bronze', 'name_color', 'Bronze', 'Хүрэл', 'coin', 250, '', 72, '#c08a3e', NULL, NULL, 1),
+  ('color-snow', 'name_color', 'Snow', 'Цас', 'coin', 150, '', 73, '#f8fafc', NULL, NULL, 1),
   ('glow-halo-rose', 'name_glow', 'Rose Halo', 'Сарнай туяа', 'coin', 300, '', 40, NULL, '#f43f5e', 'halo', 1),
   ('glow-halo-ruby', 'name_glow', 'Ruby Halo', 'Лал туяа', 'coin', 300, '', 41, NULL, '#dc2626', 'halo', 1),
   ('glow-halo-ember', 'name_glow', 'Ember Halo', 'Нүүрс туяа', 'coin', 300, '', 42, NULL, '#fb923c', 'halo', 1),
