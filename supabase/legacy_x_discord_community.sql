@@ -15,4 +15,6 @@ GRANT SELECT, INSERT, UPDATE, DELETE ON legacy_x.discord_community_stats TO serv
 ALTER TABLE legacy_x.discord_community_stats ADD COLUMN IF NOT EXISTS display_name text NOT NULL DEFAULT '' CHECK (char_length(display_name) <= 64);
 ALTER TABLE legacy_x.discord_community_stats ADD COLUMN IF NOT EXISTS username text NOT NULL DEFAULT '' CHECK (char_length(username) <= 64);
 ALTER TABLE legacy_x.discord_community_stats ADD COLUMN IF NOT EXISTS avatar text NOT NULL DEFAULT '' CHECK (avatar = '' OR avatar ~ '^https://cdn\.discordapp\.com/');
+-- Added later: whether the member boosts right now (the bot lists the current boosters in each report). Safe to re-run.
+ALTER TABLE legacy_x.discord_community_stats ADD COLUMN IF NOT EXISTS boosting boolean NOT NULL DEFAULT false;
 NOTIFY pgrst, 'reload schema';

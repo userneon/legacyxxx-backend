@@ -37,3 +37,10 @@ describe("mergeCommunity profiles", () => {
     expect(() => parse({ boosters: [{ discordId: A, avatar: "https://evil.example/a.png" }] })).toThrow();
   });
 });
+
+describe("mergeCommunity boosting", () => {
+  it("marks the listed boosters as boosting now", () => {
+    const rows = mergeCommunity([{ discordId: B, boosts: 2, boostingSince: null, invites: 0, boosting: false }], parse({ boosters: [{ discordId: B }], boostersComplete: true }));
+    expect(rows[0]).toMatchObject({ discordId: B, boosting: true, boosts: 2 });
+  });
+});
