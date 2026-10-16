@@ -4314,9 +4314,18 @@ export function createLegacyXRouter() {
     const clan = recordValue(recordValue(membership.data).clans);
     const { user_id: _userId, ...profile } = data;
     const { data: ladder } = await db().from("competitive_leaderboard").select("position").eq("user_id", data.user_id).maybeSingle();
+    // Kills, deaths and results for the in-game !me card (K/D and win rate); absent for a player with no ranked match yet.
+    const { data: progression } = await db().from("competitive_player_progression").select("kills,deaths,wins,losses,draws").eq("user_id", data.user_id).maybeSingle();
+    const counts = recordValue(progression);
+    const countOrNull = (key: string) => (progression ? numberValue(counts[key]) ?? 0 : null);
     res.json({ profile: {
       ...profile,
       position: ladder ? numberValue((ladder as DbRow).position) : null,
+      kills: countOrNull("kills"),
+      deaths: countOrNull("deaths"),
+      wins: countOrNull("wins"),
+      losses: countOrNull("losses"),
+      draws: countOrNull("draws"),
       clan_name: textValue(clan.name) || null,
       clan_tag: textValue(clan.tag) || null,
       clan_role: textValue(recordValue(membership.data).role) || null,
