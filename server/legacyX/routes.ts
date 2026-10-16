@@ -42,6 +42,7 @@ import { PROFILE_NAME_MAX, PROFILE_SECTIONS, bestNameMatch, escapeLike, hiddenFo
 import { activeBans, bannedPlayer, checkBansSchema, issueBan, issueBanSchema, issueIpBan, issueIpBanSchema, listActiveBans, revokeAllBans, revokeAllBansSchema, revokeBans, revokeBanSchema, revokeIpBans, revokeIpBanSchema } from "./bans";
 import { authorizationRequestSchema, resolveAuthorizations } from "./adminAuthorization";
 import { CREATOR_TIER_LABEL, cleanCreatorLinks, creatorTier, sortCreators, upsertCreatorSchema } from "./creators";
+import { cachedFor as publicCached } from "./responseCache";
 import { communityInputSchema, loadCommunity, recordCommunity } from "./discordCommunity";
 import { completeLink, discordLinkedUserIds, discordIdSchema, isLinkToken, linkCallbackUrl, linkResultPage, listLinks, pendingLinkRequest, returnToMatches, unlink } from "./discordLinks";
 import { issueCommPenalty, issueCommPenaltySchema, liftCommPenalties, liftCommPenaltySchema, listActiveCommPenalties } from "./gamePenalties";
@@ -970,13 +971,17 @@ export function createLegacyXRouter() {
   router.get("/public/competitive/leaderboard", asyncRoute(async (req, res) => {
     const sort = z.enum(["exp", "kd", "win"]).catch("exp").parse(req.query.sort ?? "exp");
     const limit = readLadderLimit(req.query.limit);
+    // The same for every visitor and built from several queries: kept for 15 seconds.
+    const body = await publicCached(`ladder:${sort}:${limit}`, 15_000, () => buildLadder(sort, limit));
+    res.set("Cache-Control", "public, max-age=10");
+    res.json(body);
+  }));
+  const buildLadder = async (sort: "exp" | "kd" | "win", limit: number) => {
     const { data, error } = await db().from("competitive_leaderboard").select("position,user_id,steam_id,username,avatar,current_exp,rank_id,rank_slug,rank_name,rank_image_key,pro_league_unlocked,matches_completed,wins,losses,kills,assists,headshot_kills,deaths,kd_ratio,win_rate,played_hours,last_match_at").order("position").limit(sort === "exp" ? limit : 1000);
     legacyXError(error, "Unable to load competitive leaderboard");
-    const linked = await discordLinkedUserIds(db(), ((data ?? []) as DbRow[]).map((row) => textValue(row.user_id)).filter(Boolean));
-    const clanTags = await clanTagsFor(((data ?? []) as DbRow[]).map((row) => textValue(row.user_id)));
-    const worn = await equippedCosmeticsFor(((data ?? []) as DbRow[]).map((row) => textValue(row.user_id)));
+    const userIds = ((data ?? []) as DbRow[]).map((row) => textValue(row.user_id));
     // The EXP change of each player's latest ranked match (last two days), for the up/down colour on Home. Best effort.
-    const expChanges = await (async () => {
+    const expChangesPromise = (async () => {
       const ids = ((data ?? []) as DbRow[]).map((row) => textValue(row.user_id)).filter(Boolean);
       if (ids.length === 0) return new Map<string, number>();
       const since = new Date(Date.now() - EXP_CHANGE_WINDOW_MS).toISOString();
@@ -984,11 +989,10 @@ export function createLegacyXRouter() {
       if (result.error) { console.warn("[legacy-x-api] exp changes unavailable", result.error.message); return new Map<string, number>(); }
       return latestExpChanges((result.data ?? []) as Array<{ user_id: string; exp_delta: number; created_at: string }>);
     })();
+    // These four only need the ladder's user IDs: they run side by side.
+    const [linked, clanTags, worn, expChanges] = await Promise.all([discordLinkedUserIds(db(), userIds.filter(Boolean)), clanTagsFor(userIds), equippedCosmeticsFor(userIds), expChangesPromise]);
     const rows = ((data ?? []) as DbRow[]).map((row): DbRow => ({ ...row, exp_change: expChanges.get(textValue(row.user_id)) ?? null, discord_linked: linked.has(textValue(row.user_id)), clan_tag: clanTags.get(textValue(row.user_id))?.tag ?? null, frame: worn.get(textValue(row.user_id))?.frame ?? null, name_style: worn.get(textValue(row.user_id))?.nameStyle ?? null }));
-    if (sort === "exp") {
-      res.json({ sort, minimumMatches: 0, entries: rows });
-      return;
-    }
+    if (sort === "exp") return { sort, minimumMatches: 0, entries: rows };
     // K/D and win rate are only meaningful with a sample: 10 completed matches minimum.
     const metric = (row: DbRow) => Number(sort === "kd" ? row.kd_ratio : row.win_rate) || 0;
     const entries = rows
@@ -996,8 +1000,8 @@ export function createLegacyXRouter() {
       .sort((a, b) => metric(b) - metric(a) || Number(b.current_exp) - Number(a.current_exp) || Number(a.position) - Number(b.position))
       .slice(0, limit)
       .map((row, index) => ({ ...row, exp_position: row.position, position: index + 1 }));
-    res.json({ sort, minimumMatches: COMPETITIVE_SORT_MIN_MATCHES, entries });
-  }));
+    return { sort, minimumMatches: COMPETITIVE_SORT_MIN_MATCHES, entries };
+  };
   router.get("/public/servers/:serverId/live-match", asyncRoute(async (req, res) => {
     const serverId = z.string().trim().min(1).max(120).parse(req.params.serverId);
     const [serverResult, snapshotResult, sessionsResult] = await Promise.all([
@@ -1104,7 +1108,10 @@ export function createLegacyXRouter() {
     res.json({ ...detail, teams: detail.teams.map((team) => ({ ...team, players: team.players.map((player) => ({ ...player, ...lookOf(worn, player.userId ?? "") })) })) });
   }));
   router.get("/public/servers", asyncRoute(async (_req, res) => {
-    res.json({ entries: await readServers() });
+    // Heartbeats arrive every few seconds: 5 seconds of memory costs nothing and spares the database a call per visitor.
+    const entries = await publicCached("servers", 5_000, () => readServers());
+    res.set("Cache-Control", "public, max-age=3");
+    res.json({ entries });
   }));
   router.get("/public/servers/:serverId", asyncRoute(async (req, res) => {
     const serverId = String(req.params.serverId || "").trim();
@@ -2341,6 +2348,7 @@ export function createLegacyXRouter() {
   }));
   // Ranking: the total EXP of a clan's members, counted from real ranked results.
   router.get("/clans/leaderboard", optionalUserRoute(async (_req, res) => {
+    const cached = await publicCached("clan-ladder", 20_000, async () => {
     const [clans, members] = await Promise.all([db().from("clans").select("id,number,name,tag,logo,thumbnail,region,max_players,join_mode"), db().from("clan_members").select("clan_id,user_id")]);
     legacyXError(clans.error || members.error, "Unable to load the clan ranking");
     const memberRows = (members.data ?? []) as DbRow[];
@@ -2362,7 +2370,10 @@ export function createLegacyXRouter() {
       .sort((a, b) => b.totalExp - a.totalExp || b.wins - a.wins || a.name.localeCompare(b.name))
       .slice(0, 50)
       .map((clan, index) => ({ ...clan, rank: index + 1 }));
-    res.json({ clans: ranked });
+    return { clans: ranked };
+    });
+    res.set("Cache-Control", "public, max-age=10");
+    res.json(cached);
   }));
   router.get("/clans/me", userRoute(async (_req, res, user) => {
     const { data, error } = await db().from("clan_members").select("role,clans(*)").eq("user_id", user.id).maybeSingle();
