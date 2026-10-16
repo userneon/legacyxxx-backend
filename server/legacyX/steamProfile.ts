@@ -53,15 +53,36 @@ export async function fetchSteamAccountCreatedAt(steamId: string): Promise<strin
   }
 }
 
+/**
+ * Names are unique in the database but Steam names are not ("7", "Player"), so a second player with a taken name used to fail here and
+ * stay "Steam <id>" for good. The player keeps their own name when it is free; when it is taken they get it with the end of their
+ * Steam ID, which is stable and tells the two apart.
+ */
+export function nameCandidates(name: string, steamId: string): string[] {
+  const base = name.trim().slice(0, 50) || "Player";
+  return [name.trim().slice(0, 64) || "Player", `${base} ${steamId.slice(-4)}`, `${base} ${steamId.slice(-8)}`];
+}
+
+export async function setUserName(steamId: string, username: string, avatar?: string) {
+  let lastError: { message?: string; code?: string } | null = null;
+  for (const candidate of nameCandidates(username, steamId)) {
+    const { data, error } = await legacyXDb()
+      .from("users")
+      .update({ username: candidate, ...(avatar !== undefined ? { avatar } : {}) })
+      .eq("steam_id", steamId)
+      .select("id,steam_id,username,avatar,level,rank")
+      .maybeSingle();
+    if (!error) return data;
+    lastError = error;
+    if (error.code !== "23505") break; // only a name that is already taken is worth another try
+  }
+  legacyXError(lastError, "Unable to update Steam profile");
+  return null;
+}
+
 export async function syncSteamUserProfile(steamId: string) {
   const profile = await fetchSteamProfile(steamId);
-  const { data, error } = await legacyXDb()
-    .from("users")
-    .update({ username: profile.username, avatar: profile.avatar })
-    .eq("steam_id", steamId)
-    .select("id,steam_id,username,avatar,level,rank")
-    .maybeSingle();
-  legacyXError(error, "Unable to update Steam profile");
+  const data = await setUserName(steamId, profile.username, profile.avatar);
   if (!data) throw Object.assign(new Error("Steam user was not found after OpenID verification"), { statusCode: 404 });
   return { profile, user: data };
 }

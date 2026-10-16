@@ -1,4 +1,4 @@
-import { syncSteamUserProfile } from "./steamProfile";
+import { setUserName, syncSteamUserProfile } from "./steamProfile";
 import { legacyXDb } from "./supabase";
 
 /**
@@ -50,8 +50,12 @@ export async function nameFromGame(players: OnServer[]): Promise<number> {
   let done = 0;
   for (const player of named) {
     if (!bare.has(player.steamId)) continue;
-    const { error: updateError } = await db.from("users").update({ username: cleanName(player.name) }).eq("steam_id", player.steamId).like("username", "Steam %");
-    if (!updateError) done += 1;
+    try {
+      await setUserName(player.steamId, cleanName(player.name));
+      done += 1;
+    } catch {
+      // Not now: it is tried again on a later heartbeat.
+    }
   }
   return done;
 }

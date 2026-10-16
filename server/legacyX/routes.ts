@@ -54,7 +54,7 @@ import { CHECK_CODE_MINUTES, CHECK_MAX_DOWNLOADS, CHECK_RETENTION_DAYS, CHECK_RO
 import { CLAN_LOOK_ITEMS, CLAN_LOOK_KINDS, clanLookItem, clanLooksFor } from "./clanLooks";
 import { killEventSchema, killFeed } from "./killfeed";
 import { heartbeatSchema, ingestHeartbeat } from "./serverHeartbeat";
-import { backfillProfiles, ensureAccounts, nameFromGame } from "./profileBackfill";
+import { backfillProfiles, ensureAccounts, isBare, nameFromGame } from "./profileBackfill";
 import { EXP_CHANGE_WINDOW_MS, latestExpChanges } from "./expChange";
 import { mapPlayServer, pickQuickJoin, sortPlayServers, type PlayMode } from "./play";
 import { bracketRounds, checkInOpen, groupTeams, mapTournamentMatch as mapTournamentPlayerMatch, mapTournamentSummary, nextMatchFor, tournamentPhase } from "./tournaments";
@@ -1271,6 +1271,9 @@ export function createLegacyXRouter() {
     const user = userResult.data as DbRow | null;
     if (!user) apiError(404, "Player was not found");
     const steamId = textValue(user.steam_id);
+    // A profile that still has the placeholder name gets its Steam name when someone opens it (once an hour at most), not only when
+    // the player is on a server.
+    if (isBare({ username: textValue(user.username), avatar: textValue(user.avatar) })) void backfillProfiles([steamId]).catch(() => undefined);
     const isOwner = viewer?.id === userId;
     const isStaff = Boolean(viewerStaffResult.data);
     const ownerHidden = hiddenSectionsValue(user.hidden_profile_sections);
