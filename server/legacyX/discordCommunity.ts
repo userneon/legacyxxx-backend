@@ -23,6 +23,8 @@ export const communityInputSchema = z.object({
   /** Boost messages the bot saw since the last report: one entry per message, `count` boosts each. */
   boostEvents: z.array(z.object({ discordId: discordIdSchema, count: z.number().int().min(1).max(14).default(1), ...profileFields })).max(2000).default([]),
   /** Total uses of every invite each member made, as Discord shows them now. */
+  /** Other members of the Discord server, so the page can list everyone, also those who never boosted or invited. */
+  members: z.array(z.object({ discordId: discordIdSchema, ...profileFields })).max(2000).default([]),
   /** True when `boosters` is every current booster, so anyone else has stopped boosting. */
   boostersComplete: z.boolean().default(false),
   inviters: z.array(z.object({ discordId: discordIdSchema, uses: z.number().int().min(0).max(1_000_000), ...profileFields })).max(5000).default([]),
@@ -56,6 +58,7 @@ export function mergeCommunity(existing: CommunityStat[], input: CommunityInput)
     current.boosts = Math.max(current.boosts, 1);
     if (booster.since && (!current.boostingSince || booster.since < current.boostingSince)) current.boostingSince = booster.since;
   }
+  for (const member of input.members) { row(member.discordId); profile(member.discordId, member); }
   for (const inviter of input.inviters) { const current = row(inviter.discordId); current.invites = Math.max(current.invites, inviter.uses); profile(inviter.discordId, inviter); }
   return Array.from(touched).map((id) => rows.get(id)!);
 }
@@ -64,7 +67,7 @@ const text = (value: unknown) => (typeof value === "string" ? value : value == n
 const num = (value: unknown) => (typeof value === "number" && Number.isFinite(value) ? value : Number(value) || 0);
 
 export async function recordCommunity(db: Db, input: CommunityInput) {
-  const ids = Array.from(new Set([...input.boosters, ...input.boostEvents, ...input.inviters].map((entry) => entry.discordId)));
+  const ids = Array.from(new Set([...input.boosters, ...input.boostEvents, ...input.inviters, ...input.members].map((entry) => entry.discordId)));
   const existing: CommunityStat[] = [];
   for (let index = 0; index < ids.length; index += 200) {
     const { data, error } = await db.from("discord_community_stats").select("discord_id,boosts,boosting_since,invites,boosting,display_name,username,avatar").in("discord_id", ids.slice(index, index + 200));
@@ -95,11 +98,11 @@ async function endStoppedBoosts(db: Db, current: Set<string>) {
 
 export interface CommunityEntry { position: number; discordId: string; name: string; username: string; avatar: string; steamId: string | null; boosting: boolean; boosts: number; boostingSince: string | null; invites: number }
 
-/** Discord members ranked by boosts or by invites (ties: the earlier booster, then the name). Members who did neither are left out.
+/** Every Discord member the bot has reported, ranked by boosts or by invites (ties: the earlier booster, then the name); members with none show 0.
  *  A member who linked Discord to a LEGACY-X profile carries its Steam ID, so the page can open the profile. */
-export async function loadCommunity(db: Db, sort: "boosts" | "invites", limit = 100): Promise<CommunityEntry[]> {
+export async function loadCommunity(db: Db, sort: "boosts" | "invites", limit = 1000): Promise<CommunityEntry[]> {
   const column = sort === "boosts" ? "boosts" : "invites";
-  const { data, error } = await db.from("discord_community_stats").select("discord_id,boosts,boosting_since,invites,boosting,display_name,username,avatar").gt(column, 0).order(column, { ascending: false }).limit(1000);
+  const { data, error } = await db.from("discord_community_stats").select("discord_id,boosts,boosting_since,invites,boosting,display_name,username,avatar").order(column, { ascending: false }).order("display_name", { ascending: true }).limit(1000);
   legacyXError(error, "Unable to load Discord community stats");
   const stats = (data ?? []) as Row[];
   if (stats.length === 0) return [];

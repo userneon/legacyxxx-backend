@@ -3989,7 +3989,7 @@ export function createLegacyXRouter() {
   router.get("/public/discord/community", asyncRoute(async (req, res) => {
     const sort = z.enum(["boosts", "invites"]).catch("boosts").parse(req.query.sort ?? "boosts");
     res.set("Cache-Control", "public, max-age=60");
-    res.json({ entries: await loadCommunity(db(), sort, 100) });
+    res.json({ entries: await loadCommunity(db(), sort, 1000) });
   }));
   router.get("/plugin/discord/links", pluginRoute("discord:link", async (_req, res) => {
     res.set("Cache-Control", "no-store");

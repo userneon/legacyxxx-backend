@@ -44,3 +44,10 @@ describe("mergeCommunity boosting", () => {
     expect(rows[0]).toMatchObject({ discordId: B, boosting: true, boosts: 2 });
   });
 });
+
+describe("mergeCommunity members", () => {
+  it("lists members who never boosted or invited with zero counts and their profile", () => {
+    const rows = mergeCommunity([], parse({ members: [{ discordId: A, name: "Quiet", username: "quiet" }] }));
+    expect(rows).toEqual([{ discordId: A, boosts: 0, boostingSince: null, invites: 0, name: "Quiet", username: "quiet" }]);
+  });
+});
