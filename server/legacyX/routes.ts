@@ -65,7 +65,6 @@ const pageSchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(25),
   offset: z.coerce.number().int().min(0).default(0),
 });
-const leaderboardSchema = pageSchema.extend({ sort: z.enum(["rating", "kd_ratio", "experience"]).default("rating") });
 
 function apiError(statusCode: number, message: string, code?: string): never {
   const error = new Error(message) as Error & { statusCode?: number; code?: string };
@@ -94,10 +93,6 @@ function pluginCredential(req: Request) {
   apiError(401, "Plugin credential is required");
 }
 
-function refreshTokenFromRequest(req: Request) {
-  const input = z.object({ refreshToken: z.string().min(20).optional() }).parse(req.body ?? {});
-  return input.refreshToken ?? parseCookieHeader(req.headers.cookie ?? "").legacyx_refresh_token ?? apiError(401, "Refresh token is required");
-}
 
 async function requireUser(req: ApiRequest) {
   const user = await verifyAccessToken(bearer(req));
@@ -118,14 +113,6 @@ function optionalUserRoute(handler: (req: ApiRequest, res: Response, user: Legac
   return asyncRoute(async (req, res) => handler(req, res, hasAccessToken(req) ? await requireUser(req) : null));
 }
 
-function staffRoute(handler: (req: ApiRequest, res: Response, user: LegacyUser) => Promise<void>) {
-  return userRoute(async (req, res, user) => {
-    const { data: staff, error } = await legacyXDb().from("staff").select("id").eq("user_id", user.id).eq("status", "active").maybeSingle();
-    legacyXError(error, "Unable to verify staff access");
-    if (!staff) apiError(403, "Staff access is required");
-    await handler(req, res, user);
-  });
-}
 
 async function requireOwnerStaffRole(userId: string) {
   const { data: staff, error } = await legacyXDb().from("staff").select("role").eq("user_id", userId).eq("status", "active").maybeSingle();
@@ -147,7 +134,6 @@ const staffRoleNumericDefaults = { OWNER: 1000, MANAGER: 750, ADMIN: 500, DEVELO
 const staffExpirySchema = z.string().datetime({ offset: true }).nullable().refine((value) => value === null || Date.parse(value) > Date.now(), "The end date must be in the future");
 const staffMemberCreateSchema = z.object({ userId: z.string().uuid().optional(), steamId: z.string().regex(/^7656119\d{10}$/, "Enter a SteamID64").optional(), role: staffDirectoryRoleSchema, permissions: staffPermissionListSchema.default([]), gamePermissions: inGameAdminPermissionsSchema.default([]), stamina: inGameAdminStaminaSchema.optional(), immunity: inGameAdminImmunitySchema.optional(), status: staffDirectoryStatusSchema.default("active"), expiresAt: staffExpirySchema.optional() }).strict().refine((value) => Boolean(value.userId || value.steamId), "Give the player's SteamID64");
 const staffMemberUpdateSchema = z.object({ expiresAt: staffExpirySchema.optional(), role: staffDirectoryRoleSchema.optional(), permissions: staffPermissionListSchema.optional(), gamePermissions: inGameAdminPermissionsSchema.optional(), stamina: inGameAdminStaminaSchema.optional(), immunity: inGameAdminImmunitySchema.optional(), status: staffDirectoryStatusSchema.optional() }).strict().refine((value) => Object.keys(value).length > 0, "At least one staff field is required");
-const staffMaintenanceSchema = z.object({ website: z.literal("legacyx.cc"), enabled: z.boolean() }).strict();
 
 const managerStaffCapabilities = new Set([
   "overview", "ban", "unban", "kick", "rename", "map_change", "match_announcement", "hud_announcement", "player_hud_alert", "mute", "player_message",
@@ -373,9 +359,7 @@ function isMissingColumnError(error: unknown) {
 }
 const STAFF_PROFILE_ROLES: Record<string, string> = { OWNER: "Owner", MANAGER: "Manager", ADMIN: "Admin", DEVELOPER: "Developer", DESIGNER: "Designer" };
 const faceitLinkSchema = z.object({ nickname: z.string().trim().min(1).max(64).regex(/^[A-Za-z0-9_.-]+$/, "FACEIT nickname contains unsupported characters") });
-const linksSchema = z.object({ links: z.array(z.string().url().max(2048)).max(20) });
 const clanSchema = z.object({ name: z.string().trim().min(3).max(24), tag: z.string().trim().toUpperCase().regex(/^[A-Z0-9]{2,5}$/, "Tag is 2-5 letters or numbers"), region: z.string().trim().min(2).max(64).optional(), joinMode: z.enum(["open", "request"]).default("open"), maxPlayers: z.number().int().min(2).max(50).default(10) }).strict();
-const feedbackSchema = z.object({ name: z.string().trim().min(1).max(64).optional(), rating: z.number().int().min(1).max(5), message: z.string().trim().min(1).max(4000) });
 const pluginEventIdSchema = z.string().trim().min(8).max(220).regex(/^[A-Za-z0-9:_-]+$/, "event_id contains unsupported characters");
 const liveMatchPlayerSchema = z.object({
   steam_id: z.string().regex(/^\d{15,20}$/),
@@ -414,10 +398,8 @@ const matchCoreEventSchema = z.object({
   if (input.event && input.event_type && input.event !== input.event_type) context.addIssue({ code: z.ZodIssueCode.custom, message: "event and event_type must match", path: ["event_type"] });
 });
 const userIdSchema = z.string().uuid();
-const playModeSchema = z.enum(["5vs5", "fun", "proleague", "tournaments"]);
 const serverStatusSchema = z.enum(["online", "offline", "full"]);
 const penaltyTypeSchema = z.enum(["ban", "comm", "gag"]);
-const userRoleSchema = z.enum(["Owner", "Founder", "Manager", "Admin", "Player", "Designer", "Developer"]);
 const staffPanelServerSchema = z.string().trim().min(1).max(80).regex(/^[A-Za-z0-9_-]+$/);
 const staffPanelMapSchema = z.enum(["de_ancient", "de_anubis", "de_cache", "de_dust2", "de_inferno", "de_mirage", "de_nuke", "de_overpass", "de_train", "de_vertigo"]);
 const staffPanelActionSchema = z.object({
@@ -950,7 +932,6 @@ export function createLegacyXRouter() {
   };
   // Public website reads deliberately bypass AdminPlus. CS2 plugins/admin tools
   // write to Supabase; the website reads these safe projections through root API.
-  const readLimit = (value: unknown) => z.coerce.number().int().min(1).max(100).default(50).parse(value);
   // Leaders shows the whole community, not a top slice, so its ladder is allowed to be long.
   const readLadderLimit = (value: unknown) => z.coerce.number().int().min(1).max(1000).default(500).parse(value);
   const readServers = async () => {
@@ -3567,17 +3548,6 @@ export function createLegacyXRouter() {
     res.json({ creators });
   }));
 
-  router.get("/community/content", asyncRoute(async (_req, res) => {
-    const [creators, partners] = await Promise.all([
-      db().from("community_creators").select("id,name,handle,url").order("created_at"),
-      db().from("community_partners").select("id,name,description,type,url").order("created_at"),
-    ]);
-    legacyXError(creators.error || partners.error, "Unable to load community content");
-    const websitePartners = ((partners.data ?? []) as DbRow[])
-      .filter((partner) => textValue(partner.type) === "website")
-      .map((partner) => ({ id: textValue(partner.id), name: textValue(partner.name), description: textValue(partner.description), type: "website" as const, url: textValue(partner.url) }));
-    res.json({ creators: creators.data ?? [], partners: websitePartners });
-  }));
 
   router.get("/health", (_req, res) => res.json({ ok: true, service: "legacy-x-api" }));
 
@@ -3668,7 +3638,7 @@ export function createLegacyXRouter() {
       role: staff.role,
       username: staff.username,
       capabilities: staff.role === "OWNER"
-        ? ["database_overview", "products", "repository_downloads", "restart_all", "restart_server", "start_server", "stop_server", "ban", "unban", "kick", "mute", "timeout", "unpause", "round_restart", "round_restore", "map_change", "server_announcement", "match_announcement", "hud_announcement", "player_hud_alert", "player_message", "player_ip_lookup", "rename", "staff_governance", "maintenance", "health"]
+        ? ["database_overview", "products", "repository_downloads", "restart_all", "restart_server", "start_server", "stop_server", "ban", "unban", "kick", "mute", "timeout", "unpause", "round_restart", "round_restore", "map_change", "server_announcement", "match_announcement", "hud_announcement", "player_hud_alert", "player_message", "player_ip_lookup", "rename", "staff_governance"]
         : ["ban", "unban", "kick", "mute", "map_change", "match_announcement", "hud_announcement", "player_hud_alert", "player_message", "rename"],
     });
   }));
@@ -3707,45 +3677,6 @@ export function createLegacyXRouter() {
     res.json({ ok: true });
   }));
 
-  router.get("/staffpanel/servers/:serverId/roster", staffPanelRoute(async (req, res, staff) => {
-    requireStaffCapability(staff, "overview");
-    const serverId = staffPanelServerSchema.parse(req.params.serverId);
-    const [serverResult, snapshotResult, sessionsResult] = await Promise.all([
-      db().schema("legacy_x").from("reconnect_servers").select("server_id,display_name,current_map,current_mode,player_count,last_heartbeat_at").eq("server_id", serverId).maybeSingle(),
-      db().schema("legacy_x").from("server_live_match_snapshots").select("state,map_name,terrorist_players,counter_terrorist_players,spectator_players,reported_at").eq("server_id", serverId).maybeSingle(),
-      db().schema("legacy_x").from("reconnect_sessions").select("steam_id,player_name,connected_at").eq("server_id", serverId).is("disconnected_at", null).order("connected_at").limit(64),
-    ]);
-    legacyXError(serverResult.error || snapshotResult.error || sessionsResult.error, "Unable to load staff server roster");
-    if (!serverResult.data) apiError(404, "Server was not found");
-
-    const snapshot = snapshotResult.data as DbRow | null;
-    const reportedAt = textValue(snapshot?.reported_at);
-    const reportedAtMs = Date.parse(reportedAt);
-    const hasSnapshot = Boolean(snapshot) && Number.isFinite(reportedAtMs) && Date.now() - reportedAtMs <= 90_000;
-    const normalizePlayers = (value: unknown, team: "T" | "CT" | "SPECTATOR") => z.array(liveMatchPlayerSchema).safeParse(value).success
-      ? z.array(liveMatchPlayerSchema).parse(value).map(player => ({ steamId: player.steam_id, name: player.name, team, connected: player.connected, rankId: player.rank_id ?? null, rankName: player.rank_name ?? null, rankImageKey: player.rank_image_key ?? null, adr: player.adr ?? null, ping: player.ping ?? null }))
-      : [];
-    const rosterOnly = ((sessionsResult.data ?? []) as DbRow[]).map(session => ({ steamId: textValue(session.steam_id), name: textValue(session.player_name) || "Unknown player", team: "UNASSIGNED" as const, connected: true, rankId: null, rankName: null, rankImageKey: null, adr: null, ping: null }));
-    const players = hasSnapshot
-      ? [...normalizePlayers(snapshot?.terrorist_players, "T"), ...normalizePlayers(snapshot?.counter_terrorist_players, "CT"), ...normalizePlayers(snapshot?.spectator_players, "SPECTATOR")]
-      : rosterOnly;
-    res.json({ server: { id: serverId, name: textValue(serverResult.data.display_name) || serverId, map: textValue(snapshot?.map_name) || textValue(serverResult.data.current_map) || "Unknown", mode: textValue(serverResult.data.current_mode) || "Community", playerCount: numberValue(serverResult.data.player_count), state: hasSnapshot ? textValue(snapshot?.state) : "unavailable", availability: hasSnapshot ? "live_snapshot" : rosterOnly.length > 0 ? "roster_only" : "unavailable", updatedAt: hasSnapshot ? reportedAt : textValue(serverResult.data.last_heartbeat_at) || null }, players });
-  }));
-
-  router.get("/staffpanel/players/:steamId/penalties", staffPanelRoute(async (req, res, staff) => {
-    requireStaffCapability(staff, "overview");
-    const steamId = z.string().regex(/^\d{17}$/).parse(req.params.steamId);
-    const { data: player, error: playerError } = await db().from("users").select("id").eq("steam_id", steamId).maybeSingle();
-    legacyXError(playerError, "Unable to resolve player penalties");
-    if (!player) {
-      res.json({ penalties: [] });
-      return;
-    }
-    const { data, error } = await db().from("penalties").select("*,users!penalties_user_id_fkey(id,username,steam_id,avatar)").eq("user_id", player.id).order("created_at", { ascending: false }).limit(50);
-    legacyXError(error, "Unable to load player penalties");
-    const penalties = await mapPenaltiesWithProfileIdentities((data ?? []) as DbRow[], db());
-    res.json({ penalties });
-  }));
 
   router.get("/staffpanel/database", ownerPanelRoute(async (_req, res) => {
     const [users, penalties, matches, actions] = await Promise.all([
@@ -3809,25 +3740,6 @@ export function createLegacyXRouter() {
     const audit = await db().from("staff_audit_logs").insert({ staff_id: staff.staffId, event_type: "staff_member_updated", target_type: "staff", target_id: staffId, metadata: input });
     legacyXError(audit.error, "Unable to audit staff record update");
     res.json(data);
-  }));
-  router.get("/staffpanel/maintenance", ownerPanelRoute(async (_req, res) => {
-    const { data, error } = await db().from("staff_panel_settings").select("value,updated_at").eq("setting_key", "maintenance:legacyx.cc").maybeSingle();
-    legacyXError(error, "Unable to load maintenance configuration");
-    const value = data?.value && typeof data.value === "object" ? data.value as DbRow : {};
-    res.json({ website: "legacyx.cc", enabled: value.enabled === true, updatedAt: data?.updated_at ?? null, availability: data ? "configured" : "not_configured" });
-  }));
-  router.put("/staffpanel/maintenance", ownerPanelRoute(async (req, res, staff) => {
-    const input = staffMaintenanceSchema.parse(req.body);
-    const { data, error } = await db().from("staff_panel_settings").upsert({ setting_key: `maintenance:${input.website}`, value: { enabled: input.enabled }, updated_by_staff_id: staff.staffId, updated_at: new Date().toISOString() }, { onConflict: "setting_key" }).select("value,updated_at").single();
-    legacyXError(error, "Unable to save maintenance configuration");
-    const audit = await db().from("staff_audit_logs").insert({ staff_id: staff.staffId, event_type: "maintenance_configuration_updated", target_type: "website", target_id: input.website, metadata: { enabled: input.enabled } });
-    legacyXError(audit.error, "Unable to audit maintenance configuration");
-    res.json({ website: input.website, enabled: Boolean((data?.value as DbRow | undefined)?.enabled), updatedAt: data?.updated_at ?? null, availability: "configured" });
-  }));
-  router.get("/staffpanel/health", ownerPanelRoute(async (_req, res) => {
-    const { data, error } = await db().from("server_health_snapshots").select("cpu_percent,memory_percent,disk_percent,load_average,healthy,reported_at").order("reported_at", { ascending: false }).limit(1).maybeSingle();
-    legacyXError(error, "Unable to load server health telemetry");
-    res.json(data ? { availability: "telemetry", cpuPercent: data.cpu_percent, memoryPercent: data.memory_percent, diskPercent: data.disk_percent, loadAverage: data.load_average, healthy: data.healthy, updatedAt: data.reported_at } : { availability: "unavailable", cpuPercent: null, memoryPercent: null, diskPercent: null, loadAverage: null, healthy: null, updatedAt: null });
   }));
 
   /**
@@ -3921,12 +3833,6 @@ export function createLegacyXRouter() {
     res.status(202).json({ action: data, linkedBans: linked });
   }));
 
-  const leaderboardHandler = asyncRoute(async (req, res) => {
-    const { sort, limit, offset } = leaderboardSchema.parse(req.query);
-    const { data, error, count } = await db().from("player_stats").select("*,users(id,steam_id,username,avatar,level,rank)", { count: "exact" }).order(sort, { ascending: false }).range(offset, offset + limit - 1);
-    legacyXError(error, "Unable to load leaderboard");
-    sendPage(res, data, count, limit, offset);
-  });
 
   router.get("/competitive/me/access", userRoute(async (_req, res, user) => {
     const { data, error } = await db().from("competitive_player_profiles").select("current_exp,rank_id,rank_name,rank_image_key,pro_league_unlocked").eq("user_id", user.id).maybeSingle();
@@ -3957,13 +3863,6 @@ export function createLegacyXRouter() {
   }));
 
 
-  router.post("/community/content", pluginRoute("community:write", async (req, res, plugin) => {
-    const input = z.object({ kind: z.enum(["creator", "partner"]), name: z.string().trim().min(1).max(100), handle: z.string().trim().max(100).optional(), description: z.string().trim().max(2000).optional(), type: z.literal("website").optional(), url: z.string().url().max(2048) }).parse(req.body);
-    const { data, error } = await db().rpc("plugin_write_community_content", { p_plugin_id: plugin.id, p_kind: input.kind, p_name: input.name, p_handle: input.handle ?? null, p_description: input.description ?? null, p_partner_type: input.type ?? "website", p_url: input.url });
-    legacyXError(error, "Unable to write community content");
-    res.status(201).json({ contentId: data });
-  }));
-
   // Every CS2 server (LegacyX-Status) every 30 s: identity, map, mode and who is on it.
   router.post("/plugin/servers/heartbeat", pluginRoute("servers:write", async (req, res) => {
     const input = heartbeatSchema.parse(req.body);
@@ -3990,7 +3889,7 @@ export function createLegacyXRouter() {
     res.status(200).json({ result: data ?? {}, competitive });
   }));
   router.post("/plugin/matchzy/events", pluginRoute("stats:write", async (req, res, plugin) => {
-    const input = z.object({ event_id: pluginEventIdSchema, event: z.string().min(1).max(64) }).passthrough().parse(req.body);
+    z.object({ event_id: pluginEventIdSchema, event: z.string().min(1).max(64) }).passthrough().parse(req.body);
     const pluginId = req.header("x-plugin-id")?.trim() || plugin.name;
     if (pluginId !== "matchzy") apiError(403, "MatchZy plugin identity is required");
     // Competitive EXP is final-match only through authenticated Match Core. The

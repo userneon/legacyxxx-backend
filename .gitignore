@@ -5,10 +5,6 @@ coverage/
 .env
 .env.*
 !.env.example
-adminplus/backend/node_modules/
-adminplus/backend/.env
-adminplus/backend/.env.*
-!adminplus/backend/.env.example
 *.log
 *.tsbuildinfo
 

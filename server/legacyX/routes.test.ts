@@ -130,13 +130,9 @@ describe("LEGACY-X REST API", () => {
 		});
 
 		it("rejects staffpanel reads, governance configuration and queued actions without the isolated staff session", async () => {
-    const [accessResponse, rosterResponse, penaltyResponse, staffResponse, maintenanceResponse, healthResponse, actionResponse] = await Promise.all([
+    const [accessResponse, staffResponse, actionResponse] = await Promise.all([
       fetch(`${baseUrl}/staffpanel/access`),
-      fetch(`${baseUrl}/staffpanel/servers/legacyx-match-1/roster`),
-      fetch(`${baseUrl}/staffpanel/players/76561198000000000/penalties`),
       fetch(`${baseUrl}/staffpanel/staff`),
-      fetch(`${baseUrl}/staffpanel/maintenance`),
-      fetch(`${baseUrl}/staffpanel/health`),
       fetch(`${baseUrl}/staffpanel/actions`, {
         method: "POST",
         headers: { "content-type": "application/json" },
@@ -150,11 +146,7 @@ describe("LEGACY-X REST API", () => {
     ]);
 
     expect(accessResponse.status).toBe(401);
-    expect(rosterResponse.status).toBe(401);
-    expect(penaltyResponse.status).toBe(401);
     expect(staffResponse.status).toBe(401);
-    expect(maintenanceResponse.status).toBe(401);
-    expect(healthResponse.status).toBe(401);
     expect(actionResponse.status).toBe(401);
   });
 
@@ -169,16 +161,6 @@ describe("LEGACY-X REST API", () => {
     });
 
     expect(response.status).toBe(403);
-  });
-
-  it("rejects community writes without a scoped plugin token before an audit record can be created", async () => {
-    const response = await fetch(`${baseUrl}/community/content`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ kind: "partner", name: "Unauthorized", url: "https://example.invalid" }),
-    });
-
-    expect(response.status).toBe(401);
   });
 
   integrationIt("keeps an atomic purchase from writing when the requested item does not exist", async () => {

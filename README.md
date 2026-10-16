@@ -27,10 +27,6 @@ pnpm install --frozen-lockfile
 pnpm check
 pnpm build
 
-pnpm adminplus:install
-cp adminplus/backend/.env.example adminplus/backend/.env
-pnpm adminplus:check
-pnpm adminplus:start
 ```
 
 ## Database migrations

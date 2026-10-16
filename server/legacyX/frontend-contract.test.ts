@@ -18,7 +18,7 @@ const frontendEndpoints: Endpoint[] = [
   { method: "GET", path: "/settings/notifications" }, { method: "PUT", path: "/settings/notifications" }, { method: "GET", path: "/profile/00000000-0000-4000-8000-000000000001/overview", public: true }, { method: "GET", path: "/tournaments", public: true }, { method: "GET", path: "/tournaments/00000000-0000-4000-8000-000000000006", public: true }, { method: "POST", path: "/tournaments/00000000-0000-4000-8000-000000000006/register" }, { method: "DELETE", path: "/tournaments/00000000-0000-4000-8000-000000000006/register" }, { method: "POST", path: "/tournaments/00000000-0000-4000-8000-000000000006/check-in" },
   { method: "GET", path: "/moderation/penalties", public: true }, { method: "GET", path: "/penalties/00000000-0000-4000-8000-000000000008", public: true }, { method: "GET", path: "/moderation/penalties/stats", public: true },
   { method: "GET", path: "/notifications" }, { method: "POST", path: "/notifications/read" }, { method: "DELETE", path: "/notifications" },
-  { method: "GET", path: "/feedback", public: true }, { method: "POST", path: "/feedback" }, { method: "GET", path: "/search/players?query=test", public: true }, { method: "GET", path: "/search/clans?query=test" }, { method: "GET", path: "/community/content", public: true }, { method: "GET", path: "/public/matches/42/maps/1", public: true },
+  { method: "GET", path: "/feedback", public: true }, { method: "POST", path: "/feedback" }, { method: "GET", path: "/search/players?query=test", public: true }, { method: "GET", path: "/search/clans?query=test" }, { method: "GET", path: "/public/matches/42/maps/1", public: true },
 ];
 
 const skinchangerEndpoints: Endpoint[] = [
@@ -94,7 +94,7 @@ describe("frontend API endpoint inventory", () => {
   });
 
   it("contains the frontend endpoint inventory", () => {
-    expect(frontendEndpoints).toHaveLength(43);
+    expect(frontendEndpoints).toHaveLength(42);
   });
 
   it("serves public read pages to guests without demanding authentication", async () => {

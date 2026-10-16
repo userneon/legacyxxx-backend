@@ -137,7 +137,6 @@ async function buildFaceitProfileSnapshot(player: FaceitRecord, cacheKey: string
     },
     recentMatches: historyItems.map((entry): FaceitProfileSnapshot["recentMatches"][number] => {
       const match = objectValue(entry);
-      const results = objectValue(match.results);
       return {
         id: stringValue(match.match_id),
         competition: stringValue(match.competition_name),
