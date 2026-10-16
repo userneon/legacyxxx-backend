@@ -42,6 +42,7 @@ import { PROFILE_NAME_MAX, PROFILE_SECTIONS, bestNameMatch, escapeLike, hiddenFo
 import { activeBans, bannedPlayer, checkBansSchema, issueBan, issueBanSchema, issueIpBan, issueIpBanSchema, listActiveBans, revokeAllBans, revokeAllBansSchema, revokeBans, revokeBanSchema, revokeIpBans, revokeIpBanSchema } from "./bans";
 import { authorizationRequestSchema, resolveAuthorizations } from "./adminAuthorization";
 import { CREATOR_TIER_LABEL, cleanCreatorLinks, creatorTier, sortCreators, upsertCreatorSchema } from "./creators";
+import { communityInputSchema, loadCommunity, recordCommunity } from "./discordCommunity";
 import { completeLink, discordLinkedUserIds, discordIdSchema, isLinkToken, linkCallbackUrl, linkResultPage, listLinks, pendingLinkRequest, returnToMatches, unlink } from "./discordLinks";
 import { issueCommPenalty, issueCommPenaltySchema, liftCommPenalties, liftCommPenaltySchema, listActiveCommPenalties } from "./gamePenalties";
 import { createReadStream } from "node:fs";
@@ -3979,6 +3980,16 @@ export function createLegacyXRouter() {
     await writePluginAudit(plugin, "ban.revoke", "ban", null, { steamId: input.steamId, ...result, issuer: input.issuerName, reason: input.reason ?? null })
       .catch((error) => console.error("[legacy-x-api] Unable to audit ban lift", error));
     res.json({ ...result, player: await bannedPlayer(db(), input.steamId) });
+  }));
+  // What the bot sees of the Discord server: boosters and invites, for Leaders → Boosters.
+  router.post("/plugin/discord/community", pluginRoute("discord:link", async (req, res) => {
+    const input = communityInputSchema.parse(req.body ?? {});
+    res.json({ saved: await recordCommunity(db(), input) });
+  }));
+  router.get("/public/discord/community", asyncRoute(async (req, res) => {
+    const sort = z.enum(["boosts", "invites"]).catch("boosts").parse(req.query.sort ?? "boosts");
+    res.set("Cache-Control", "public, max-age=60");
+    res.json({ entries: await loadCommunity(db(), sort, 100) });
   }));
   router.get("/plugin/discord/links", pluginRoute("discord:link", async (_req, res) => {
     res.set("Cache-Control", "no-store");
