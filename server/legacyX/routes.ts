@@ -54,7 +54,7 @@ import { CHECK_CODE_MINUTES, CHECK_MAX_DOWNLOADS, CHECK_RETENTION_DAYS, CHECK_RO
 import { CLAN_LOOK_ITEMS, CLAN_LOOK_KINDS, clanLookItem, clanLooksFor } from "./clanLooks";
 import { killEventSchema, killFeed } from "./killfeed";
 import { heartbeatSchema, ingestHeartbeat } from "./serverHeartbeat";
-import { backfillProfiles, ensureAccounts } from "./profileBackfill";
+import { backfillProfiles, ensureAccounts, nameFromGame } from "./profileBackfill";
 import { EXP_CHANGE_WINDOW_MS, latestExpChanges } from "./expChange";
 import { mapPlayServer, pickQuickJoin, sortPlayServers, type PlayMode } from "./play";
 import { bracketRounds, checkInOpen, groupTeams, mapTournamentMatch as mapTournamentPlayerMatch, mapTournamentSummary, nextMatchFor, tournamentPhase } from "./tournaments";
@@ -3872,7 +3872,7 @@ export function createLegacyXRouter() {
     // Players with a bare account (no picture, placeholder name) get their Steam name and avatar, without making the heartbeat wait.
     // Players who never signed in on the website get an account here first, so ranks, stats and skins work for them too.
     const onServer = input.players.map((player) => player.steamId);
-    void ensureAccounts(onServer).then(() => backfillProfiles(onServer)).catch(() => undefined);
+    void ensureAccounts(onServer).then(() => backfillProfiles(onServer)).then(() => nameFromGame(input.players)).catch(() => undefined);
     res.json(result);
   }));
   router.post("/plugin/match-core/events", pluginRoute("matches:write", async (req, res, plugin) => {

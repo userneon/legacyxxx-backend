@@ -31,6 +31,31 @@ export function isBare(user: { username?: string | null; avatar?: string | null 
   return !user.avatar || /^Steam \d{15,20}$/.test(user.username ?? "");
 }
 
+export interface OnServer { steamId: string; name?: string | null }
+
+const PLACEHOLDER = /^Steam \d{15,20}$/;
+const cleanName = (name: string | null | undefined) => (name ?? "").replace(/[\u0000-\u001f\u007f]/g, "").trim().slice(0, 64);
+
+/**
+ * When Steam gives no name (no key, Steam down, private profile), the name the player has in the game is better than "Steam <id>".
+ * It only replaces the placeholder, never a name Steam or the player already set.
+ */
+export async function nameFromGame(players: OnServer[]): Promise<number> {
+  const named = players.filter((player) => cleanName(player.name) && !PLACEHOLDER.test(cleanName(player.name)) && /^\d{17}$/.test(player.steamId));
+  if (named.length === 0) return 0;
+  const db = legacyXDb();
+  const { data, error } = await db.from("users").select("steam_id,username").in("steam_id", named.map((player) => player.steamId));
+  if (error) return 0;
+  const bare = new Set(((data ?? []) as Array<{ steam_id: string; username: string | null }>).filter((user) => PLACEHOLDER.test(user.username ?? "")).map((user) => user.steam_id));
+  let done = 0;
+  for (const player of named) {
+    if (!bare.has(player.steamId)) continue;
+    const { error: updateError } = await db.from("users").update({ username: cleanName(player.name) }).eq("steam_id", player.steamId).like("username", "Steam %");
+    if (!updateError) done += 1;
+  }
+  return done;
+}
+
 /** Players not yet known to the database, among these Steam IDs (the valid ones, once per hour each, at most `limit` per call). */
 export function pickMissing(steamIds: string[], known: Set<string>, now = Date.now(), limit = 10, seen = createTried): string[] {
   const picked: string[] = [];
