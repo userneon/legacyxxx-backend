@@ -2448,7 +2448,7 @@ export function createLegacyXRouter() {
   router.get("/clans/:clanId/members", optionalUserRoute(async (req, res) => {
     const clanId = await clanIdOf(req.params.clanId);
     await loadClanBasics(clanId);
-    const { data, error } = await db().from("clan_members").select("role,user_id,users(id,username,avatar)").eq("clan_id", clanId).order("created_at");
+    const { data, error } = await db().from("clan_members").select("role,user_id,users(id,steam_id,username,avatar)").eq("clan_id", clanId).order("created_at");
     legacyXError(error, "Unable to load clan members");
     const worn = await equippedCosmeticsFor(((data ?? []) as DbRow[]).map((member) => textValue(member.user_id)));
     res.json(((data ?? []) as DbRow[]).map((member) => ({ ...mapClanMember(member), ...lookOf(worn, textValue(member.user_id)) })));
