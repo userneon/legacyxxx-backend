@@ -3,7 +3,7 @@ import { nameCandidates } from "./steamProfile";
 
 describe("nameCandidates", () => {
   it("tries the Steam name first, then with the end of the Steam ID", () => {
-    expect(nameCandidates("7", "76561199851887452")).toEqual(["7", "7 7452", "7 51887452"]);
+    expect(nameCandidates("7", "76561199851887452")).toEqual(["7", "7#7452", "7#51887452"]);
   });
   it("keeps long names within the limit and never returns an empty name", () => {
     const long = "x".repeat(80);

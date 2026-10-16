@@ -56,11 +56,11 @@ export async function fetchSteamAccountCreatedAt(steamId: string): Promise<strin
 /**
  * Names are unique in the database but Steam names are not ("7", "Player"), so a second player with a taken name used to fail here and
  * stay "Steam <id>" for good. The player keeps their own name when it is free; when it is taken they get it with the end of their
- * Steam ID, which is stable and tells the two apart.
+ * Steam ID after a #, like Discord ("7#7452"), which is stable and tells the two apart; the site shows the #7452 small and dim.
  */
 export function nameCandidates(name: string, steamId: string): string[] {
   const base = name.trim().slice(0, 50) || "Player";
-  return [name.trim().slice(0, 64) || "Player", `${base} ${steamId.slice(-4)}`, `${base} ${steamId.slice(-8)}`];
+  return [name.trim().slice(0, 64) || "Player", `${base}#${steamId.slice(-4)}`, `${base}#${steamId.slice(-8)}`];
 }
 
 export async function setUserName(steamId: string, username: string, avatar?: string) {
