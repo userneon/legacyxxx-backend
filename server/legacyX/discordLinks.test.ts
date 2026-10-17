@@ -99,10 +99,11 @@ describe("Discord links", () => {
         { user_id: "u2", discord_id: "222222222222222222", discord_name: "b", linked_at: "t2", users: [{ steam_id: "76561198000000002", username: "Bravo" }] },
       ], error: null }],
       "competitive_player_profiles.select": [{ data: [{ user_id: "u1", rank_id: 12, rank_name: "Vanguard II", current_exp: 2400, matches_completed: 30 }], error: null }],
+      "clan_members.select": [{ data: [{ user_id: "u2", role: "leader" }], error: null }],
     });
     expect(await listLinks(db)).toEqual([
-      { discordId: "111111111111111111", discordName: "a", linkedAt: "t1", steamId: "76561198000000001", username: "Alpha", rankId: 12, rankName: "Vanguard II", currentExp: 2400, matchesCompleted: 30 },
-      { discordId: "222222222222222222", discordName: "b", linkedAt: "t2", steamId: "76561198000000002", username: "Bravo", rankId: null, rankName: null, currentExp: 0, matchesCompleted: 0 },
+      { discordId: "111111111111111111", discordName: "a", linkedAt: "t1", steamId: "76561198000000001", username: "Alpha", rankId: 12, rankName: "Vanguard II", currentExp: 2400, matchesCompleted: 30, clanRole: null },
+      { discordId: "222222222222222222", discordName: "b", linkedAt: "t2", steamId: "76561198000000002", username: "Bravo", rankId: null, rankName: null, currentExp: 0, matchesCompleted: 0, clanRole: "leader" },
     ]);
   });
 

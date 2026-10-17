@@ -93,6 +93,8 @@ export type DiscordLink = {
   rankName: string | null;
   currentExp: number;
   matchesCompleted: number;
+  /** The member's role in their clan ("leader", "co-leader", "member"), or null when they are in no clan. Gives the Clan Member role. */
+  clanRole: string | null;
 };
 
 type Row = Record<string, unknown>;
@@ -119,6 +121,14 @@ export async function listLinks(db: Db, discordId?: string): Promise<DiscordLink
     for (const row of (rows ?? []) as Row[]) profiles.set(text(row.user_id), row);
   }
 
+  // A failed read must fail the call: the bot treats no answer as "no change" and never strips roles because of it.
+  const clanRoles = new Map<string, string>();
+  for (let index = 0; index < userIds.length; index += 200) {
+    const { data: rows, error: clanError } = await db.from("clan_members").select("user_id,role").in("user_id", userIds.slice(index, index + 200));
+    legacyXError(clanError, "Unable to load linked players' clans");
+    for (const row of (rows ?? []) as Row[]) clanRoles.set(text(row.user_id), text(row.role) || "member");
+  }
+
   return links.map((link) => {
     const user = one(link.users);
     const profile = profiles.get(text(link.user_id));
@@ -132,6 +142,7 @@ export async function listLinks(db: Db, discordId?: string): Promise<DiscordLink
       rankName: profile ? text(profile.rank_name) || null : null,
       currentExp: profile ? num(profile.current_exp) : 0,
       matchesCompleted: profile ? num(profile.matches_completed) : 0,
+      clanRole: clanRoles.get(text(link.user_id)) ?? null,
     };
   });
 }
