@@ -7,7 +7,7 @@ import { z } from "zod";
 
 export const ANNOUNCEMENT_MAX_AGE_HOURS = 24;
 export const ANNOUNCEMENT_PAGE = 20;
-export const ANNOUNCEMENT_BANNERS = ["cs2-update-finished"] as const;
+export const ANNOUNCEMENT_BANNERS = ["cs2-update-finished", "match-result"] as const;
 
 export const announcementSchema = z.object({
   title: z.string().trim().min(1).max(80),

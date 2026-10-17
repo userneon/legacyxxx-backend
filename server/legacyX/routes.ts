@@ -31,6 +31,7 @@ import { coreRoundScore, expRowAsResult, mapExpRecentMatch, mapMatchDetail } fro
 import { fetchSteamAccountCreatedAt, fetchSteamBans, syncSteamUserProfile } from "./steamProfile";
 import { RANK_CALCULATION_VERSION, calculateMatchExp, expLimitUsage, limitWindows } from "./ranking";
 import { buildRankedInput, rankedResultSchema, type MatchParticipant, type PlayerProgression } from "./rankedMatch";
+import { matchResultAnnouncement, resultSteamIds } from "./matchAnnouncement";
 import { ANNOUNCEMENT_MAX_AGE_HOURS, ANNOUNCEMENT_PAGE, announcementRow, announcementSchema, announcementView, type AnnouncementRecord } from "./announcements";
 import { ADMIN_CALL_COOLDOWN_SECONDS, ADMIN_CALL_MAX_AGE_HOURS, ADMIN_CALL_PAGE, adminCallRow, adminCallSchema, adminCallView, parseAfter, type AdminCallRecord } from "./adminCalls";
 import { COIN_RULES, NotEnoughCoinsError, applyWalletChange, awardDiscordLink, awardMatchBonuses, awardMatchCoins, clanPrices, earnRules, loadWallet, loadWalletSummary, penalizeWallet, walletGrantSchema, walletPenaltySchema } from "./wallet";
@@ -696,6 +697,21 @@ function deferredFeatureForRequest(req: Request): DeferredFeatureKey | null {
  * rank formula (server/legacyX/ranking.ts), then apply every delta in one SQL transaction. The
  * receipt is keyed by the final event id, so a replayed event is a no-op.
  */
+/** Records the finished match for the Discord bot's match-results channel (see matchAnnouncement.ts). */
+async function announceFinishedMatch(result: unknown) {
+  const steamIds = resultSteamIds(result);
+  const names = new Map<string, string>();
+  if (steamIds.length) {
+    const { data, error } = await legacyXDb().from("users").select("steam_id,username").in("steam_id", steamIds);
+    legacyXError(error, "Unable to load the names of the finished match's players");
+    for (const row of (data ?? []) as DbRow[]) if (typeof row.steam_id === "string" && typeof row.username === "string") names.set(row.steam_id, row.username);
+  }
+  const announcement = matchResultAnnouncement(result, names);
+  if (!announcement) return;
+  const { error } = await legacyXDb().from("update_announcements").insert(announcementRow(announcement));
+  legacyXError(error, "Unable to record the finished match");
+}
+
 async function applyRankedMatchResult(pluginId: string, eventId: string, matchId: string, rawResult: unknown) {
   const parsed = rankedResultSchema.safeParse(rawResult ?? {});
   if (!parsed.success) return { status: "not_ranked", reasons: ["invalid_result_payload"] };
@@ -3904,6 +3920,11 @@ export function createLegacyXRouter() {
     let competitive: unknown = null;
     if (input.event_type === "result_final" && input.match_id && ["processed", "duplicate"].includes(textValue(matchCoreResult.status))) {
       competitive = await applyRankedMatchResult(pluginId, input.event_id, input.match_id, (input as DbRow).result);
+    }
+    // The Discord bot posts every finished match in its match-results channel; a duplicate event posts nothing again.
+    if (input.event_type === "result_final" && textValue(matchCoreResult.status) === "processed") {
+      await announceFinishedMatch((input as DbRow).result)
+        .catch((announceError) => console.error("[legacy-x-api] Unable to announce the finished match", announceError));
     }
     res.status(200).json({ result: data ?? {}, competitive });
   }));

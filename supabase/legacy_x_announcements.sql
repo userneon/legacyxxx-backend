@@ -8,7 +8,7 @@ CREATE TABLE IF NOT EXISTS legacy_x.update_announcements (
   title TEXT NOT NULL CHECK (char_length(title) BETWEEN 1 AND 80),
   lines JSONB NOT NULL CHECK (jsonb_typeof(lines) = 'array' AND jsonb_array_length(lines) BETWEEN 1 AND 30),
   footer TEXT CHECK (footer IS NULL OR char_length(footer) <= 200),
-  banner TEXT CHECK (banner IS NULL OR banner IN ('cs2-update-finished')),
+  banner TEXT CHECK (banner IS NULL OR banner IN ('cs2-update-finished', 'match-result')),
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
