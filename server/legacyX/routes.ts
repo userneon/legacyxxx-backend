@@ -42,6 +42,7 @@ import { PROFILE_NAME_MAX, PROFILE_SECTIONS, bestNameMatch, escapeLike, hiddenFo
 import { activeBans, bannedPlayer, checkBansSchema, issueBan, issueBanSchema, issueIpBan, issueIpBanSchema, listActiveBans, revokeAllBans, revokeAllBansSchema, revokeBans, revokeBanSchema, revokeIpBans, revokeIpBanSchema } from "./bans";
 import { authorizationRequestSchema, resolveAuthorizations } from "./adminAuthorization";
 import { CREATOR_TIER_LABEL, cleanCreatorLinks, creatorTier, sortCreators, upsertCreatorSchema } from "./creators";
+import { grantBoosterFrames, isBoostingNow } from "./boosterRewards";
 import { cachedFor as publicCached } from "./responseCache";
 import { communityInputSchema, loadCommunity, recordCommunity } from "./discordCommunity";
 import { completeLink, discordLinkedUserIds, discordIdSchema, isLinkToken, linkCallbackUrl, linkResultPage, listLinks, pendingLinkRequest, returnToMatches, unlink } from "./discordLinks";
@@ -1355,6 +1356,7 @@ export function createLegacyXRouter() {
       creator: creatorTierValue ? { tier: creatorTierValue, label: CREATOR_TIER_LABEL[creatorTierValue], bio: textValue(creatorRow?.bio), links: cleanCreatorLinks(creatorRow?.links) } : null,
       presence,
       discordLinked: (await discordLinkedUserIds(db(), [userId])).has(userId),
+      discordBoosting: await isBoostingNow(db(), userId),
       clan: (await clanTagsFor([userId])).get(userId) ?? null,
       ...ownerExtras,
     });
@@ -4000,7 +4002,11 @@ export function createLegacyXRouter() {
   // What the bot sees of the Discord server: boosters and invites, for Leaders → Boosters.
   router.post("/plugin/discord/community", pluginRoute("discord:link", async (req, res) => {
     const input = communityInputSchema.parse(req.body ?? {});
-    res.json({ saved: await recordCommunity(db(), input) });
+    const saved = await recordCommunity(db(), input);
+    // Boosters who linked Discord get the Server Booster frame (once, kept for good). Best effort: the report is saved either way.
+    const mentioned = Array.from(new Set([...input.boosters, ...input.boostEvents].map((entry) => entry.discordId)));
+    await grantBoosterFrames(db(), mentioned).catch((error) => console.warn("[legacy-x-api] booster frames not given", error?.message));
+    res.json({ saved });
   }));
   router.get("/public/discord/community", asyncRoute(async (req, res) => {
     const sort = z.enum(["boosts", "invites"]).catch("boosts").parse(req.query.sort ?? "boosts");
@@ -4087,6 +4093,8 @@ export function createLegacyXRouter() {
     if (!userId) apiError(500, "Steam user was not created");
     await syncSteamUserProfile(steamId).catch(() => undefined);
     if (!(await completeLink(db(), token, userId))) return expiredLink(res);
+    // A booster who links Discord now gets the Server Booster frame on this profile.
+    await grantBoosterFrames(db(), [request.discordId]).catch(() => undefined);
     const { data: user } = await db().from("users").select("username").eq("id", userId).maybeSingle();
     const steamName = typeof user?.username === "string" && user.username ? user.username : steamId;
     sendLinkPage(res, 200, true, "Амжилттай холбогдлоо", `Discord акаунт ${request.discordName || request.discordId} нь Steam акаунт ${steamName}-тэй холбогдлоо. Rank role хэдэн секундын дотор Discord дээр гарч ирнэ.`);
