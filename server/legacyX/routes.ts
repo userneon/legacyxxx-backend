@@ -2837,7 +2837,11 @@ export function createLegacyXRouter() {
   // The personal download: the checker with this check's code inside (check.json), so the player has nothing to type.
   router.get("/checks/code/:code/download", checkRateLimit, asyncRoute(async (req, res) => {
     // With its own download address set, only that address serves the file: the old api.legacyx.cc link is not valid any more.
-    if (!downloadHostAllowed(String(req.headers.host ?? "").replace(/:\d+$/, ""))) apiError(404, "That code is not valid or has expired", "check_code_invalid");
+    const askedHost = String(req.headers.host ?? "").replace(/:\d+$/, "");
+    if (!downloadHostAllowed(askedHost)) {
+      console.warn(`[legacy-x-api] checker download refused on host "${askedHost}": it is only served on ${process.env.CHECKER_DOWNLOAD_ORIGIN} (the Nginx block for it must pass "Host $host")`);
+      apiError(404, "That code is not valid or has expired", "check_code_invalid");
+    }
     const normalized = normalizeCheckCode(String(req.params.code));
     if (!normalized) apiError(404, "That code is not valid", "check_code_invalid");
     const { data } = await db().from("player_checks").select("id,requested_by,status,expires_at,download_count,code_hint").eq("code_hash", hashCheckCode(normalized)).maybeSingle();
