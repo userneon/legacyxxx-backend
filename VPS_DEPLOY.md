@@ -110,7 +110,7 @@ server {
     server_name download.legacyx.cc;
     # ssl_certificate lines as certbot wrote them for this host
 
-    location ~ ^/([A-Za-z0-9-]{8,12})$ {
+    location ~ "^/([A-Za-z0-9-]{8,12})$" {   # quoted: nginx reads a bare { as the start of a block
         proxy_pass http://127.0.0.1:3000/api/v1/checks/code/$1/download;
         proxy_set_header Host api.legacyx.cc;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
