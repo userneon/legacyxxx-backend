@@ -34,7 +34,7 @@ export function hashCheckCode(normalized: string): string {
 }
 
 /**
- * The address a player downloads the checker from. With CHECKER_DOWNLOAD_ORIGIN set (for example https://download.legacyx.cc) it is
+ * The address a player downloads the checker from. With CHECKER_DOWNLOAD_ORIGIN set (for example https://checker.legacyx.cc) it is
  * `<origin>/<code>`, which Nginx on that host passes to the API's personal download; without it null, and callers use `downloadPath`.
  */
 export function checkDownloadUrl(code: string, origin: string | undefined = process.env.CHECKER_DOWNLOAD_ORIGIN): string | null {

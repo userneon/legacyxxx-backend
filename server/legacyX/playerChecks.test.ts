@@ -97,12 +97,12 @@ describe("recent sign-ins", () => {
 
 describe("the download address", () => {
   it("is the code under the download host, and nothing without a proper https host or a real code", () => {
-    expect(checkDownloadUrl("K7F2-9QX4", "https://download.legacyx.cc")).toBe("https://download.legacyx.cc/K7F2-9QX4");
-    expect(checkDownloadUrl("K7F2-9QX4", "https://download.legacyx.cc/")).toBe("https://download.legacyx.cc/K7F2-9QX4");
+    expect(checkDownloadUrl("K7F2-9QX4", "https://checker.legacyx.cc")).toBe("https://checker.legacyx.cc/K7F2-9QX4");
+    expect(checkDownloadUrl("K7F2-9QX4", "https://checker.legacyx.cc/")).toBe("https://checker.legacyx.cc/K7F2-9QX4");
     expect(checkDownloadUrl("K7F2-9QX4", "")).toBeNull();
     expect(checkDownloadUrl("K7F2-9QX4", undefined)).toBeNull();
-    expect(checkDownloadUrl("K7F2-9QX4", "http://download.legacyx.cc")).toBeNull();
+    expect(checkDownloadUrl("K7F2-9QX4", "http://checker.legacyx.cc")).toBeNull();
     expect(checkDownloadUrl("K7F2-9QX4", "https://evil.com/path?x=")).toBeNull();
-    expect(checkDownloadUrl("not-a-code", "https://download.legacyx.cc")).toBeNull();
+    expect(checkDownloadUrl("not-a-code", "https://checker.legacyx.cc")).toBeNull();
   });
 });

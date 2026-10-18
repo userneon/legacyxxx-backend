@@ -102,12 +102,12 @@ server {
 
 ### Own address for the checker download (optional)
 
-To give players `https://download.legacyx.cc/K7F2-9QX4` instead of an `api.legacyx.cc` link: add a DNS record for `download.legacyx.cc` to the VPS, get a certificate for it (`sudo certbot --nginx -d download.legacyx.cc`), add this server block, and set `CHECKER_DOWNLOAD_ORIGIN=https://download.legacyx.cc` in the API's `.env` (then restart it). Only the personal download is reachable on that host; the code in the address is the key and the API still limits it to a few downloads while the check is open.
+To give players `https://checker.legacyx.cc/K7F2-9QX4` instead of an `api.legacyx.cc` link: add a DNS record for `checker.legacyx.cc` to the VPS, get a certificate for it (`sudo certbot --nginx -d checker.legacyx.cc`), add this server block, and set `CHECKER_DOWNLOAD_ORIGIN=https://checker.legacyx.cc` in the API's `.env` (then restart it). Only the personal download is reachable on that host; the code in the address is the key and the API still limits it to a few downloads while the check is open.
 
 ```nginx
 server {
     listen 443 ssl http2;
-    server_name download.legacyx.cc;
+    server_name checker.legacyx.cc;
     # ssl_certificate lines as certbot wrote them for this host
 
     location ~ "^/([A-Za-z0-9-]{8,12})$" {   # quoted: nginx reads a bare { as the start of a block
