@@ -8,13 +8,14 @@
  *   ΔEXP = round( C × ( Result + Margin + Performance + Bonus ) ), clamped to ±45 (±90 calibrating)
  */
 
-export const RANK_CALCULATION_VERSION = "legacyx-exp-1.0";
+export const RANK_CALCULATION_VERSION = "legacyx-exp-1.1";
 export const STARTING_EXP = 1000;
 export const PRO_LEAGUE_UNLOCK_EXP = 1400;
 export const PRO_LEAGUE_KEEP_EXP = 1350;
 export const LEAVER_DELTA = -25;
 export const CALIBRATION_MATCHES = 10;
-export const MIN_HUMAN_PLAYERS = 8;
+/** A match counts with any team sizes (4v5, 3v3, 2v2, 2v5) as long as each team still has this many humans at the end: a 1v1 never counts. */
+export const MIN_PLAYERS_PER_TEAM = 2;
 export const MIN_ROUNDS = 13;
 export const MIN_PARTICIPATION = 0.5;
 export const SHORT_HANDED_ROUNDS = 3;
@@ -261,7 +262,10 @@ export function calculateMatchExp(input: RankedMatchInput): MatchExpResult {
   const invalidReasons: string[] = [];
   const appliesExp = input.mode !== "fun";
   if (!input.finishedNormally) invalidReasons.push("not_finished_normally");
-  if (input.humanPlayersAtEnd < MIN_HUMAN_PLAYERS) invalidReasons.push("too_few_human_players");
+  const atEnd = (team: TeamKey) => humans.filter((player) => player.team === team && !player.leftEarly && player.roundsPlayed > 0).length;
+  if (input.humanPlayersAtEnd < 2 * MIN_PLAYERS_PER_TEAM || atEnd("team1") < MIN_PLAYERS_PER_TEAM || atEnd("team2") < MIN_PLAYERS_PER_TEAM) {
+    invalidReasons.push("too_few_human_players");
+  }
   if (totalRounds < MIN_ROUNDS) invalidReasons.push("too_few_rounds");
   const valid = appliesExp && invalidReasons.length === 0;
 

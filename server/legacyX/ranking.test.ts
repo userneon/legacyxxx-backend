@@ -251,7 +251,7 @@ describe("calculateMatchExp", () => {
     const players = lobby((id) => (id === 2 ? { leftEarly: true, roundsPlayed: 4 } : {}));
     for (const invalid of [
       { finishedNormally: false },
-      { humanPlayersAtEnd: 7 },
+      { humanPlayersAtEnd: 3 },
       { roundsWon: { team1: 7, team2: 5 } },
     ] satisfies Partial<RankedMatchInput>[]) {
       const result = calculateMatchExp(match({ players, ...invalid }));
@@ -261,6 +261,26 @@ describe("calculateMatchExp", () => {
       expect(find(result, "u1").breakdown.rule).toBe("invalid_match");
       expect(find(result, "u2").expDelta).toBe(LEAVER_DELTA);
     }
+  });
+
+  it("counts matches of any team sizes (4v5, 3v3, 2v2, 2v5) but never a 1v1", () => {
+    const sizes: Array<[number, number]> = [[4, 5], [3, 3], [2, 2], [2, 5]];
+    for (const [a, b] of sizes) {
+      const players = [
+        ...Array.from({ length: a }, (_, i) => player(i + 1, "team1")),
+        ...Array.from({ length: b }, (_, i) => player(a + i + 1, "team2")),
+      ];
+      const result = calculateMatchExp(match({ players, humanPlayersAtEnd: a + b }));
+      expect(result.valid, `${a}v${b}`).toBe(true);
+      expect(find(result, "u1").countsAsRankedMatch, `${a}v${b}`).toBe(true);
+    }
+    const duel = calculateMatchExp(match({ players: [player(1, "team1"), player(2, "team2")], humanPlayersAtEnd: 2 }));
+    expect(duel.valid).toBe(false);
+    expect(duel.invalidReasons).toContain("too_few_human_players");
+    expect(find(duel, "u1")).toMatchObject({ expDelta: 0, countsAsRankedMatch: false });
+    // One side down to a single human at the end (the rest left for good) is not a match either.
+    const alone = calculateMatchExp(match({ players: [player(1, "team1"), player(2, "team1", { leftEarly: true, roundsPlayed: 4 }), player(3, "team2"), player(4, "team2"), player(5, "team2")], humanPlayersAtEnd: 4 }));
+    expect(alone.invalidReasons).toContain("too_few_human_players");
   });
 
   it("accepts 8 human players at the end (not strictly 10) and counts fills for their rounds", () => {
