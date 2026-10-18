@@ -32,6 +32,7 @@ import { fetchSteamAccountCreatedAt, fetchSteamBans, syncSteamUserProfile } from
 import { RANK_CALCULATION_VERSION, calculateMatchExp, expLimitUsage, limitWindows } from "./ranking";
 import { buildRankedInput, rankedResultSchema, type MatchParticipant, type PlayerProgression } from "./rankedMatch";
 import { matchResultAnnouncement, resultSteamIds } from "./matchAnnouncement";
+import { leaveStatus, loadLeaves, playerAccess } from "./playAccess";
 import { ANNOUNCEMENT_MAX_AGE_HOURS, ANNOUNCEMENT_PAGE, announcementRow, announcementSchema, announcementView, type AnnouncementRecord } from "./announcements";
 import { ADMIN_CALL_COOLDOWN_SECONDS, ADMIN_CALL_MAX_AGE_HOURS, ADMIN_CALL_PAGE, adminCallRow, adminCallSchema, adminCallView, parseAfter, type AdminCallRecord } from "./adminCalls";
 import { COIN_RULES, NotEnoughCoinsError, applyWalletChange, awardDiscordLink, awardMatchBonuses, awardMatchCoins, clanPrices, earnRules, loadWallet, loadWalletSummary, penalizeWallet, walletGrantSchema, walletPenaltySchema } from "./wallet";
@@ -4147,6 +4148,19 @@ export function createLegacyXRouter() {
     await writePluginAudit(plugin, `${input.type}.revoke`, "penalties", null, { steamId: input.steamId, ...result, issuer: input.issuerName })
       .catch((error) => console.error("[legacy-x-api] Unable to audit penalty lift", error));
     res.json(result);
+  }));
+  // Who may join: logged in on the website and not blocked for leaving matches (playAccess.ts). The game servers ask on connect.
+  router.post("/plugin/players/access", pluginRoute("bans:read", async (req, res) => {
+    const input = z.object({ steamIds: z.array(z.string().regex(/^\d{17}$/)).min(1).max(32) }).parse(req.body);
+    res.set("Cache-Control", "no-store");
+    res.json({ players: await playerAccess(db(), input.steamIds) });
+  }));
+  // The signed-in player's own leave count and block, for the Connect button.
+  router.get("/play/status", userRoute(async (_req, res, user) => {
+    const now = new Date();
+    const leaves = await loadLeaves(db(), [user.id], now);
+    res.set("Cache-Control", "no-store");
+    res.json(leaveStatus(leaves.get(user.id) ?? [], now));
   }));
   router.post("/plugin/bans/check", pluginRoute("bans:read", async (req, res) => {
     const input = checkBansSchema.parse(req.body);
