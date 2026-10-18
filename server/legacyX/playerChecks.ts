@@ -33,6 +33,16 @@ export function hashCheckCode(normalized: string): string {
   return createHash("sha256").update(normalized).digest("hex");
 }
 
+/**
+ * The address a player downloads the checker from. With CHECKER_DOWNLOAD_ORIGIN set (for example https://download.legacyx.cc) it is
+ * `<origin>/<code>`, which Nginx on that host passes to the API's personal download; without it null, and callers use `downloadPath`.
+ */
+export function checkDownloadUrl(code: string, origin: string | undefined = process.env.CHECKER_DOWNLOAD_ORIGIN): string | null {
+  const clean = (origin ?? "").trim().replace(/\/+$/, "");
+  if (!/^https:\/\/[a-z0-9.-]+(:\d+)?$/i.test(clean) || !normalizeCheckCode(code)) return null;
+  return `${clean}/${code}`;
+}
+
 export const createCheckSchema = z.object({ steamId: z.string().regex(/^\d{17}$/, "A Steam ID has 17 digits") }).strict();
 
 /** An account that signed in to Steam this recently before a scan (or since the scan began) is one the player was just using. */

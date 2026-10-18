@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { checkReportSchema, createCheckSchema, generateCheckCode, hashCheckCode, normalizeCheckCode, summarizeReport, sharesSamePc, recentSteamIds } from "./playerChecks";
+import { checkDownloadUrl, checkReportSchema, createCheckSchema, generateCheckCode, hashCheckCode, normalizeCheckCode, summarizeReport, sharesSamePc, recentSteamIds } from "./playerChecks";
 
 const STEAM = "76561198000000001";
 const report = { consent: true as const, checkerVersion: "1.0.0", steamIds: [STEAM], filesScanned: 1000, durationSeconds: 90, findings: [{ name: "cheat.exe", kind: "file" as const, confidence: "detection" as const, path: "C:\\Users\\***\\cheat.exe" }, { name: "loader", kind: "trace" as const, confidence: "suspicion" as const }] };
@@ -92,5 +92,17 @@ describe("recent sign-ins", () => {
     ];
     expect(recentSteamIds(accounts, at)).toEqual(["76561198000000001", "76561198000000005"]);
     expect(recentSteamIds(undefined, at)).toEqual([]);
+  });
+});
+
+describe("the download address", () => {
+  it("is the code under the download host, and nothing without a proper https host or a real code", () => {
+    expect(checkDownloadUrl("K7F2-9QX4", "https://download.legacyx.cc")).toBe("https://download.legacyx.cc/K7F2-9QX4");
+    expect(checkDownloadUrl("K7F2-9QX4", "https://download.legacyx.cc/")).toBe("https://download.legacyx.cc/K7F2-9QX4");
+    expect(checkDownloadUrl("K7F2-9QX4", "")).toBeNull();
+    expect(checkDownloadUrl("K7F2-9QX4", undefined)).toBeNull();
+    expect(checkDownloadUrl("K7F2-9QX4", "http://download.legacyx.cc")).toBeNull();
+    expect(checkDownloadUrl("K7F2-9QX4", "https://evil.com/path?x=")).toBeNull();
+    expect(checkDownloadUrl("not-a-code", "https://download.legacyx.cc")).toBeNull();
   });
 });
