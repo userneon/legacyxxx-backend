@@ -95,12 +95,37 @@ export type DiscordLink = {
   matchesCompleted: number;
   /** The member's role in their clan ("leader", "co-leader", "member"), or null when they are in no clan. Gives the Clan Member role. */
   clanRole: string | null;
+  /** The player's active staff role on the site ("owner", "manager", "admin", "developer", "designer"), or null. Gives the same-named Discord role. */
+  staffRole: string | null;
+  /** "main" or "creator" for a content creator, or null. Gives Main Content Creator / Content Creator. */
+  creatorTier: string | null;
+  /** 1, 2 or 3 for the three members who boost right now with the most boosts (the Boosters page's order), else null. */
+  boosterPlace: number | null;
 };
 
 type Row = Record<string, unknown>;
 const text = (value: unknown) => (typeof value === "string" ? value : "");
 const num = (value: unknown) => (typeof value === "number" && Number.isFinite(value) ? value : Number(value) || 0);
 const one = (value: unknown): Row => (Array.isArray(value) ? (value[0] as Row) ?? {} : (value as Row) ?? {});
+
+/** Discord ID → 1, 2 or 3 for the top three linked members who boost right now (most boosts first, ties: the earlier booster, then the name). */
+async function boosterPlaces(db: Db): Promise<Map<string, number>> {
+  const { data, error } = await db.from("discord_community_stats").select("discord_id,boosts,boosting_since,display_name,username").eq("boosting", true).gt("boosts", 0).order("boosts", { ascending: false }).limit(50);
+  legacyXError(error, "Unable to load Discord boosters");
+  const stats = (data ?? []) as Row[];
+  if (stats.length === 0) return new Map();
+  const { data: linked, error: linkError } = await db.from("discord_links").select("discord_id").in("discord_id", stats.map((row) => text(row.discord_id)));
+  legacyXError(linkError, "Unable to load linked boosters");
+  const linkedIds = new Set(((linked ?? []) as Row[]).map((row) => text(row.discord_id)));
+  const name = (row: Row) => text(row.display_name) || text(row.username);
+  return new Map(
+    stats
+      .filter((row) => linkedIds.has(text(row.discord_id)))
+      .sort((a, b) => num(b.boosts) - num(a.boosts) || (text(a.boosting_since) || "9").localeCompare(text(b.boosting_since) || "9") || name(a).localeCompare(name(b)))
+      .slice(0, 3)
+      .map((row, index) => [text(row.discord_id), index + 1] as [string, number]),
+  );
+}
 
 /** Every link (or one Discord account's) with the player's current LEGACY-X rank. */
 export async function listLinks(db: Db, discordId?: string): Promise<DiscordLink[]> {
@@ -129,6 +154,19 @@ export async function listLinks(db: Db, discordId?: string): Promise<DiscordLink
     for (const row of (rows ?? []) as Row[]) clanRoles.set(text(row.user_id), text(row.role) || "member");
   }
 
+  const staffRoles = new Map<string, string>();
+  const creatorTiers = new Map<string, string>();
+  for (let index = 0; index < userIds.length; index += 200) {
+    const ids = userIds.slice(index, index + 200);
+    const { data: staffRows, error: staffError } = await db.from("staff").select("user_id,role").in("user_id", ids).eq("status", "active");
+    legacyXError(staffError, "Unable to load linked players' staff roles");
+    for (const row of (staffRows ?? []) as Row[]) staffRoles.set(text(row.user_id), text(row.role).toLowerCase());
+    const { data: creatorRows, error: creatorError } = await db.from("content_creators").select("user_id,tier").in("user_id", ids);
+    legacyXError(creatorError, "Unable to load linked players' creator tiers");
+    for (const row of (creatorRows ?? []) as Row[]) creatorTiers.set(text(row.user_id), text(row.tier));
+  }
+  const places = await boosterPlaces(db);
+
   return links.map((link) => {
     const user = one(link.users);
     const profile = profiles.get(text(link.user_id));
@@ -143,6 +181,9 @@ export async function listLinks(db: Db, discordId?: string): Promise<DiscordLink
       currentExp: profile ? num(profile.current_exp) : 0,
       matchesCompleted: profile ? num(profile.matches_completed) : 0,
       clanRole: clanRoles.get(text(link.user_id)) ?? null,
+      staffRole: staffRoles.get(text(link.user_id)) || null,
+      creatorTier: creatorTiers.get(text(link.user_id)) || null,
+      boosterPlace: places.get(text(link.discord_id)) ?? null,
     };
   });
 }
