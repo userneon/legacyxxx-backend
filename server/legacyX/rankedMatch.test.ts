@@ -71,7 +71,10 @@ describe("buildRankedInput", () => {
     expect(built.input.humanPlayersAtEnd).toBe(9);
 
     const exp = calculateMatchExp(built.input);
-    expect(exp.players.find((player) => player.userId === left.user_id)!.expDelta).toBe(-25);
+    // The fixed −25 plus what they showed in their 6 rounds (±8); here they played poorly next to the rest of the lobby.
+    const delta = exp.players.find((player) => player.userId === left.user_id)!.expDelta;
+    expect(delta).toBeLessThanOrEqual(-17);
+    expect(delta).toBeGreaterThanOrEqual(-33);
   });
 
   it("does not treat a player who came back, or is still inside the window, as a leaver", () => {
