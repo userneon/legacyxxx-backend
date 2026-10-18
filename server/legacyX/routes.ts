@@ -742,15 +742,18 @@ async function applyRankedMatchResult(pluginId: string, eventId: string, matchId
     const outcome = calculateMatchExp(built.input);
     if (!outcome.appliesExp) return { status: "not_ranked", reasons: ["fun_mode"] };
 
+    const droppedAt = new Map(participants.map((participant) => [participant.user_id, participant.disconnected_at]));
     const players = outcome.players.map((player) => {
       const line = built.stats.get(player.userId);
+      // A leaver's block runs from the moment they dropped, not from the end of the match (playAccess.ts).
+      const leftAt = player.breakdown.rule === "leaver" ? droppedAt.get(player.userId) : null;
       return {
         user_id: player.userId,
         team_key: player.team,
         outcome: player.outcome,
         exp_before: player.expBefore,
         exp_delta: player.expDelta,
-        exp_breakdown: player.breakdown,
+        exp_breakdown: leftAt ? { ...player.breakdown, left_at: leftAt } : player.breakdown,
         counts_as_ranked: player.countsAsRankedMatch,
         kills: line?.kills ?? 0,
         deaths: line?.deaths ?? 0,

@@ -6,7 +6,7 @@ import { legacyXError } from "./supabase";
  *
  * Leaving ranked matches: within any 24 hours the 1st and 2nd leave only cost EXP (the leaver rule in ranking.ts), the 3rd also
  * blocks playing for 30 minutes, and every leave after that adds another 30 minutes (4th: 60, 5th: 90 ...). The leaves are the
- * `leaver` rows of competitive_match_exp, so nothing new is stored. The block runs from the latest leave.
+ * `leaver` rows of competitive_match_exp, so nothing new is stored. The block runs from the latest leave: the moment the player dropped (`left_at` in the row's breakdown), or the end of the match for rows written before that was stored.
  *
  * Logged in: a player is logged in while they hold a refresh session on the website that is neither revoked nor expired.
  * The website's Connect button and the game servers (LegacyX-Admin) both ask this, so nobody gets in by typing the address.
@@ -52,9 +52,10 @@ export async function loadLeaves(db: Db, userIds: string[], now: Date): Promise<
   const since = new Date(now.getTime() - LEAVE_WINDOW_MS).toISOString();
   const { data, error } = await db.from("competitive_match_exp").select("user_id,exp_breakdown,created_at").in("user_id", userIds).gte("created_at", since).limit(2000);
   legacyXError(error, "Unable to load recent leaves");
-  for (const row of (data ?? []) as Array<{ user_id: string; exp_breakdown: { rule?: string } | null; created_at: string }>) {
+  for (const row of (data ?? []) as Array<{ user_id: string; exp_breakdown: { rule?: string; left_at?: string } | null; created_at: string }>) {
     if (row.exp_breakdown?.rule !== "leaver") continue;
-    leaves.set(row.user_id, [...(leaves.get(row.user_id) ?? []), row.created_at]);
+    const left = row.exp_breakdown.left_at && Number.isFinite(Date.parse(row.exp_breakdown.left_at)) ? row.exp_breakdown.left_at : row.created_at;
+    leaves.set(row.user_id, [...(leaves.get(row.user_id) ?? []), left]);
   }
   return leaves;
 }
