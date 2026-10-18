@@ -301,7 +301,14 @@ export function calculateMatchExp(input: RankedMatchInput): MatchExpResult {
 
     if (!appliesExp) return settle(0, { ...base, rule: "fun_mode" }, false);
     // A leaver who never came back loses a fixed 25 and it counts as a loss — even in an invalid match.
-    if (player.leftEarly) return settle(LEAVER_DELTA, { ...base, rule: "leaver" }, true, "loss");
+    if (player.leftEarly) {
+      // What they showed before leaving counts too: the usual per-round impact against the lobby (±8) on top of the fixed −25.
+      // In a match that does not count (or if they never played a round) there is no lobby to compare with: the −25 stands alone.
+      if (!valid || player.roundsPlayed <= 0) return settle(LEAVER_DELTA, { ...base, rule: "leaver" }, true, "loss");
+      const score = scores.get(player.userId) ?? 0;
+      const { z, performance } = performanceTerm(score, lobbyMean, lobbyStd);
+      return settle(LEAVER_DELTA + performance, { ...base, performance, score: round2(score), z: round2(z), rule: "leaver" }, true, "loss");
+    }
     if (!valid) return settle(0, { ...base, rule: "invalid_match" }, false);
     if (totalRounds > 0 && player.roundsPlayed / totalRounds < MIN_PARTICIPATION) {
       return settle(0, { ...base, rule: "low_participation" }, false);
