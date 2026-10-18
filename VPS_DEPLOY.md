@@ -102,7 +102,7 @@ server {
 
 ### Own address for the checker download (optional)
 
-To give players `https://checker.legacyx.cc/K7F2-9QX4` instead of an `api.legacyx.cc` link: add a DNS record for `checker.legacyx.cc` to the VPS, get a certificate for it (`sudo certbot --nginx -d checker.legacyx.cc`), add this server block, and set `CHECKER_DOWNLOAD_ORIGIN=https://checker.legacyx.cc` in the API's `.env` (then restart it). Only the personal download is reachable on that host; the code in the address is the key and the API still limits it to a few downloads while the check is open.
+To give players `https://checker.legacyx.cc/K7F2-9QX4` instead of an `api.legacyx.cc` link: add a DNS record for `checker.legacyx.cc` to the VPS, get a certificate for it (`sudo certbot --nginx -d checker.legacyx.cc`), add this server block, and set `CHECKER_DOWNLOAD_ORIGIN=https://checker.legacyx.cc` in the API's `.env` (then restart it). Only the personal download is reachable on that host, and once `CHECKER_DOWNLOAD_ORIGIN` is set it is served only there: the old `api.legacyx.cc/api/v1/checks/code/<code>/download` address answers "not valid" (the Nginx block must pass `Host $host`, as below); the code in the address is the key and the API still limits it to a few downloads while the check is open.
 
 ```nginx
 server {
@@ -112,7 +112,7 @@ server {
 
     location ~ "^/([A-Za-z0-9-]{8,12})$" {   # quoted: nginx reads a bare { as the start of a block
         proxy_pass http://127.0.0.1:3000/api/v1/checks/code/$1/download;
-        proxy_set_header Host api.legacyx.cc;
+        proxy_set_header Host $host;   # the API only serves the download on this host
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto https;
         proxy_buffering off;          # the installer streams from disk

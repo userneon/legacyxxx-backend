@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { checkDownloadUrl, checkReportSchema, createCheckSchema, generateCheckCode, hashCheckCode, normalizeCheckCode, summarizeReport, sharesSamePc, recentSteamIds } from "./playerChecks";
+import { checkDownloadUrl, downloadHostAllowed, checkReportSchema, createCheckSchema, generateCheckCode, hashCheckCode, normalizeCheckCode, summarizeReport, sharesSamePc, recentSteamIds } from "./playerChecks";
 
 const STEAM = "76561198000000001";
 const report = { consent: true as const, checkerVersion: "1.0.0", steamIds: [STEAM], filesScanned: 1000, durationSeconds: 90, findings: [{ name: "cheat.exe", kind: "file" as const, confidence: "detection" as const, path: "C:\\Users\\***\\cheat.exe" }, { name: "loader", kind: "trace" as const, confidence: "suspicion" as const }] };
@@ -104,5 +104,15 @@ describe("the download address", () => {
     expect(checkDownloadUrl("K7F2-9QX4", "http://checker.legacyx.cc")).toBeNull();
     expect(checkDownloadUrl("K7F2-9QX4", "https://evil.com/path?x=")).toBeNull();
     expect(checkDownloadUrl("not-a-code", "https://checker.legacyx.cc")).toBeNull();
+  });
+});
+
+describe("which host serves the download", () => {
+  it("is only the download host once one is set; any host before that", () => {
+    expect(downloadHostAllowed("api.legacyx.cc", undefined)).toBe(true);
+    expect(downloadHostAllowed("api.legacyx.cc", "")).toBe(true);
+    expect(downloadHostAllowed("checker.legacyx.cc", "https://checker.legacyx.cc")).toBe(true);
+    expect(downloadHostAllowed("CHECKER.legacyx.cc", "https://checker.legacyx.cc/")).toBe(true);
+    expect(downloadHostAllowed("api.legacyx.cc", "https://checker.legacyx.cc")).toBe(false);
   });
 });

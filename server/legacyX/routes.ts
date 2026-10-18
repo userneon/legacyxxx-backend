@@ -54,7 +54,7 @@ import { pipeline } from "node:stream/promises";
 import { loadCheckerRules, probesOf } from "./checkerRules";
 import { judgeFacts } from "./checkerJudge";
 import { checkerBase, checkerMsi, checkerSha256, zipChunks, zipLength } from "./checkerZip";
-import { CHECK_CODE_MINUTES, CHECK_MAX_DOWNLOADS, checkDownloadUrl, CHECK_RETENTION_DAYS, CHECK_ROLES, HWID_MATCH_KINDS, checkReportSchema, createCheckSchema, generateCheckCode, hashCheckCode, normalizeCheckCode, summarizeReport, sharesSamePc, recentSteamIds } from "./playerChecks";
+import { CHECK_CODE_MINUTES, CHECK_MAX_DOWNLOADS, checkDownloadUrl, downloadHostAllowed, CHECK_RETENTION_DAYS, CHECK_ROLES, HWID_MATCH_KINDS, checkReportSchema, createCheckSchema, generateCheckCode, hashCheckCode, normalizeCheckCode, summarizeReport, sharesSamePc, recentSteamIds } from "./playerChecks";
 import { CLAN_LOOK_ITEMS, CLAN_LOOK_KINDS, clanLookItem, clanLooksFor } from "./clanLooks";
 import { killEventSchema, killFeed } from "./killfeed";
 import { heartbeatSchema, ingestHeartbeat } from "./serverHeartbeat";
@@ -2779,7 +2779,7 @@ export function createLegacyXRouter() {
     await db().from("audit_logs").insert({ actor_type: "user", actor_id: userId, action: "check.create", target_type: "player_checks", target_id: textValue(data?.id), metadata: { steamId } });
     const installer = (await checkerMsi()) !== null;
     const downloadAvailable = installer || (await checkerBase()) !== null;
-    return { id: textValue(data?.id), code, expiresAt, steamId, downloadAvailable, downloadKind: installer ? "installer" : "zip", downloadPath: downloadAvailable ? `/api/v1/checks/code/${code}/download` : null, downloadUrl: downloadAvailable ? checkDownloadUrl(code) : null, checkerSha256: downloadAvailable ? await checkerSha256() : null };
+    return { id: textValue(data?.id), code, expiresAt, steamId, downloadAvailable, downloadKind: installer ? "installer" : "zip", downloadPath: downloadAvailable && !checkDownloadUrl(code) ? `/api/v1/checks/code/${code}/download` : null, downloadUrl: downloadAvailable ? checkDownloadUrl(code) : null, checkerSha256: downloadAvailable ? await checkerSha256() : null };
   };
   router.post("/checks", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
     const { steamId } = createCheckSchema.parse(req.body);
@@ -2836,6 +2836,8 @@ export function createLegacyXRouter() {
   }));
   // The personal download: the checker with this check's code inside (check.json), so the player has nothing to type.
   router.get("/checks/code/:code/download", checkRateLimit, asyncRoute(async (req, res) => {
+    // With its own download address set, only that address serves the file: the old api.legacyx.cc link is not valid any more.
+    if (!downloadHostAllowed(String(req.headers.host ?? "").replace(/:\d+$/, ""))) apiError(404, "That code is not valid or has expired", "check_code_invalid");
     const normalized = normalizeCheckCode(String(req.params.code));
     if (!normalized) apiError(404, "That code is not valid", "check_code_invalid");
     const { data } = await db().from("player_checks").select("id,requested_by,status,expires_at,download_count,code_hint").eq("code_hash", hashCheckCode(normalized)).maybeSingle();

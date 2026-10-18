@@ -43,6 +43,20 @@ export function checkDownloadUrl(code: string, origin: string | undefined = proc
   return `${clean}/${code}`;
 }
 
+/**
+ * With CHECKER_DOWNLOAD_ORIGIN set, the personal download only answers on that host (checker.legacyx.cc). The old API address
+ * (api.legacyx.cc/api/v1/checks/code/<code>/download) then says the code is not valid, so a link made before the change stops working.
+ */
+export function downloadHostAllowed(hostname: string, origin: string | undefined = process.env.CHECKER_DOWNLOAD_ORIGIN): boolean {
+  const clean = (origin ?? "").trim();
+  if (!clean) return true;
+  try {
+    return new URL(clean).hostname.toLowerCase() === hostname.toLowerCase();
+  } catch {
+    return true;
+  }
+}
+
 export const createCheckSchema = z.object({ steamId: z.string().regex(/^\d{17}$/, "A Steam ID has 17 digits") }).strict();
 
 /** An account that signed in to Steam this recently before a scan (or since the scan began) is one the player was just using. */
