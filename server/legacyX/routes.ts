@@ -2765,22 +2765,34 @@ export function createLegacyXRouter() {
     };
   };
 
-  router.post("/checks", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
-    await requireCheckStaff(user.id);
-    const { steamId } = createCheckSchema.parse(req.body);
+  // One new check for `steamId`, asked for by a staff member: the code is returned once, only its hash is kept.
+  const createCheck = async (userId: string, steamId: string) => {
+    await requireCheckStaff(userId);
     const { data: open } = await db().from("player_checks").select("id").eq("target_steam_id", steamId).eq("status", "pending").gt("expires_at", new Date().toISOString()).maybeSingle();
     if (open) apiError(409, "This player already has an open check", "check_open");
     const { data: target } = await db().from("users").select("id").eq("steam_id", steamId).maybeSingle();
     const code = generateCheckCode();
     const normalized = normalizeCheckCode(code) ?? "";
     const expiresAt = new Date(Date.now() + CHECK_CODE_MINUTES * 60_000).toISOString();
-    const { data, error } = await db().from("player_checks").insert({ code_hash: hashCheckCode(normalized), code_hint: normalized.slice(-4), target_steam_id: steamId, target_user_id: target ? textValue(target.id) : null, requested_by: user.id, expires_at: expiresAt }).select("id").single();
+    const { data, error } = await db().from("player_checks").insert({ code_hash: hashCheckCode(normalized), code_hint: normalized.slice(-4), target_steam_id: steamId, target_user_id: target ? textValue(target.id) : null, requested_by: userId, expires_at: expiresAt }).select("id").single();
     legacyXError(error, "Unable to create the check");
-    await db().from("audit_logs").insert({ actor_type: "user", actor_id: user.id, action: "check.create", target_type: "player_checks", target_id: textValue(data?.id), metadata: { steamId } });
-    // The code is shown here once; only its hash is kept.
+    await db().from("audit_logs").insert({ actor_type: "user", actor_id: userId, action: "check.create", target_type: "player_checks", target_id: textValue(data?.id), metadata: { steamId } });
     const installer = (await checkerMsi()) !== null;
     const downloadAvailable = installer || (await checkerBase()) !== null;
-    res.status(201).json({ id: textValue(data?.id), code, expiresAt, steamId, downloadAvailable, downloadKind: installer ? "installer" : "zip", downloadPath: downloadAvailable ? `/api/v1/checks/code/${code}/download` : null, checkerSha256: downloadAvailable ? await checkerSha256() : null });
+    return { id: textValue(data?.id), code, expiresAt, steamId, downloadAvailable, downloadKind: installer ? "installer" : "zip", downloadPath: downloadAvailable ? `/api/v1/checks/code/${code}/download` : null, checkerSha256: downloadAvailable ? await checkerSha256() : null };
+  };
+  router.post("/checks", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
+    const { steamId } = createCheckSchema.parse(req.body);
+    res.status(201).json(await createCheck(user.id, steamId));
+  }));
+  // The Discord bot's "New check" button: the member is whoever linked that Discord account, and must be Admin, Manager or Owner.
+  router.post("/plugin/discord/checks", pluginRoute("discord:link", async (req, res) => {
+    const { discordId, steamId } = z.object({ discordId: discordIdSchema, steamId: createCheckSchema.shape.steamId }).strict().parse(req.body);
+    const { data: account, error } = await db().from("discord_links").select("user_id").eq("discord_id", discordId).maybeSingle();
+    legacyXError(error, "Unable to read the Discord link");
+    if (!account) apiError(403, "Link your Steam account on the website first", "check_forbidden");
+    res.set("Cache-Control", "no-store");
+    res.status(201).json(await createCheck(textValue((account as DbRow).user_id), steamId));
   }));
   router.get("/checks", userRoute(async (_req, res, user) => {
     await requireCheckStaff(user.id);
