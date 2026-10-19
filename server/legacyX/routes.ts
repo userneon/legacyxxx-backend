@@ -3689,6 +3689,53 @@ export function createLegacyXRouter() {
     }
   }));
 
+  // The iOS app signs in with Steam in the system browser. Steam sends the player back here, and this hands the app a one-time code
+  // (never the tokens themselves) through its own legacyx:// address; the app swaps the code for tokens once, within a minute.
+  const APP_AUTH_SCHEME = "legacyx://auth";
+  const appLoginCodes = new Map<string, { accessToken: string; refreshToken: string; expires: number }>();
+  const sweepAppLoginCodes = () => {
+    const now = Date.now();
+    appLoginCodes.forEach((entry, code) => { if (entry.expires <= now) appLoginCodes.delete(code); });
+  };
+  router.get("/auth/steam/app", (req, res) => {
+    const origin = steamOpenIdOrigin(req);
+    res.setHeader("Cache-Control", "no-store");
+    res.redirect(302, steamLoginUrl(origin, `${origin}/api/v1/auth/steam/app/callback`));
+  });
+  router.get("/auth/steam/app/callback", asyncRoute(async (req, res) => {
+    res.setHeader("Cache-Control", "no-store");
+    const back = (result: string) => res.redirect(302, `${APP_AUTH_SCHEME}?${result}`);
+    try {
+      if (req.query["openid.mode"] === "cancel") { back("error=cancelled"); return; }
+      const expectedReturn = `${steamOpenIdOrigin(req)}/api/v1/auth/steam/app/callback`;
+      if (!returnToMatches(req.query as Record<string, unknown>, expectedReturn)) apiError(401, "Steam response was not issued for this sign-in");
+      const steamId = await verifySteamCallback(req.query as Record<string, unknown>);
+      const { data, error } = await db().rpc("ensure_steam_user", { p_steam_id: steamId, p_username: `Steam ${steamId}`, p_avatar: "" });
+      legacyXError(error, "Unable to create Steam user");
+      if (!data) apiError(500, "Steam user was not created");
+      await syncSteamUserProfile(steamId);
+      const user = await getUserWithStats(data);
+      const principal: LegacyUser = { id: user.id, steamId: user.steam_id, username: user.username };
+      const [accessToken, refreshToken] = await Promise.all([issueAccessToken(principal), createRefreshSession(principal.id)]);
+      sweepAppLoginCodes();
+      const code = randomBytes(24).toString("hex");
+      appLoginCodes.set(code, { accessToken, refreshToken, expires: Date.now() + 60_000 });
+      back(`code=${code}`);
+    } catch (error) {
+      console.error("[legacy-x-api] app_steam_login_failed", { message: error instanceof Error ? error.message : "Unknown error" });
+      back("error=failed");
+    }
+  }));
+  router.post("/auth/app/exchange", asyncRoute(async (req, res) => {
+    const { code } = z.object({ code: z.string().regex(/^[a-f0-9]{48}$/) }).strict().parse(req.body);
+    sweepAppLoginCodes();
+    const entry = appLoginCodes.get(code);
+    appLoginCodes.delete(code);
+    if (!entry) apiError(401, "This sign-in code is not valid or has expired");
+    res.setHeader("Cache-Control", "no-store");
+    res.json({ accessToken: entry.accessToken, refreshToken: entry.refreshToken, expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString() });
+  }));
+
   router.get("/staffpanel/access", staffPanelRoute(async (_req, res, staff) => {
     res.setHeader("Cache-Control", "no-store");
     res.json({

@@ -12,6 +12,8 @@ The API host may remain `https://api.legacyx.cc` while the Steam consent screen 
 |---|---:|---|---|
 | `/auth/steam` | GET, POST | Public | Starts Steam OpenID login. |
 | `/auth/steam/callback` | GET | Steam | Verifies claimed Steam identity and issues session tokens. |
+| `/auth/steam/app` | GET | Public | The iOS app's Steam sign-in (opened in the system browser). Steam returns to `/auth/steam/app/callback`, which redirects to `legacyx://auth?code=…` (or `?error=cancelled\|failed`). |
+| `/auth/app/exchange` | POST | Public | `{ code }` → `{ accessToken, refreshToken, expiresAt }`. The one-time code lives 60 seconds and works once; the app keeps the tokens in the Keychain and renews them with `POST /auth/refresh` (refresh token as Bearer). |
 | `/auth/logout` | POST | User JWT | Revokes the caller's refresh session(s) and clears cookies. |
 | `/auth/refresh` | POST | Public with refresh token | Revokes and rotates a refresh token. |
 | `/auth/me` | GET | User JWT | Returns the current LEGACY-X user and stats. |

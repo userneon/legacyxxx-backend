@@ -65,6 +65,25 @@ describe("LEGACY-X REST API", () => {
     expect(response.headers.get("location")).toBe(`${process.env.FRONTEND_ORIGIN}/?login=cancelled`);
   });
 
+  it("starts the iOS app's Steam sign-in with its own callback and sends a cancel back to the app", async () => {
+    const begin = await fetch(`${baseUrl}/auth/steam/app`, { redirect: "manual" });
+    expect(begin.status).toBe(302);
+    const redirect = new URL(begin.headers.get("location")!);
+    expect(redirect.searchParams.get("openid.return_to")).toBe(`${process.env.STEAM_OPENID_ORIGIN}/api/v1/auth/steam/app/callback`);
+
+    const cancelled = await fetch(`${baseUrl}/auth/steam/app/callback?openid.mode=cancel`, { redirect: "manual" });
+    expect(cancelled.status).toBe(302);
+    expect(cancelled.headers.get("location")).toBe("legacyx://auth?error=cancelled");
+
+    const failed = await fetch(`${baseUrl}/auth/steam/app/callback?openid.mode=id_res&openid.claimed_id=https://example.com/not-steam`, { redirect: "manual" });
+    expect(failed.headers.get("location")).toBe("legacyx://auth?error=failed");
+  });
+
+  it("refuses an app sign-in code that was never issued", async () => {
+    const response = await fetch(`${baseUrl}/auth/app/exchange`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ code: "a".repeat(48) }) });
+    expect(response.status).toBe(401);
+  });
+
   it("sends a failed Steam login back to the site with a short code", async () => {
     const response = await fetch(`${baseUrl}/auth/steam/callback?openid.mode=id_res&openid.claimed_id=https://example.com/not-steam`, { redirect: "manual" });
 
