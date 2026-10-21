@@ -1641,7 +1641,8 @@ export function createLegacyXRouter() {
     res.status(204).end();
   }));
 
-  router.get("/skinchanger/catalog", userRoute(async (req, res) => {
+  // The catalogue is public like the cosmetics shop: visitors and the app can browse it; saving a look needs a sign-in.
+  router.get("/skinchanger/catalog", optionalUserRoute(async (req, res) => {
     const input = z.object({
       category: skinchangerCategorySchema.optional(),
       weaponClass: z.string().trim().min(1).max(64).optional(),
@@ -1668,7 +1669,7 @@ export function createLegacyXRouter() {
     sendPage(res, items.map(({ total_count: _total, ...item }) => ({ ...item, image_url: staticStorageUrl(req, item.image_key) })), total, input.limit, input.offset);
   }));
 
-  router.get("/skinchanger/catalog/facets", userRoute(async (req, res) => {
+  router.get("/skinchanger/catalog/facets", optionalUserRoute(async (req, res) => {
     const input = z.object({ category: skinchangerCategorySchema.optional() }).parse(req.query);
     const { data, error } = await db().rpc("get_skinchanger_catalog_facets", { p_category: input.category ?? null });
     legacyXError(error, "Unable to load skinchanger catalog facets");
