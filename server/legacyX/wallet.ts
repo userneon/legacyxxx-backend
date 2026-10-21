@@ -114,13 +114,13 @@ export async function loadWallet(db: Db, userId: string, limit = 20): Promise<Wa
 /**
  * What the coins are worth, in one place. A finished ranked match pays `match`, a win adds `win`; the EXP limits
  * apply to coins too (past the daily limit a quarter, past the weekly limit nothing), so farming does not pay.
- * Creating a clan costs `clanFee` (owner decision 2026-10-21: 20,000 LX, 1 LX = 1 MNT when topped up): a clan is a bought
- * extra, not something a player earns by playing (400 wins).
+ * Creating a clan costs `clanFee` (owner decision 2026-10-21: 3,000 LX, which is 20,000 MNT when topped up, so 1 LX is about
+ * 6.67 MNT): about 60 wins or 150 losses.
  */
 export const COIN_RULES = {
   match: 20,
   win: 30,
-  clanFee: 20_000,
+  clanFee: 3_000,
   clanRename: 200,
   /** Extra member slots: `clanSlotStep` more places for `clanSlotPrice`, up to `clanSlotCap` members. */
   clanSlotPrice: 300,

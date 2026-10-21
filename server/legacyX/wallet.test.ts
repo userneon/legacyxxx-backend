@@ -51,9 +51,10 @@ describe("match coins", () => {
     expect(matchCoins({ outcome: "win", countsAsRankedMatch: false })).toBe(0);
   });
 
-  it("a clan costs 20,000 LX: about 400 wins, in practice a top-up", () => {
-    expect(COIN_RULES.clanFee).toBe(20_000);
-    expect(COIN_RULES.clanFee / (COIN_RULES.match + COIN_RULES.win)).toBe(400);
+  it("a clan costs 3,000 LX: about 60 wins or 150 played matches", () => {
+    expect(COIN_RULES.clanFee).toBe(3_000);
+    expect(COIN_RULES.clanFee / (COIN_RULES.match + COIN_RULES.win)).toBe(60);
+    expect(COIN_RULES.clanFee / COIN_RULES.match).toBe(150);
   });
 
   it("pays each player once per match, skips leavers, and a failing wallet never throws", async () => {
