@@ -92,3 +92,16 @@ The `legacy_x` schema must remain listed in Supabase **API Exposed schemas**. Th
 > **RLS is not enabled on the original `legacy_x` tables.** The server client can operate while RLS is disabled, but direct browser use of the Supabase project must remain prohibited. Before using any browser Supabase client, enable RLS and add policies designed around Steam JWTs or a separate identity bridge. Enabling RLS without policies blocks access.
 
 The REST router applies a 120-request-per-minute IP limit in production and denies browser CORS by default. Configure a narrow allowlist in code before allowing any separate frontend origin.
+
+## Shop goods (real items: NFC charms, stickers)
+
+Run `supabase/legacy_x_shop_goods.sql` once. Nothing is paid through the API: a player asks, an Owner or Manager contacts them and takes the payment (bank transfer or QPay), then moves the order along.
+
+| Path | Method | Auth | Notes |
+| --- | --- | --- | --- |
+| `/shop/products` | GET | Public | Enabled products `{ id, slug, name, description, kind, priceMnt, imageUrl, stock }`, cached 60 s. |
+| `/shop/orders` | POST | User | `{ productId, quantity 1-10, phone, note? }` → the order (status `new`). 409 `shop_out_of_stock`; 429 `shop_too_many_orders` at 5 open orders. |
+| `/shop/orders/me` | GET | User | The player's own orders. |
+| `/staff/shop/orders` | GET | Owner or Manager | Orders still open (or `?status=`), with the player's phone and note. |
+| `/staff/shop/orders/:orderId` | PUT | Owner or Manager | `{ status }`: `new`, `contacted`, `paid`, `shipped`, `done`, `cancelled`. |
+| `/staff/shop/products/:slug` | PUT | Owner or Manager | Create or change a product `{ name, description, kind, priceMnt, imageUrl (https), stock, enabled, sort }`. |

@@ -3125,6 +3125,115 @@ export function createLegacyXRouter() {
     }));
   }));
 
+  // Real goods (NFC charms, stickers). Nothing is paid here: a player asks for an item with a phone number and an Owner or Manager
+  // contacts them, takes the payment and moves the order along. Products and orders live in supabase/legacy_x_shop_goods.sql.
+  const SHOP_ORDER_STATUSES = ["new", "contacted", "paid", "shipped", "done", "cancelled"] as const;
+  const MAX_OPEN_SHOP_ORDERS = 5;
+  const shopProductView = (row: DbRow) => ({
+    id: textValue(row.id),
+    slug: textValue(row.slug),
+    name: textValue(row.name),
+    description: textValue(row.description),
+    kind: textValue(row.kind),
+    priceMnt: numberValue(row.price_mnt),
+    imageUrl: row.image_url ? textValue(row.image_url) : null,
+    stock: numberValue(row.stock),
+  });
+  const shopOrderView = (row: DbRow, product: DbRow | undefined) => ({
+    id: textValue(row.id),
+    productId: textValue(row.product_id),
+    productName: product ? textValue(product.name) : "",
+    quantity: numberValue(row.quantity),
+    unitPriceMnt: numberValue(row.unit_price_mnt),
+    status: textValue(row.status),
+    createdAt: textValue(row.created_at),
+  });
+  router.get("/shop/products", asyncRoute(async (_req, res) => {
+    const { data, error } = await db().from("shop_products").select("id,slug,name,description,kind,price_mnt,image_url,stock").eq("enabled", true).order("sort").order("created_at");
+    legacyXError(error, "Unable to load the shop");
+    res.set("Cache-Control", "public, max-age=60");
+    res.json({ products: ((data ?? []) as DbRow[]).map(shopProductView) });
+  }));
+  router.post("/shop/orders", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
+    const input = z.object({
+      productId: z.string().uuid(),
+      quantity: z.number().int().min(1).max(10),
+      phone: z.string().trim().regex(/^[0-9+ -]{8,20}$/, "Enter a phone number we can call"),
+      note: z.string().trim().max(200).default(""),
+    }).strict().parse(req.body);
+    const { data: product, error: productError } = await db().from("shop_products").select("id,name,price_mnt,stock,enabled").eq("id", input.productId).maybeSingle();
+    legacyXError(productError, "Unable to read the product");
+    if (!product || !product.enabled) apiError(404, "Product not found");
+    if (numberValue(product.stock) < input.quantity) apiError(409, "Not enough in stock", "shop_out_of_stock");
+    const { count, error: countError } = await db().from("shop_orders").select("id", { count: "exact", head: true }).eq("user_id", user.id).in("status", ["new", "contacted"]);
+    legacyXError(countError, "Unable to check your orders");
+    if ((count ?? 0) >= MAX_OPEN_SHOP_ORDERS) apiError(429, "You already have several open orders. Wait for us to contact you.", "shop_too_many_orders");
+    const { data: order, error } = await db().from("shop_orders").insert({ user_id: user.id, product_id: input.productId, quantity: input.quantity, unit_price_mnt: numberValue(product.price_mnt), phone: input.phone, note: input.note }).select("id,product_id,quantity,unit_price_mnt,status,created_at").single();
+    legacyXError(error, "Unable to save the order");
+    if (!order) apiError(500, "The order was not saved");
+    await db().from("audit_logs").insert({ actor_type: "user", actor_id: user.id, action: "shop.order.create", target_type: "shop_orders", target_id: textValue(order.id), metadata: { productId: input.productId, quantity: input.quantity } });
+    res.status(201).json(shopOrderView(order as DbRow, product as DbRow));
+  }));
+  router.get("/shop/orders/me", userRoute(async (_req, res, user) => {
+    const { data, error } = await db().from("shop_orders").select("id,product_id,quantity,unit_price_mnt,status,created_at").eq("user_id", user.id).order("created_at", { ascending: false }).limit(50);
+    legacyXError(error, "Unable to load your orders");
+    const rows = (data ?? []) as DbRow[];
+    const ids = Array.from(new Set(rows.map((row) => textValue(row.product_id))));
+    const products = ids.length ? await db().from("shop_products").select("id,name").in("id", ids) : { data: [] as DbRow[], error: null };
+    legacyXError(products.error, "Unable to load your orders");
+    const names = new Map(((products.data ?? []) as DbRow[]).map((product) => [textValue(product.id), product]));
+    res.set("Cache-Control", "no-store");
+    res.json({ orders: rows.map((row) => shopOrderView(row, names.get(textValue(row.product_id)))) });
+  }));
+  // Owners and Managers: the orders waiting for them (with the player's contact), their status, and the product list.
+  router.get("/staff/shop/orders", userRoute(async (req, res, user) => {
+    await requireClanModerator(user.id);
+    const input = z.object({ status: z.enum(SHOP_ORDER_STATUSES).optional() }).parse(req.query);
+    let query = db().from("shop_orders").select("id,user_id,product_id,quantity,unit_price_mnt,phone,note,status,created_at").order("created_at", { ascending: true }).limit(200);
+    query = input.status ? query.eq("status", input.status) : query.in("status", ["new", "contacted", "paid", "shipped"]);
+    const { data, error } = await query;
+    legacyXError(error, "Unable to load orders");
+    const rows = (data ?? []) as DbRow[];
+    const [products, players] = await Promise.all([
+      db().from("shop_products").select("id,name").in("id", Array.from(new Set(rows.map((row) => textValue(row.product_id))))),
+      db().from("users").select("id,steam_id,username").in("id", Array.from(new Set(rows.map((row) => textValue(row.user_id))))),
+    ]);
+    legacyXError(products.error || players.error, "Unable to load orders");
+    const productById = new Map(((products.data ?? []) as DbRow[]).map((product) => [textValue(product.id), product]));
+    const playerById = new Map(((players.data ?? []) as DbRow[]).map((player) => [textValue(player.id), player]));
+    res.set("Cache-Control", "no-store");
+    res.json({ orders: rows.map((row) => ({ ...shopOrderView(row, productById.get(textValue(row.product_id))), phone: textValue(row.phone), note: textValue(row.note), player: { steamId: textValue(playerById.get(textValue(row.user_id))?.steam_id), username: textValue(playerById.get(textValue(row.user_id))?.username) } })) });
+  }));
+  router.put("/staff/shop/orders/:orderId", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
+    await requireClanModerator(user.id);
+    const orderId = z.string().uuid().parse(req.params.orderId);
+    const input = z.object({ status: z.enum(SHOP_ORDER_STATUSES) }).strict().parse(req.body);
+    const { data, error } = await db().from("shop_orders").update({ status: input.status, updated_at: new Date().toISOString() }).eq("id", orderId).select("id,user_id,product_id,quantity,unit_price_mnt,status,created_at").maybeSingle();
+    legacyXError(error, "Unable to update the order");
+    if (!data) apiError(404, "Order not found");
+    await db().from("audit_logs").insert({ actor_type: "user", actor_id: user.id, action: "shop.order.status", target_type: "shop_orders", target_id: orderId, metadata: { status: input.status } });
+    res.json({ id: orderId, status: input.status });
+  }));
+  router.put("/staff/shop/products/:slug", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
+    await requireClanModerator(user.id);
+    const slug = z.string().regex(/^[a-z0-9-]{2,40}$/).parse(req.params.slug);
+    const input = z.object({
+      name: z.string().trim().min(2).max(80),
+      description: z.string().trim().max(600).default(""),
+      kind: z.enum(["charm", "sticker", "other"]).default("other"),
+      priceMnt: z.number().int().min(0).max(100_000_000),
+      imageUrl: z.string().url().startsWith("https://").nullable().default(null),
+      stock: z.number().int().min(0).max(100_000),
+      enabled: z.boolean().default(true),
+      sort: z.number().int().min(-1000).max(1000).default(0),
+    }).strict().parse(req.body);
+    const { data, error } = await db().from("shop_products").upsert({ slug, name: input.name, description: input.description, kind: input.kind, price_mnt: input.priceMnt, image_url: input.imageUrl, stock: input.stock, enabled: input.enabled, sort: input.sort, updated_at: new Date().toISOString() }, { onConflict: "slug" }).select("id,slug,name,description,kind,price_mnt,image_url,stock").single();
+    legacyXError(error, "Unable to save the product");
+    if (!data) apiError(500, "The product was not saved");
+    await db().from("audit_logs").insert({ actor_type: "user", actor_id: user.id, action: "shop.product.save", target_type: "shop_products", target_id: textValue(data.id), metadata: { slug } });
+    res.json(shopProductView(data as DbRow));
+  }));
+
   // Staff moderation: Owners and Managers can fix or remove a clan that breaks the rules.
   router.delete("/staff/clans/:clanId", userRoute(async (req, res, user) => {
     await requireClanModerator(user.id);
