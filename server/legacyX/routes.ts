@@ -3214,6 +3214,13 @@ export function createLegacyXRouter() {
     await db().from("audit_logs").insert({ actor_type: "user", actor_id: user.id, action: "shop.order.status", target_type: "shop_orders", target_id: orderId, metadata: { status: input.status } });
     res.json({ id: orderId, status: input.status });
   }));
+  router.get("/staff/shop/products", userRoute(async (_req, res, user) => {
+    await requireClanModerator(user.id);
+    const { data, error } = await db().from("shop_products").select("id,slug,name,description,kind,price_mnt,image_url,stock,enabled,sort").order("sort").order("created_at");
+    legacyXError(error, "Unable to load products");
+    res.set("Cache-Control", "no-store");
+    res.json({ products: ((data ?? []) as DbRow[]).map((row) => ({ ...shopProductView(row), enabled: Boolean(row.enabled), sort: numberValue(row.sort) })) });
+  }));
   router.put("/staff/shop/products/:slug", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
     await requireClanModerator(user.id);
     const slug = z.string().regex(/^[a-z0-9-]{2,40}$/).parse(req.params.slug);

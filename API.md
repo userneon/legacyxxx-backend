@@ -104,4 +104,5 @@ Run `supabase/legacy_x_shop_goods.sql` once. Nothing is paid through the API: a 
 | `/shop/orders/me` | GET | User | The player's own orders. |
 | `/staff/shop/orders` | GET | Owner or Manager | Orders still open (or `?status=`), with the player's phone and note. |
 | `/staff/shop/orders/:orderId` | PUT | Owner or Manager | `{ status }`: `new`, `contacted`, `paid`, `shipped`, `done`, `cancelled`. |
+| `/staff/shop/products` | GET | Owner or Manager | Every product, including disabled ones, with `enabled` and `sort`. |
 | `/staff/shop/products/:slug` | PUT | Owner or Manager | Create or change a product `{ name, description, kind, priceMnt, imageUrl (https), stock, enabled, sort }`. |
