@@ -1,20 +1,21 @@
 /** Clan pictures: what may be uploaded, how big, and how to tell what a file really is (never by its name or header). */
 
 export type ClanArtKind = "logo" | "banner";
-export type ClanArtMime = "image/png" | "image/jpeg" | "image/gif";
+export type ClanArtMime = "image/png" | "image/jpeg" | "image/gif" | "image/webp";
 
-/** nginx in front of the API must allow bodies of at least 6 MB (client_max_body_size 6m) for these to arrive. */
+/** nginx in front of the API must allow bodies of at least 11 MB (client_max_body_size 11m) for these to arrive. An animated WebP is the small way to move: far lighter than a GIF. */
 export const CLAN_ART_LIMITS: Record<ClanArtKind, { maxBytes: number; mimes: ClanArtMime[] }> = {
-  logo: { maxBytes: 1024 * 1024, mimes: ["image/png"] },
-  banner: { maxBytes: 5 * 1024 * 1024, mimes: ["image/png", "image/jpeg", "image/gif"] },
+  logo: { maxBytes: 2 * 1024 * 1024, mimes: ["image/png", "image/jpeg", "image/gif", "image/webp"] },
+  banner: { maxBytes: 10 * 1024 * 1024, mimes: ["image/png", "image/jpeg", "image/gif", "image/webp"] },
 };
 
-/** The picture's real type from its first bytes, or null when it is not a PNG, JPEG or GIF. */
+/** The picture's real type from its first bytes, or null when it is not a PNG, JPEG, GIF or WebP. */
 export function detectImage(bytes: Buffer): ClanArtMime | null {
   if (bytes.length >= 8 && bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) return "image/png";
   if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return "image/jpeg";
   const head = bytes.subarray(0, 6).toString("latin1");
   if (head === "GIF87a" || head === "GIF89a") return "image/gif";
+  if (bytes.length >= 12 && bytes.subarray(0, 4).toString("latin1") === "RIFF" && bytes.subarray(8, 12).toString("latin1") === "WEBP") return "image/webp";
   return null;
 }
 
@@ -25,7 +26,7 @@ export function checkClanArt(kind: ClanArtKind, bytes: Buffer): ClanArtCheck {
   if (bytes.length === 0) return { ok: false, status: 400, message: "Send the picture as the request body" };
   if (bytes.length > rule.maxBytes) return { ok: false, status: 413, message: `The ${kind} is larger than ${Math.round(rule.maxBytes / 1024 / 1024)} MB` };
   const mime = detectImage(bytes);
-  if (!mime || !rule.mimes.includes(mime)) return { ok: false, status: 415, message: kind === "logo" ? "The logo must be a PNG" : "The banner must be a PNG, JPEG or GIF" };
+  if (!mime || !rule.mimes.includes(mime)) return { ok: false, status: 415, message: `The ${kind} must be a PNG, JPEG, GIF or WebP` };
   return { ok: true, mime };
 }
 

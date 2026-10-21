@@ -12,16 +12,18 @@ describe("clan pictures", () => {
     expect(detectImage(gif)).toBe("image/gif");
     expect(detectImage(Buffer.from("<svg onload=alert(1)>"))).toBeNull();
   });
-  it("accepts PNG only for a logo and PNG, JPEG or GIF for a banner", () => {
-    expect(checkClanArt("logo", png).ok).toBe(true);
-    expect(checkClanArt("logo", jpeg)).toMatchObject({ ok: false, status: 415 });
-    expect(checkClanArt("logo", gif)).toMatchObject({ ok: false, status: 415 });
-    for (const file of [png, jpeg, gif]) expect(checkClanArt("banner", file).ok).toBe(true);
+  it("accepts PNG, JPEG, GIF and WebP for a logo and a banner", () => {
+    const webp = Buffer.concat([Buffer.from("RIFF"), Buffer.from([0, 0, 0, 0]), Buffer.from("WEBPVP8 ")]);
+    expect(detectImage(webp)).toBe("image/webp");
+    for (const file of [png, jpeg, gif, webp]) {
+      expect(checkClanArt("logo", file).ok).toBe(true);
+      expect(checkClanArt("banner", file).ok).toBe(true);
+    }
     expect(checkClanArt("banner", Buffer.from("not an image"))).toMatchObject({ ok: false, status: 415 });
   });
   it("refuses empty and oversized files", () => {
     expect(checkClanArt("logo", Buffer.alloc(0))).toMatchObject({ ok: false, status: 400 });
-    expect(checkClanArt("logo", Buffer.concat([png, Buffer.alloc(1100 * 1024)]))).toMatchObject({ ok: false, status: 413 });
+    expect(checkClanArt("logo", Buffer.concat([png, Buffer.alloc(2100 * 1024)]))).toMatchObject({ ok: false, status: 413 });
   });
   it("only turns our own marker into a picture address", () => {
     expect(artUrl("c1", "logo", artMarker(42))).toBe("/api/v1/clans/c1/logo?v=42");
