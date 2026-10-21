@@ -29,3 +29,6 @@ STATIC_ASSET_BASE_URL=https://static.legacyx.cc
 # Deferred features stay hidden unless set to the literal string true (docs/FEATURE_FLAGS.md):
 # STAFF_PANEL_ENABLED=false
 # CLAN_ENABLED=false
+
+# LX is bought with a top-up, not earned by playing (owner decision 2026-10-21). Set to "on" to pay coins for ranked matches, wins, ranks and streaks again.
+# LX_PLAY_EARNING=on

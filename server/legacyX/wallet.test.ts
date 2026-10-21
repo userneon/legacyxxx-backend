@@ -1,6 +1,9 @@
 import { buildWalletSummary, describe, expect, it } from "vitest";
 import { COIN_RULES, buildWalletSummary, applyWalletChange, awardDiscordLink, awardMatchBonuses, awardMatchCoins, earnRules, matchBonuses, playDay, streakLength, ensureWallet, loadWallet, matchCoins, penalizeWallet, walletPenaltySchema, NotEnoughCoinsError, walletGrantSchema } from "./wallet";
 
+// The earning tests below run with play earnings on; the last test checks they are off by default.
+process.env.LX_PLAY_EARNING = "on";
+
 const USER = "5b8a2f0c-3b1e-4c2f-9d44-0a1b2c3d4e5f";
 
 describe("wallet grant input", () => {
@@ -199,5 +202,19 @@ describe("wallet summary", () => {
   it("is all zeros for a player with no history", () => {
     const summary = buildWalletSummary([], [], now);
     expect(summary).toMatchObject({ todayEarned: 0, weekEarned: 0, spentTotal: 0, streakDays: 0 });
+  });
+});
+
+describe("LX is not earned by playing (owner decision 2026-10-21)", () => {
+  it("pays nothing for matches, wins, ranks or streaks unless LX_PLAY_EARNING=on", () => {
+    const before = process.env.LX_PLAY_EARNING;
+    delete process.env.LX_PLAY_EARNING;
+    try {
+      expect(matchCoins({ outcome: "win", countsAsRankedMatch: true })).toBe(0);
+      expect(matchBonuses({ outcome: "win", countsAsRankedMatch: true, rankBeforeId: 4, rankAfterId: 6, streakDays: 7 })).toEqual([]);
+      expect(earnRules().map((rule) => rule.id)).toEqual(["discord"]);
+    } finally {
+      if (before !== undefined) process.env.LX_PLAY_EARNING = before;
+    }
   });
 });

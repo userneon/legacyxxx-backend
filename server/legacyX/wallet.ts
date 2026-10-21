@@ -143,13 +143,16 @@ export const COIN_RULES = {
 
 /** The earning rules as the website shows them (one source: COIN_RULES). */
 export function earnRules() {
+  const play = playEarningOn();
   return [
-    { id: "match", label: "Ranked match", coins: COIN_RULES.match },
-    { id: "win", label: "Ranked win", coins: COIN_RULES.win },
-    { id: "first-win", label: "First win of the day", coins: COIN_RULES.firstWinOfDay },
-    { id: "rank-up", label: "Each new rank", coins: COIN_RULES.rankUp },
-    { id: "streak-3", label: "3 days in a row", coins: COIN_RULES.streakThree },
-    { id: "streak-7", label: "7 days in a row", coins: COIN_RULES.streakSeven },
+    ...(play ? [
+      { id: "match", label: "Ranked match", coins: COIN_RULES.match },
+      { id: "win", label: "Ranked win", coins: COIN_RULES.win },
+      { id: "first-win", label: "First win of the day", coins: COIN_RULES.firstWinOfDay },
+      { id: "rank-up", label: "Each new rank", coins: COIN_RULES.rankUp },
+      { id: "streak-3", label: "3 days in a row", coins: COIN_RULES.streakThree },
+      { id: "streak-7", label: "7 days in a row", coins: COIN_RULES.streakSeven },
+    ] : []),
     { id: "discord", label: "Link Discord (once)", coins: COIN_RULES.discordLink },
   ];
 }
@@ -178,9 +181,15 @@ export interface MatchBonusInput {
   streakDays: number;
 }
 
+/**
+ * Owner decision 2026-10-21: LX is bought with a top-up, not earned by playing. Matches, wins, ranks and streaks pay nothing
+ * unless LX_PLAY_EARNING=on is set. The one-time welcome and Discord link coins are not play earnings and stay.
+ */
+export const playEarningOn = () => process.env.LX_PLAY_EARNING === "on";
+
 /** The extra coins one finished match can earn on top of the match itself. A limited (farming) player earns none. */
 export function matchBonuses(player: MatchBonusInput): Array<{ key: string; amount: number; reason: string }> {
-  if (!player.countsAsRankedMatch || player.limited) return [];
+  if (!playEarningOn() || !player.countsAsRankedMatch || player.limited) return [];
   const bonuses: Array<{ key: string; amount: number; reason: string }> = [];
   if (player.outcome === "win") bonuses.push({ key: "first-win", amount: COIN_RULES.firstWinOfDay, reason: "First win of the day" });
   for (let rank = player.rankBeforeId + 1; rank <= player.rankAfterId; rank += 1) bonuses.push({ key: `rank-${rank}`, amount: COIN_RULES.rankUp, reason: "New rank" });
@@ -198,7 +207,7 @@ export interface MatchCoinInput {
 
 /** Coins one player earns from one finished ranked match. */
 export function matchCoins(player: MatchCoinInput): number {
-  if (!player.countsAsRankedMatch) return 0;
+  if (!playEarningOn() || !player.countsAsRankedMatch) return 0;
   if (player.limited === "weekly") return 0;
   const full = COIN_RULES.match + (player.outcome === "win" ? COIN_RULES.win : 0);
   return player.limited === "daily" ? Math.floor(full * COIN_RULES.overDailyLimitShare) : full;
