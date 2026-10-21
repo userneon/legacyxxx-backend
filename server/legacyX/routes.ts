@@ -3145,6 +3145,9 @@ export function createLegacyXRouter() {
     id: textValue(row.id),
     productId: textValue(row.product_id),
     productName: product ? textValue(product.name) : "",
+    productKind: product ? textValue(product.kind) : "",
+    /** LX the order puts in the wallet once paid (0 for goods). */
+    grantsLx: product && textValue(product.kind) === "lx" ? numberValue(product.grants_lx) * numberValue(row.quantity) : 0,
     quantity: numberValue(row.quantity),
     unitPriceMnt: numberValue(row.unit_price_mnt),
     status: textValue(row.status),
@@ -3163,7 +3166,7 @@ export function createLegacyXRouter() {
       phone: z.string().trim().regex(/^[0-9+ -]{8,20}$/, "Enter a phone number we can call"),
       note: z.string().trim().max(200).default(""),
     }).strict().parse(req.body);
-    const { data: product, error: productError } = await db().from("shop_products").select("id,name,price_mnt,stock,enabled").eq("id", input.productId).maybeSingle();
+    const { data: product, error: productError } = await db().from("shop_products").select("id,name,kind,grants_lx,price_mnt,stock,enabled").eq("id", input.productId).maybeSingle();
     legacyXError(productError, "Unable to read the product");
     if (!product || !product.enabled) apiError(404, "Product not found");
     if (numberValue(product.stock) < input.quantity) apiError(409, "Not enough in stock", "shop_out_of_stock");
@@ -3181,7 +3184,7 @@ export function createLegacyXRouter() {
     legacyXError(error, "Unable to load your orders");
     const rows = (data ?? []) as DbRow[];
     const ids = Array.from(new Set(rows.map((row) => textValue(row.product_id))));
-    const products = ids.length ? await db().from("shop_products").select("id,name").in("id", ids) : { data: [] as DbRow[], error: null };
+    const products = ids.length ? await db().from("shop_products").select("id,name,kind,grants_lx").in("id", ids) : { data: [] as DbRow[], error: null };
     legacyXError(products.error, "Unable to load your orders");
     const names = new Map(((products.data ?? []) as DbRow[]).map((product) => [textValue(product.id), product]));
     res.set("Cache-Control", "no-store");
@@ -3197,7 +3200,7 @@ export function createLegacyXRouter() {
     legacyXError(error, "Unable to load orders");
     const rows = (data ?? []) as DbRow[];
     const [products, players] = await Promise.all([
-      db().from("shop_products").select("id,name").in("id", Array.from(new Set(rows.map((row) => textValue(row.product_id))))),
+      db().from("shop_products").select("id,name,kind,grants_lx").in("id", Array.from(new Set(rows.map((row) => textValue(row.product_id))))),
       db().from("users").select("id,steam_id,username").in("id", Array.from(new Set(rows.map((row) => textValue(row.user_id))))),
     ]);
     legacyXError(products.error || players.error, "Unable to load orders");
