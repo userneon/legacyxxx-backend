@@ -106,3 +106,7 @@ Run `supabase/legacy_x_shop_goods.sql` once. Nothing is paid through the API: a 
 | `/staff/shop/orders/:orderId` | PUT | Owner or Manager | `{ status }`: `new`, `contacted`, `paid`, `shipped`, `done`, `cancelled`. |
 | `/staff/shop/products` | GET | Owner or Manager | Every product, including disabled ones, with `enabled` and `sort`. |
 | `/staff/shop/products/:slug` | PUT | Owner or Manager | Create or change a product `{ name, description, kind, priceMnt, imageUrl (https), stock, enabled, sort }`. |
+
+### LX top-up packages
+
+Run `supabase/legacy_x_lx_topups.sql` after the goods SQL. A product of kind `lx` is a package: `grantsLx` LX are credited to the buyer's wallet (reason "LX top-up: <name>", ref `topup:<order id>`, so once per order) when an Owner or Manager sets its order to `paid`, and the player gets a "LX added" notification. Setting `paid` again changes nothing; cancelling a paid order after the fact does not take the LX back. The rate is 3,000 LX = 20,000 MNT. Playing earns no LX unless `LX_PLAY_EARNING=on`.

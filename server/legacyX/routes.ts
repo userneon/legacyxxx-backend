@@ -3138,6 +3138,8 @@ export function createLegacyXRouter() {
     priceMnt: numberValue(row.price_mnt),
     imageUrl: row.image_url ? textValue(row.image_url) : null,
     stock: numberValue(row.stock),
+    /** For kind "lx": how many LX the package gives once it is paid. */
+    grantsLx: numberValue(row.grants_lx),
   });
   const shopOrderView = (row: DbRow, product: DbRow | undefined) => ({
     id: textValue(row.id),
@@ -3149,7 +3151,7 @@ export function createLegacyXRouter() {
     createdAt: textValue(row.created_at),
   });
   router.get("/shop/products", asyncRoute(async (_req, res) => {
-    const { data, error } = await db().from("shop_products").select("id,slug,name,description,kind,price_mnt,image_url,stock").eq("enabled", true).order("sort").order("created_at");
+    const { data, error } = await db().from("shop_products").select("id,slug,name,description,kind,price_mnt,image_url,stock,grants_lx").eq("enabled", true).order("sort").order("created_at");
     legacyXError(error, "Unable to load the shop");
     res.set("Cache-Control", "public, max-age=60");
     res.json({ products: ((data ?? []) as DbRow[]).map(shopProductView) });
@@ -3208,15 +3210,30 @@ export function createLegacyXRouter() {
     await requireClanModerator(user.id);
     const orderId = z.string().uuid().parse(req.params.orderId);
     const input = z.object({ status: z.enum(SHOP_ORDER_STATUSES) }).strict().parse(req.body);
-    const { data, error } = await db().from("shop_orders").update({ status: input.status, updated_at: new Date().toISOString() }).eq("id", orderId).select("id,user_id,product_id,quantity,unit_price_mnt,status,created_at").maybeSingle();
+    const { data: current, error: readError } = await db().from("shop_orders").select("id,user_id,product_id,quantity").eq("id", orderId).maybeSingle();
+    legacyXError(readError, "Unable to read the order");
+    if (!current) apiError(404, "Order not found");
+    // A paid LX package credits the wallet, once: the ref is the order, so marking it paid again changes nothing.
+    if (input.status === "paid") {
+      const { data: product, error: productError } = await db().from("shop_products").select("kind,grants_lx,name").eq("id", textValue(current.product_id)).maybeSingle();
+      legacyXError(productError, "Unable to read the product");
+      const amount = product && textValue(product.kind) === "lx" ? numberValue(product.grants_lx) * numberValue(current.quantity) : 0;
+      if (amount > 0) {
+        const credit = await applyWalletChange(legacyXDb(), { userId: textValue(current.user_id), amount, kind: "grant", reason: `LX top-up: ${textValue(product?.name)}`, ref: `topup:${orderId}`, actor: user.id });
+        if (credit.applied) {
+          const { error: tellError } = await db().from("notifications").insert({ user_id: textValue(current.user_id), kind: "system", title: "LX added", body: `${amount.toLocaleString("en-US")} LX from your top-up are in your wallet.`, metadata: { kind: "wallet" } });
+          if (tellError) console.warn("[legacy-x-api] top-up notification not saved", tellError.message);
+        }
+      }
+    }
+    const { error } = await db().from("shop_orders").update({ status: input.status, updated_at: new Date().toISOString() }).eq("id", orderId);
     legacyXError(error, "Unable to update the order");
-    if (!data) apiError(404, "Order not found");
     await db().from("audit_logs").insert({ actor_type: "user", actor_id: user.id, action: "shop.order.status", target_type: "shop_orders", target_id: orderId, metadata: { status: input.status } });
     res.json({ id: orderId, status: input.status });
   }));
   router.get("/staff/shop/products", userRoute(async (_req, res, user) => {
     await requireClanModerator(user.id);
-    const { data, error } = await db().from("shop_products").select("id,slug,name,description,kind,price_mnt,image_url,stock,enabled,sort").order("sort").order("created_at");
+    const { data, error } = await db().from("shop_products").select("id,slug,name,description,kind,price_mnt,image_url,stock,grants_lx,enabled,sort").order("sort").order("created_at");
     legacyXError(error, "Unable to load products");
     res.set("Cache-Control", "no-store");
     res.json({ products: ((data ?? []) as DbRow[]).map((row) => ({ ...shopProductView(row), enabled: Boolean(row.enabled), sort: numberValue(row.sort) })) });
@@ -3227,14 +3244,15 @@ export function createLegacyXRouter() {
     const input = z.object({
       name: z.string().trim().min(2).max(80),
       description: z.string().trim().max(600).default(""),
-      kind: z.enum(["charm", "sticker", "other"]).default("other"),
+      kind: z.enum(["charm", "sticker", "other", "lx"]).default("other"),
+      grantsLx: z.number().int().min(0).max(1_000_000).default(0),
       priceMnt: z.number().int().min(0).max(100_000_000),
       imageUrl: z.string().url().startsWith("https://").nullable().default(null),
       stock: z.number().int().min(0).max(100_000),
       enabled: z.boolean().default(true),
       sort: z.number().int().min(-1000).max(1000).default(0),
     }).strict().parse(req.body);
-    const { data, error } = await db().from("shop_products").upsert({ slug, name: input.name, description: input.description, kind: input.kind, price_mnt: input.priceMnt, image_url: input.imageUrl, stock: input.stock, enabled: input.enabled, sort: input.sort, updated_at: new Date().toISOString() }, { onConflict: "slug" }).select("id,slug,name,description,kind,price_mnt,image_url,stock").single();
+    const { data, error } = await db().from("shop_products").upsert({ slug, name: input.name, description: input.description, kind: input.kind, grants_lx: input.kind === "lx" ? input.grantsLx : 0, price_mnt: input.priceMnt, image_url: input.imageUrl, stock: input.stock, enabled: input.enabled, sort: input.sort, updated_at: new Date().toISOString() }, { onConflict: "slug" }).select("id,slug,name,description,kind,price_mnt,image_url,stock,grants_lx").single();
     legacyXError(error, "Unable to save the product");
     if (!data) apiError(500, "The product was not saved");
     await db().from("audit_logs").insert({ actor_type: "user", actor_id: user.id, action: "shop.product.save", target_type: "shop_products", target_id: textValue(data.id), metadata: { slug } });
