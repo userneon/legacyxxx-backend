@@ -1740,7 +1740,7 @@ export function createLegacyXRouter() {
   });
   router.use("/cosmetics", cosmeticRateLimit);
   const cosmeticIdSchema = z.string().regex(/^[a-z0-9-]{2,40}$/);
-  const COSMETIC_KINDS = ["frame", "name_color", "name_glow"] as const;
+  const COSMETIC_KINDS = ["frame", "name_color", "name_glow", "emote"] as const;
   type CosmeticKind = (typeof COSMETIC_KINDS)[number];
   const loadCosmeticCatalog = async () => {
     const { data, error } = await db().from("cosmetic_items").select("id,kind,name_en,name_mn,unlock,price,requirement,sort,color,glow,fx,rarity,featured").eq("enabled", true).order("sort");
@@ -1812,9 +1812,11 @@ export function createLegacyXRouter() {
       equippedFrame: user ? worn.get(user.id)?.frame ?? null : null,
       equippedNameColor: wearing.get("name_color") ?? null,
       equippedNameGlow: wearing.get("name_glow") ?? null,
+      equippedEmote: wearing.get("emote") ?? null,
       frames: ofKind("frame"),
       nameColors: ofKind("name_color"),
       nameGlows: ofKind("name_glow"),
+      emotes: ofKind("emote"),
     });
   }));
   router.post("/cosmetics/:itemId/buy", userRoute(async (req, res, user) => {
@@ -1823,7 +1825,7 @@ export function createLegacyXRouter() {
     if (!item) apiError(404, "Item not found");
     if (textValue(item.unlock) !== "coin") apiError(409, "This item is not for sale", "cosmetic_not_for_sale");
     const price = numberValue(item.price);
-    const label = item.kind === "frame" ? "Frame" : item.kind === "name_color" ? "Name colour" : "Name glow";
+    const label = item.kind === "frame" ? "Frame" : item.kind === "name_color" ? "Name colour" : item.kind === "emote" ? "Emote" : "Name glow";
     // The ref is per player and item, so a double click or a retry charges once.
     try {
       await applyWalletChange(legacyXDb(), { userId: user.id, amount: -price, kind: "spend", reason: `${label}: ${textValue(item.name_en)}`, ref: `cosmetic:${itemId}`, actor: user.id });
@@ -4488,6 +4490,13 @@ export function createLegacyXRouter() {
     if (membership.error) console.warn("[legacy-x-api] clan lookup unavailable", membership.error.message);
     const clan = recordValue(recordValue(membership.data).clans);
     const { user_id: _userId, ...profile } = data;
+    // Emotes the player may play with .e: the free ones, the ones they own, and the one they wear (the game knows each by its fx key).
+    const emoteItems = (await loadCosmeticCatalog().catch(() => [] as DbRow[])).filter((item) => item.kind === "emote" && item.fx);
+    const [emoteOwned, emoteWorn] = await Promise.all([db().from("cosmetic_owned").select("item_id").eq("user_id", data.user_id), db().from("cosmetic_equipped").select("item_id").eq("user_id", data.user_id).eq("kind", "emote").maybeSingle()]);
+    const emoteOwnedIds = new Set(((emoteOwned.data ?? []) as DbRow[]).map((row) => textValue(row.item_id)));
+    const emoteKeys = emoteItems.filter((item) => textValue(item.unlock) === "free" || emoteOwnedIds.has(textValue(item.id)));
+    const equippedEmote = emoteItems.find((item) => textValue(item.id) === textValue(recordValue(emoteWorn.data).item_id));
+    const emotes = { equipped: equippedEmote && emoteKeys.includes(equippedEmote) ? textValue(equippedEmote.fx) : null, owned: emoteKeys.map((item) => textValue(item.fx)) };
     const { data: ladder } = await db().from("competitive_leaderboard").select("position").eq("user_id", data.user_id).maybeSingle();
     // Kills, deaths and results for the in-game !me card (K/D and win rate); absent for a player with no ranked match yet.
     const { data: progression } = await db().from("competitive_player_progression").select("kills,deaths,wins,losses,draws").eq("user_id", data.user_id).maybeSingle();
@@ -4504,6 +4513,7 @@ export function createLegacyXRouter() {
       clan_name: textValue(clan.name) || null,
       clan_tag: textValue(clan.tag) || null,
       clan_role: textValue(recordValue(membership.data).role) || null,
+      emotes,
     } });
   }));
 
