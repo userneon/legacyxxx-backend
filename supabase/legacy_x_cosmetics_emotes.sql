@@ -1,5 +1,7 @@
 -- Emotes, next to frames and name styles: a short line (and sound) a player plays in game with .e. Same rules as the other cosmetics:
 -- free / coin (bought once with LX) / achievement (earned). `fx` is the key the game plugin knows the emote by; nothing else is sent to a page or server.
+-- `game_key` is the name the animated-emote plugin knows an emote by (any text); it takes the place of `fx` for those.
+ALTER TABLE legacy_x.cosmetic_items ADD COLUMN IF NOT EXISTS game_key text CHECK (game_key IS NULL OR char_length(game_key) BETWEEN 1 AND 80);
 ALTER TABLE legacy_x.cosmetic_items DROP CONSTRAINT IF EXISTS cosmetic_items_kind_check;
 ALTER TABLE legacy_x.cosmetic_items ADD CONSTRAINT cosmetic_items_kind_check CHECK (kind IN ('frame', 'name_color', 'name_glow', 'emote'));
 ALTER TABLE legacy_x.cosmetic_equipped DROP CONSTRAINT IF EXISTS cosmetic_equipped_kind_check;

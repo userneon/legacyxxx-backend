@@ -4491,12 +4491,17 @@ export function createLegacyXRouter() {
     const clan = recordValue(recordValue(membership.data).clans);
     const { user_id: _userId, ...profile } = data;
     // Emotes the player may play with .e: the free ones, the ones they own, and the one they wear (the game knows each by its fx key).
-    const emoteItems = (await loadCosmeticCatalog().catch(() => [] as DbRow[])).filter((item) => item.kind === "emote" && item.fx);
+    // game_key (an animated emote's name in the game) is read apart, so a database without that column still serves everything else.
+    const gameKeys = new Map<string, string>();
+    const keyRows = await db().from("cosmetic_items").select("id,game_key").eq("kind", "emote");
+    if (!keyRows.error) for (const row of (keyRows.data ?? []) as DbRow[]) if (row.game_key) gameKeys.set(textValue(row.id), textValue(row.game_key));
+    const emoteKey = (item: DbRow) => gameKeys.get(textValue(item.id)) ?? textValue(item.fx);
+    const emoteItems = (await loadCosmeticCatalog().catch(() => [] as DbRow[])).filter((item) => item.kind === "emote" && emoteKey(item));
     const [emoteOwned, emoteWorn] = await Promise.all([db().from("cosmetic_owned").select("item_id").eq("user_id", data.user_id), db().from("cosmetic_equipped").select("item_id").eq("user_id", data.user_id).eq("kind", "emote").maybeSingle()]);
     const emoteOwnedIds = new Set(((emoteOwned.data ?? []) as DbRow[]).map((row) => textValue(row.item_id)));
     const emoteKeys = emoteItems.filter((item) => textValue(item.unlock) === "free" || emoteOwnedIds.has(textValue(item.id)));
     const equippedEmote = emoteItems.find((item) => textValue(item.id) === textValue(recordValue(emoteWorn.data).item_id));
-    const emotes = { equipped: equippedEmote && emoteKeys.includes(equippedEmote) ? textValue(equippedEmote.fx) : null, owned: emoteKeys.map((item) => textValue(item.fx)) };
+    const emotes = { equipped: equippedEmote && emoteKeys.includes(equippedEmote) ? emoteKey(equippedEmote) : null, owned: emoteKeys.map(emoteKey) };
     const { data: ladder } = await db().from("competitive_leaderboard").select("position").eq("user_id", data.user_id).maybeSingle();
     // Kills, deaths and results for the in-game !me card (K/D and win rate); absent for a player with no ranked match yet.
     const { data: progression } = await db().from("competitive_player_progression").select("kills,deaths,wins,losses,draws").eq("user_id", data.user_id).maybeSingle();
