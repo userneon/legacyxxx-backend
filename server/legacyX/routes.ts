@@ -4286,8 +4286,9 @@ export function createLegacyXRouter() {
     // Boosters who linked Discord get the Server Booster frame (once, kept for good). Best effort: the report is saved either way.
     const mentioned = Array.from(new Set([...input.boosters, ...input.boostEvents].map((entry) => entry.discordId)));
     await grantBoosterFrames(db(), mentioned).catch((error) => console.warn("[legacy-x-api] booster frames not given", error?.message));
-    // The Server Booster frame lasts only while the member boosts: it goes from everyone who stopped.
-    await endBoosterFrames(db()).catch((error) => console.warn("[legacy-x-api] booster frames not ended", error?.message));
+    // The Server Booster frame lasts only while the member boosts: it goes from everyone who stopped. Only a report that lists every current booster
+    // can say who stopped (a partial report must not take a frame from a member it simply did not mention).
+    if (input.boostersComplete) await endBoosterFrames(db()).catch((error) => console.warn("[legacy-x-api] booster frames not ended", error?.message));
     // The three top boosters wear Gold, Silver and Bronze, which follow the ranking. Best effort too (the SQL may not be run yet).
     await syncBoosterPodium(db()).catch((error) => console.warn("[legacy-x-api] booster podium not synced", error?.message));
     res.json({ saved });
