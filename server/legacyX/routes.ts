@@ -41,7 +41,6 @@ import { ADMIN_CALL_COOLDOWN_SECONDS, ADMIN_CALL_MAX_AGE_HOURS, ADMIN_CALL_PAGE,
 import { COIN_RULES, NotEnoughCoinsError, applyWalletChange, awardDiscordLink, awardMatchBonuses, awardMatchCoins, clanPrices, earnRules, loadWallet, loadWalletSummary, penalizeWallet, walletGrantSchema, walletPenaltySchema } from "./wallet";
 import { isMissingTableError, ownerLinks, ownerProfileSchema, ownerTeam, ownerUpdates } from "./ownerProfile";
 import { liftInfo } from "./penaltyLift";
-import { ADMIN_PANEL_PAGE, adminBanItem, adminBansQuery, adminLoginItem, adminLoginsQuery } from "./adminPanel";
 import { menuLoadoutQuery, menuRarity, menuTiles, MENU_AGENT_TEAMS, MENU_SKIN_PAGE, MENU_SLOT_CATEGORY, entriesReplacedByEquip, menuAgentName, menuGunModel, menuSkinEquipBody, menuSkinItemsQuery, menuSkinName, menuSkinSlotSchema, menuSkinTypesQuery, menuSlotKey, sharedGunEntryMovedTo, type LoadoutRow, type MenuSkinSlot } from "./menuSkins";
 import { PROFILE_NAME_MAX, PROFILE_SECTIONS, bestNameMatch, escapeLike, hiddenForViewer, loadoutShowcase, mapWinRates, normalizeHiddenSections, profileStats, buildBenchmark, BENCHMARK_MIN_MATCHES, staffCard, type ProfileSection } from "./profileOverview";
 import { activeBans, bannedPlayer, checkBansSchema, issueBan, issueBanSchema, issueIpBan, issueIpBanSchema, listActiveBans, revokeAllBans, revokeAllBansSchema, revokeBans, revokeBanSchema, revokeIpBans, revokeIpBanSchema } from "./bans";
@@ -1765,10 +1764,10 @@ export function createLegacyXRouter() {
   });
   router.use("/cosmetics", cosmeticRateLimit);
   const cosmeticIdSchema = z.string().regex(/^[a-z0-9-]{2,40}$/);
-  const COSMETIC_KINDS = ["frame", "name_color", "name_glow", "emote", "banner", "title"] as const;
+  const COSMETIC_KINDS = ["frame", "name_color", "name_glow", "banner", "title"] as const;
   type CosmeticKind = (typeof COSMETIC_KINDS)[number];
   const loadCosmeticCatalog = async () => {
-    const { data, error } = await db().from("cosmetic_items").select("id,kind,name_en,name_mn,unlock,price,requirement,sort,color,glow,fx,rarity,featured").eq("enabled", true).order("sort");
+    const { data, error } = await db().from("cosmetic_items").select("id,kind,name_en,name_mn,unlock,price,requirement,sort,color,glow,fx,rarity,featured").eq("enabled", true).in("kind", [...COSMETIC_KINDS]).order("sort");
     legacyXError(error, "Unable to load cosmetics");
     return (data ?? []) as DbRow[];
   };
@@ -1788,7 +1787,7 @@ export function createLegacyXRouter() {
       if (row.kind === "frame") entry.frame = textValue(item.id);
       else if (row.kind === "banner") entry.banner = textValue(item.fx) || null;
       else if (row.kind === "title") entry.title = textValue(item.name_en) || null;
-      else if (row.kind !== "emote") {
+      else if (row.kind === "name_color" || row.kind === "name_glow") {
         const style = entry.nameStyle ?? { color: null, glow: null, colorFx: null, glowFx: null };
         if (row.kind === "name_color") { style.color = textValue(item.color) || null; style.colorFx = textValue(item.fx) || null; }
         if (row.kind === "name_glow") { style.glow = textValue(item.glow) || null; style.glowFx = textValue(item.fx) || null; }
@@ -1839,13 +1838,11 @@ export function createLegacyXRouter() {
       equippedFrame: user ? worn.get(user.id)?.frame ?? null : null,
       equippedNameColor: wearing.get("name_color") ?? null,
       equippedNameGlow: wearing.get("name_glow") ?? null,
-      equippedEmote: wearing.get("emote") ?? null,
       equippedBanner: wearing.get("banner") ?? null,
       equippedTitle: wearing.get("title") ?? null,
       frames: ofKind("frame"),
       nameColors: ofKind("name_color"),
       nameGlows: ofKind("name_glow"),
-      emotes: ofKind("emote"),
       banners: ofKind("banner"),
       titles: ofKind("title"),
     });
@@ -1856,7 +1853,7 @@ export function createLegacyXRouter() {
     if (!item) apiError(404, "Item not found");
     if (textValue(item.unlock) !== "coin") apiError(409, "This item is not for sale", "cosmetic_not_for_sale");
     const price = numberValue(item.price);
-    const label = item.kind === "frame" ? "Frame" : item.kind === "name_color" ? "Name colour" : item.kind === "emote" ? "Emote" : item.kind === "banner" ? "Banner" : item.kind === "title" ? "Title" : "Name glow";
+    const label = item.kind === "frame" ? "Frame" : item.kind === "name_color" ? "Name colour" : item.kind === "banner" ? "Banner" : item.kind === "title" ? "Title" : "Name glow";
     // The ref is per player and item, so a double click or a retry charges once.
     try {
       await applyWalletChange(legacyXDb(), { userId: user.id, amount: -price, kind: "spend", reason: `${label}: ${textValue(item.name_en)}`, ref: `cosmetic:${itemId}`, actor: user.id });
@@ -4724,82 +4721,6 @@ export function createLegacyXRouter() {
     res.json({ serverId: input.serverId, checkedAt: new Date().toISOString(), players: await resolveAuthorizations(db(), input) });
   }));
 
-  // LegacyX-Hud's in-game admin panel reads these (a game server token with admin:read). Read-only; lifting a ban is /plugin/bans/revoke.
-  const adminPanelRateLimit = rateLimit({
-    windowMs: 1_000,
-    limit: process.env.NODE_ENV === "test" ? 1_000 : 6,
-    standardHeaders: "draft-8",
-    legacyHeaders: false,
-    keyGenerator: (req) => `admin-panel:${textValue(recordValue(req.query).steam_id) || (req.ip ? ipKeyGenerator(req.ip) : "unknown")}`,
-    message: { error_code: "rate_limited" },
-  });
-  const userNames = async (ids: string[]) => {
-    const unique = Array.from(new Set(ids.filter(Boolean)));
-    if (unique.length === 0) return new Map<string, string>();
-    const { data, error } = await db().from("users").select("id,username").in("id", unique);
-    legacyXError(error, "Unable to load player names");
-    return new Map(((data ?? []) as DbRow[]).map((row) => [textValue(row.id), textValue(row.username)]));
-  };
-  router.get("/plugin/admin/bans", adminPanelRateLimit, pluginRoute("admin:read", async (req, res) => {
-    const input = adminBansQuery.parse(req.query);
-    const now = new Date();
-    const nowIso = now.toISOString();
-    const startOfDay = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate())).toISOString();
-    const columns = "id,steam_id,ip_address,user_id,reason,is_permanent,expires_at,issued_by,issuer_steam_id,source,revoked_at,revoked_by,revoke_reason,created_at";
-    const active = () => db().from("bans").select("id", { count: "exact", head: true }).is("revoked_at", null).or(`is_permanent.eq.true,expires_at.gt.${nowIso}`);
-    let list = db().from("bans").select(columns).order("created_at", { ascending: false }).range(input.offset, input.offset + ADMIN_PANEL_PAGE - 1);
-    if (input.filter === "active") list = list.is("revoked_at", null).or(`is_permanent.eq.true,expires_at.gt.${nowIso}`);
-    else if (input.filter === "lifted") list = list.not("revoked_at", "is", null);
-    else if (input.filter === "expired") list = list.is("revoked_at", null).eq("is_permanent", false).lte("expires_at", nowIso);
-    else list = list.eq("issuer_steam_id", input.steam_id);
-    const [rows, activeCount, permanent, today, mine] = await Promise.all([
-      list,
-      active(),
-      active().eq("is_permanent", true),
-      db().from("bans").select("id", { count: "exact", head: true }).gte("created_at", startOfDay),
-      active().eq("issuer_steam_id", input.steam_id),
-    ]);
-    legacyXError(rows.error, "Unable to load bans");
-    for (const counted of [activeCount, permanent, today, mine]) legacyXError(counted.error, "Unable to count bans");
-    const data = (rows.data ?? []) as DbRow[];
-    const names = await userNames(data.flatMap((row) => [textValue(row.user_id), textValue(row.issued_by), textValue(row.revoked_by)]));
-    res.set("Cache-Control", "no-store");
-    res.json({
-      stats: { active: activeCount.count ?? 0, today: today.count ?? 0, permanent: permanent.count ?? 0, mine: mine.count ?? 0 },
-      items: data.map((row) => adminBanItem(row, names, now)),
-      hasMore: data.length === ADMIN_PANEL_PAGE,
-    });
-  }));
-  router.get("/plugin/admin/logins", adminPanelRateLimit, pluginRoute("admin:read", async (req, res) => {
-    const input = adminLoginsQuery.parse(req.query);
-    let query = db().schema("legacy_x").from("reconnect_sessions").select("steam_id,player_name,server_id,connected_at,disconnected_at,updated_at").order("connected_at", { ascending: false }).range(input.offset, input.offset + 9);
-    if (input.server_id) query = query.eq("server_id", input.server_id);
-    if (input.online) query = query.is("disconnected_at", null).gte("updated_at", new Date(Date.now() - 10 * 60_000).toISOString());
-    const { data, error } = await query;
-    legacyXError(error, "Unable to load logins");
-    const rows = (data ?? []) as DbRow[];
-    const serverIds = Array.from(new Set(rows.map((row) => textValue(row.server_id))));
-    const { data: servers, error: serversError } = serverIds.length
-      ? await db().schema("legacy_x").from("reconnect_servers").select("server_id,display_name").in("server_id", serverIds)
-      : { data: [], error: null };
-    legacyXError(serversError, "Unable to load servers");
-    const serverNames = new Map(((servers ?? []) as DbRow[]).map((row) => [textValue(row.server_id), textValue(row.display_name) || textValue(row.server_id)]));
-    res.set("Cache-Control", "no-store");
-    res.json({ items: rows.map((row) => adminLoginItem(row, serverNames)), hasMore: rows.length === 10 });
-  }));
-  router.get("/plugin/admin/staff", adminPanelRateLimit, pluginRoute("admin:read", async (_req, res) => {
-    const { data, error } = await db().from("staff").select("user_id,role,status").eq("status", "active").order("role", { ascending: true }).limit(50);
-    legacyXError(error, "Unable to load staff");
-    const rows = (data ?? []) as DbRow[];
-    const { data: users, error: usersError } = rows.length
-      ? await db().from("users").select("id,username,steam_id").in("id", rows.map((row) => textValue(row.user_id)))
-      : { data: [], error: null };
-    legacyXError(usersError, "Unable to load staff names");
-    const byId = new Map(((users ?? []) as DbRow[]).map((row) => [textValue(row.id), row]));
-    res.set("Cache-Control", "no-store");
-    res.json({ items: rows.map((row) => ({ player: textValue(byId.get(textValue(row.user_id))?.username) || "Unknown", steamId: textValue(byId.get(textValue(row.user_id))?.steam_id) || null, role: textValue(row.role) })) });
-  }));
-
   // In-game !xp / !rank: the player's rank on the LEGACY-X ladder (the same source as the website).
   router.get("/plugin/community/players/:steamId", pluginRoute("stats:write", async (req, res) => {
     const steamId = String(req.params.steamId || "").trim();
@@ -4811,18 +4732,6 @@ export function createLegacyXRouter() {
     if (membership.error) console.warn("[legacy-x-api] clan lookup unavailable", membership.error.message);
     const clan = recordValue(recordValue(membership.data).clans);
     const { user_id: _userId, ...profile } = data;
-    // Emotes the player may play with .e: the free ones, the ones they own, and the one they wear (the game knows each by its fx key).
-    // game_key (an animated emote's name in the game) is read apart, so a database without that column still serves everything else.
-    const gameKeys = new Map<string, string>();
-    const keyRows = await db().from("cosmetic_items").select("id,game_key").eq("kind", "emote");
-    if (!keyRows.error) for (const row of (keyRows.data ?? []) as DbRow[]) if (row.game_key) gameKeys.set(textValue(row.id), textValue(row.game_key));
-    const emoteKey = (item: DbRow) => gameKeys.get(textValue(item.id)) ?? textValue(item.fx);
-    const emoteItems = (await loadCosmeticCatalog().catch(() => [] as DbRow[])).filter((item) => item.kind === "emote" && emoteKey(item));
-    const [emoteOwned, emoteWorn] = await Promise.all([db().from("cosmetic_owned").select("item_id").eq("user_id", data.user_id), db().from("cosmetic_equipped").select("item_id").eq("user_id", data.user_id).eq("kind", "emote").maybeSingle()]);
-    const emoteOwnedIds = new Set(((emoteOwned.data ?? []) as DbRow[]).map((row) => textValue(row.item_id)));
-    const emoteKeys = emoteItems.filter((item) => textValue(item.unlock) === "free" || emoteOwnedIds.has(textValue(item.id)));
-    const equippedEmote = emoteItems.find((item) => textValue(item.id) === textValue(recordValue(emoteWorn.data).item_id));
-    const emotes = { equipped: equippedEmote && emoteKeys.includes(equippedEmote) ? emoteKey(equippedEmote) : null, owned: emoteKeys.map(emoteKey) };
     const { data: ladder } = await db().from("competitive_leaderboard").select("position").eq("user_id", data.user_id).maybeSingle();
     // Kills, deaths and results for the in-game !me card (K/D and win rate); absent for a player with no ranked match yet.
     const { data: progression } = await db().from("competitive_player_progression").select("kills,deaths,wins,losses,draws").eq("user_id", data.user_id).maybeSingle();
@@ -4839,7 +4748,6 @@ export function createLegacyXRouter() {
       clan_name: textValue(clan.name) || null,
       clan_tag: textValue(clan.tag) || null,
       clan_role: textValue(recordValue(membership.data).role) || null,
-      emotes,
     } });
   }));
 

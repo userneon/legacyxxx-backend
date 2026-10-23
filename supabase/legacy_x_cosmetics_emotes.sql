@@ -1,3 +1,4 @@
+-- Retired on 2026-10-23: emotes are gone from the game and the site. Run legacy_x_remove_emotes.sql after this file.
 -- Emotes, next to frames and name styles: a short line (and sound) a player plays in game with .e. Same rules as the other cosmetics:
 -- (the kind list already includes banner and title from legacy_x_founder.sql, so this file stays safe to re-run after it).
 -- free / coin (bought once with LX) / achievement (earned). `fx` is the key the game plugin knows the emote by; nothing else is sent to a page or server.
