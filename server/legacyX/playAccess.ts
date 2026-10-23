@@ -18,6 +18,20 @@ export const LEAVE_WINDOW_MS = 24 * 60 * 60 * 1000;
 export const LEAVE_COOLDOWN_FROM = 3;
 export const LEAVE_COOLDOWN_STEP_MINUTES = 30;
 
+/** The three numbers of the leave rule. The defaults are the ones above; the staff site can change them (settings.ts). */
+export interface LeaveRules {
+  windowMs: number;
+  blockFrom: number;
+  stepMinutes: number;
+}
+export const DEFAULT_LEAVE_RULES: LeaveRules = { windowMs: LEAVE_WINDOW_MS, blockFrom: LEAVE_COOLDOWN_FROM, stepMinutes: LEAVE_COOLDOWN_STEP_MINUTES };
+
+export const leaveRulesFrom = (settings: { "play.leave_window_hours": number; "play.leave_block_from": number; "play.leave_block_step_minutes": number }): LeaveRules => ({
+  windowMs: settings["play.leave_window_hours"] * 3_600_000,
+  blockFrom: settings["play.leave_block_from"],
+  stepMinutes: settings["play.leave_block_step_minutes"],
+});
+
 export interface LeaveStatus {
   /** Leaves in the last 24 hours. */
   leavesToday: number;
@@ -27,29 +41,29 @@ export interface LeaveStatus {
   next: { cooldownMinutes: number };
 }
 
-export const cooldownMinutesFor = (leaves: number) => (leaves >= LEAVE_COOLDOWN_FROM ? (leaves - LEAVE_COOLDOWN_FROM + 1) * LEAVE_COOLDOWN_STEP_MINUTES : 0);
+export const cooldownMinutesFor = (leaves: number, rules: LeaveRules = DEFAULT_LEAVE_RULES) => (leaves >= rules.blockFrom ? (leaves - rules.blockFrom + 1) * rules.stepMinutes : 0);
 
 /** The block a player is under, from the times of their leaves. */
-export function leaveStatus(leaves: ReadonlyArray<string | Date>, now: Date): LeaveStatus {
+export function leaveStatus(leaves: ReadonlyArray<string | Date>, now: Date, rules: LeaveRules = DEFAULT_LEAVE_RULES): LeaveStatus {
   const times = leaves
     .map((leave) => new Date(leave).getTime())
-    .filter((time) => Number.isFinite(time) && time <= now.getTime() && now.getTime() - time < LEAVE_WINDOW_MS)
+    .filter((time) => Number.isFinite(time) && time <= now.getTime() && now.getTime() - time < rules.windowMs)
     .sort((a, b) => a - b);
   const count = times.length;
-  const minutes = cooldownMinutesFor(count);
+  const minutes = cooldownMinutesFor(count, rules);
   const until = minutes > 0 ? times[count - 1]! + minutes * 60_000 : 0;
   return {
     leavesToday: count,
     cooldown: until > now.getTime() ? { until: new Date(until).toISOString(), minutes } : null,
-    next: { cooldownMinutes: cooldownMinutesFor(count + 1) },
+    next: { cooldownMinutes: cooldownMinutesFor(count + 1, rules) },
   };
 }
 
 /** The leave times of each user in the last 24 hours. */
-export async function loadLeaves(db: Db, userIds: string[], now: Date): Promise<Map<string, string[]>> {
+export async function loadLeaves(db: Db, userIds: string[], now: Date, windowMs: number = LEAVE_WINDOW_MS): Promise<Map<string, string[]>> {
   const leaves = new Map<string, string[]>();
   if (userIds.length === 0) return leaves;
-  const since = new Date(now.getTime() - LEAVE_WINDOW_MS).toISOString();
+  const since = new Date(now.getTime() - windowMs).toISOString();
   const { data, error } = await db.from("competitive_match_exp").select("user_id,exp_breakdown,created_at").in("user_id", userIds).gte("created_at", since).limit(2000);
   legacyXError(error, "Unable to load recent leaves");
   for (const row of (data ?? []) as Array<{ user_id: string; exp_breakdown: { rule?: string; left_at?: string } | null; created_at: string }>) {
@@ -76,19 +90,19 @@ export interface PlayerAccess {
 }
 
 /** Access of players by Steam ID, for the game servers. A Steam ID with no account is not logged in. */
-export async function playerAccess(db: Db, steamIds: string[], now = new Date()): Promise<PlayerAccess[]> {
+export async function playerAccess(db: Db, steamIds: string[], now = new Date(), rules: LeaveRules = DEFAULT_LEAVE_RULES): Promise<PlayerAccess[]> {
   const unique = Array.from(new Set(steamIds));
   const { data, error } = await db.from("users").select("id,steam_id").in("steam_id", unique);
   legacyXError(error, "Unable to look the players up");
   const byId = new Map(((data ?? []) as Array<{ id: string; steam_id: string }>).map((row) => [row.steam_id, row.id]));
   const ids = Array.from(byId.values());
-  const [loggedIn, leaves] = await Promise.all([loadLoggedIn(db, ids, now), loadLeaves(db, ids, now)]);
+  const [loggedIn, leaves] = await Promise.all([loadLoggedIn(db, ids, now), loadLeaves(db, ids, now, rules.windowMs)]);
   return unique.map((steamId) => {
     const userId = byId.get(steamId);
     return {
       steamId,
       loggedIn: userId ? loggedIn.has(userId) : false,
-      cooldown: userId ? leaveStatus(leaves.get(userId) ?? [], now).cooldown : null,
+      cooldown: userId ? leaveStatus(leaves.get(userId) ?? [], now, rules).cooldown : null,
     };
   });
 }

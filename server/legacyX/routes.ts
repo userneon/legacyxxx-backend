@@ -32,7 +32,9 @@ import { fetchSteamAccountCreatedAt, fetchSteamBans, syncSteamUserProfile } from
 import { RANK_CALCULATION_VERSION, calculateMatchExp, expLimitUsage, limitWindows } from "./ranking";
 import { buildRankedInput, rankedResultSchema, type MatchParticipant, type PlayerProgression } from "./rankedMatch";
 import { matchResultAnnouncement, resultSteamIds } from "./matchAnnouncement";
-import { leaveStatus, loadLeaves, playerAccess } from "./playAccess";
+import { leaveRulesFrom, leaveStatus, loadLeaves, playerAccess } from "./playAccess";
+import { cosmeticEditSchema } from "./cosmeticAdmin";
+import { SETTINGS, forgetSettings, loadSettings, settingDef, validSettingValue } from "./settings";
 import { ANNOUNCEMENT_MAX_AGE_HOURS, ANNOUNCEMENT_PAGE, announcementRow, announcementSchema, announcementView, type AnnouncementRecord } from "./announcements";
 import { ADMIN_CALL_COOLDOWN_SECONDS, ADMIN_CALL_MAX_AGE_HOURS, ADMIN_CALL_PAGE, adminCallRow, adminCallSchema, adminCallView, parseAfter, type AdminCallRecord } from "./adminCalls";
 import { COIN_RULES, NotEnoughCoinsError, applyWalletChange, awardDiscordLink, awardMatchBonuses, awardMatchCoins, clanPrices, earnRules, loadWallet, loadWalletSummary, penalizeWallet, walletGrantSchema, walletPenaltySchema } from "./wallet";
@@ -43,7 +45,7 @@ import { menuLoadoutQuery, menuRarity, menuTiles, MENU_AGENT_TEAMS, MENU_SKIN_PA
 import { PROFILE_NAME_MAX, PROFILE_SECTIONS, bestNameMatch, escapeLike, hiddenForViewer, loadoutShowcase, mapWinRates, normalizeHiddenSections, profileStats, buildBenchmark, BENCHMARK_MIN_MATCHES, staffCard, type ProfileSection } from "./profileOverview";
 import { activeBans, bannedPlayer, checkBansSchema, issueBan, issueBanSchema, issueIpBan, issueIpBanSchema, listActiveBans, revokeAllBans, revokeAllBansSchema, revokeBans, revokeBanSchema, revokeIpBans, revokeIpBanSchema } from "./bans";
 import { authorizationRequestSchema, resolveAuthorizations } from "./adminAuthorization";
-import { CREATOR_REAPPLY_DAYS, CREATOR_TIER_LABEL, cleanCreatorLinks, creatorApplicationSchema, creatorDecisionSchema, creatorTier, sortCreators, upsertCreatorSchema } from "./creators";
+import { CREATOR_TIER_LABEL, cleanCreatorLinks, creatorApplicationSchema, creatorDecisionSchema, creatorTier, sortCreators, upsertCreatorSchema } from "./creators";
 import { boosterPlaceOf, endBoosterFrames, grantBoosterFrames, isBoostingNow, syncBoosterPodium } from "./boosterRewards";
 import { claimFounder, founderCount, founderLabel, founderNumberOf, founderSalesOpen, FOUNDER_PRODUCT_KIND, productDeadlines } from "./founder";
 import { cachedFor as publicCached } from "./responseCache";
@@ -55,7 +57,7 @@ import { pipeline } from "node:stream/promises";
 import { loadCheckerRules, probesOf } from "./checkerRules";
 import { judgeFacts } from "./checkerJudge";
 import { checkerBase, checkerMsi, checkerSha256, zipChunks, zipLength } from "./checkerZip";
-import { CHECK_CODE_MINUTES, CHECK_MAX_DOWNLOADS, checkDownloadUrl, downloadHostAllowed, CHECK_RETENTION_DAYS, CHECK_ROLES, HWID_MATCH_KINDS, checkReportSchema, createCheckSchema, generateCheckCode, hashCheckCode, normalizeCheckCode, summarizeReport, sharesSamePc, recentSteamIds } from "./playerChecks";
+import { checkDownloadUrl, downloadHostAllowed, CHECK_ROLES, HWID_MATCH_KINDS, checkReportSchema, createCheckSchema, generateCheckCode, hashCheckCode, normalizeCheckCode, summarizeReport, sharesSamePc, recentSteamIds } from "./playerChecks";
 import { CLAN_LOOK_ITEMS, CLAN_LOOK_KINDS, clanLookItem, clanLooksFor } from "./clanLooks";
 import { killEventSchema, killFeed } from "./killfeed";
 import { heartbeatSchema, ingestHeartbeat } from "./serverHeartbeat";
@@ -2804,7 +2806,7 @@ export function createLegacyXRouter() {
     const { data: target } = await db().from("users").select("id").eq("steam_id", steamId).maybeSingle();
     const code = generateCheckCode();
     const normalized = normalizeCheckCode(code) ?? "";
-    const expiresAt = new Date(Date.now() + CHECK_CODE_MINUTES * 60_000).toISOString();
+    const expiresAt = new Date(Date.now() + (await loadSettings(db()))["checks.code_minutes"] * 60_000).toISOString();
     const { data, error } = await db().from("player_checks").insert({ code_hash: hashCheckCode(normalized), code_hint: normalized.slice(-4), target_steam_id: steamId, target_user_id: target ? textValue(target.id) : null, requested_by: userId, expires_at: expiresAt }).select("id").single();
     legacyXError(error, "Unable to create the check");
     await db().from("audit_logs").insert({ actor_type: "user", actor_id: userId, action: "check.create", target_type: "player_checks", target_id: textValue(data?.id), metadata: { steamId } });
@@ -2828,7 +2830,7 @@ export function createLegacyXRouter() {
   router.get("/checks", userRoute(async (_req, res, user) => {
     await requireCheckStaff(user.id);
     // Finished checks do not stay for ever.
-    await db().from("player_checks").delete().lt("created_at", new Date(Date.now() - CHECK_RETENTION_DAYS * 86_400_000).toISOString());
+    await db().from("player_checks").delete().lt("created_at", new Date(Date.now() - (await loadSettings(db()))["checks.retention_days"] * 86_400_000).toISOString());
     const { data, error } = await db().from("player_checks").select("id,code_hint,target_steam_id,target_user_id,requested_by,status,expires_at,completed_at,checker_version,report,created_at").order("created_at", { ascending: false }).limit(50);
     legacyXError(error, "Unable to load the checks");
     const rows = (data ?? []) as DbRow[];
@@ -2881,7 +2883,7 @@ export function createLegacyXRouter() {
     const base = msi ? null : await checkerBase();
     if (!msi && !base) apiError(404, "The checker is not available for download here", "check_download_unavailable");
     const used = Number(data.download_count ?? 0);
-    if (used >= CHECK_MAX_DOWNLOADS) apiError(409, "This download was already used", "check_download_used");
+    if (used >= (await loadSettings(db()))["checks.max_downloads"]) apiError(409, "This download was already used", "check_download_used");
     // Count it before sending, and only if nobody else counted at the same moment.
     const { data: counted, error } = await db().from("player_checks").update({ download_count: used + 1 }).eq("id", textValue(data.id)).eq("download_count", used).select("id");
     legacyXError(error, "Unable to prepare the download");
@@ -4092,16 +4094,71 @@ export function createLegacyXRouter() {
     if (!data) apiError(404, "No LEGACY-X account has that SteamID");
     return data as DbRow;
   };
+  // Staff → Shop → Cosmetics (Owner or Manager): prices, names and on/off of every cosmetic, so a price change is not an SQL edit.
+  router.get("/staff/cosmetics", userRoute(async (_req, res, user) => {
+    await requireClanModerator(user.id);
+    const [items, owners] = await Promise.all([
+      db().from("cosmetic_items").select("id,kind,name_en,name_mn,unlock,price,requirement,sort,enabled").order("kind").order("sort").limit(500),
+      db().from("cosmetic_owned").select("item_id").limit(50000),
+    ]);
+    legacyXError(items.error || owners.error, "Unable to load the cosmetics");
+    const owned = new Map<string, number>();
+    for (const row of (owners.data ?? []) as DbRow[]) owned.set(textValue(row.item_id), (owned.get(textValue(row.item_id)) ?? 0) + 1);
+    res.set("Cache-Control", "no-store");
+    res.json({ items: ((items.data ?? []) as DbRow[]).map((row) => ({ id: textValue(row.id), kind: textValue(row.kind), nameEn: textValue(row.name_en), nameMn: textValue(row.name_mn), unlock: textValue(row.unlock), price: numberValue(row.price), requirement: textValue(row.requirement), sort: numberValue(row.sort), enabled: row.enabled !== false, owners: owned.get(textValue(row.id)) ?? 0 })) });
+  }));
+  router.put("/staff/cosmetics/:id", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
+    await requireClanModerator(user.id);
+    const id = z.string().regex(/^[a-z0-9-]{2,40}$/).parse(req.params.id);
+    const input = cosmeticEditSchema.parse(req.body);
+    const { data, error } = await db().from("cosmetic_items").update({ name_en: input.nameEn, name_mn: input.nameMn, unlock: input.unlock, price: input.price, requirement: input.requirement, sort: input.sort, enabled: input.enabled }).eq("id", id).select("id").maybeSingle();
+    legacyXError(error, "Unable to save the cosmetic");
+    if (!data) apiError(404, "No such cosmetic");
+    await db().from("audit_logs").insert({ actor_type: "user", actor_id: user.id, action: "cosmetic.edit", target_type: "cosmetic_items", target_id: id, metadata: { unlock: input.unlock, price: input.price, enabled: input.enabled } });
+    res.json({ id });
+  }));
+  // Staff → Settings (Owner only): the numbers in settings.ts, with their defaults and ranges. A change shows within seconds; "reset" removes the stored value.
+  router.get("/staff/settings", userRoute(async (_req, res, user) => {
+    await requireOwnerStaffRole(user.id);
+    const { data, error } = await db().from("site_settings").select("key,value,updated_at");
+    legacyXError(error, "Unable to load the settings");
+    const stored = new Map(((data ?? []) as DbRow[]).map((row) => [textValue(row.key), row]));
+    res.set("Cache-Control", "no-store");
+    res.json({ settings: SETTINGS.map((setting) => {
+      const row = stored.get(setting.key);
+      const value = row ? validSettingValue(setting, numberValue(row.value)) : null;
+      return { ...setting, value: value ?? setting.def, changed: value !== null && value !== setting.def, updatedAt: row && value !== null ? textValue(row.updated_at) : null };
+    }) });
+  }));
+  router.put("/staff/settings/:key", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
+    await requireOwnerStaffRole(user.id);
+    const def = settingDef(String(req.params.key));
+    if (!def) apiError(404, "No such setting");
+    const input = z.object({ value: z.union([z.number(), z.string(), z.null()]) }).strict().parse(req.body);
+    if (input.value === null) {
+      const { error } = await db().from("site_settings").delete().eq("key", def.key);
+      legacyXError(error, "Unable to reset the setting");
+    } else {
+      const value = validSettingValue(def, input.value);
+      if (value === null) apiError(400, `${def.label} must be a whole number from ${def.min} to ${def.max} ${def.unit}`, "setting_out_of_range");
+      const { error } = await db().from("site_settings").upsert({ key: def.key, value, updated_by: user.id, updated_at: new Date().toISOString() }, { onConflict: "key" });
+      legacyXError(error, "Unable to save the setting");
+    }
+    forgetSettings();
+    await db().from("audit_logs").insert({ actor_type: "user", actor_id: user.id, action: "setting.change", target_type: "site_settings", target_id: def.key, metadata: { value: input.value } });
+    res.json({ key: def.key, value: input.value === null ? def.def : validSettingValue(def, input.value) });
+  }));
   // A player asks to become a creator from the Creators page; an Owner or Manager answers in Staff → Creators (supabase/legacy_x_creator_applications.sql).
   router.post("/creators/applications", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
     const input = creatorApplicationSchema.parse(req.body);
+    const reapplyDays = (await loadSettings(db()))["creators.reapply_days"];
     const already = await db().from("content_creators").select("user_id").eq("user_id", user.id).maybeSingle();
     legacyXError(already.error, "Unable to check your creator status");
     if (already.data) apiError(409, "You are already a creator", "creator_already");
     const { data: last, error: lastError } = await db().from("creator_applications").select("status,created_at").eq("user_id", user.id).order("created_at", { ascending: false }).limit(1).maybeSingle();
     legacyXError(lastError, "Unable to check your earlier application");
     if (last && textValue(last.status) === "pending") apiError(409, "Your application is waiting for an answer", "creator_application_pending");
-    if (last && textValue(last.status) === "declined" && Date.now() - Date.parse(textValue(last.created_at)) < CREATOR_REAPPLY_DAYS * 86_400_000) apiError(429, `You can apply again ${CREATOR_REAPPLY_DAYS} days after your last application`, "creator_reapply_later");
+    if (last && textValue(last.status) === "declined" && Date.now() - Date.parse(textValue(last.created_at)) < reapplyDays * 86_400_000) apiError(429, `You can apply again ${reapplyDays} days after your last application`, "creator_reapply_later");
     const { data, error } = await db().from("creator_applications").insert({ user_id: user.id, bio: input.bio, links: input.links }).select("id,status,created_at").single();
     if (error?.code === "23505") apiError(409, "Your application is waiting for an answer", "creator_application_pending");
     legacyXError(error, "Unable to send your application");
@@ -4109,6 +4166,7 @@ export function createLegacyXRouter() {
     res.status(201).json({ id: textValue(data?.id), status: "pending", createdAt: textValue(data?.created_at) });
   }));
   router.get("/creators/applications/me", userRoute(async (_req, res, user) => {
+    const reapplyDays = (await loadSettings(db()))["creators.reapply_days"];
     const [creator, last] = await Promise.all([
       db().from("content_creators").select("user_id").eq("user_id", user.id).maybeSingle(),
       db().from("creator_applications").select("status,note,created_at,decided_at").eq("user_id", user.id).order("created_at", { ascending: false }).limit(1).maybeSingle(),
@@ -4121,7 +4179,7 @@ export function createLegacyXRouter() {
       isCreator: Boolean(creator.data),
       application: row ? { status: textValue(row.status), note: textValue(row.note), createdAt: textValue(row.created_at), decidedAt: row.decided_at ? textValue(row.decided_at) : null } : null,
       /** When a declined player may apply again (null: now, or nothing to wait for). */
-      canApplyAgainAt: declinedAt !== null && declinedAt + CREATOR_REAPPLY_DAYS * 86_400_000 > Date.now() ? new Date(declinedAt + CREATOR_REAPPLY_DAYS * 86_400_000).toISOString() : null,
+      canApplyAgainAt: declinedAt !== null && declinedAt + reapplyDays * 86_400_000 > Date.now() ? new Date(declinedAt + reapplyDays * 86_400_000).toISOString() : null,
     });
   }));
   router.get("/staff/creators/applications", userRoute(async (_req, res, user) => {
@@ -4162,7 +4220,7 @@ export function createLegacyXRouter() {
     const { error: tellError } = await db().from("notifications").insert({
       user_id: applicant, kind: "system",
       title: approved ? `You are now a ${CREATOR_TIER_LABEL[input.tier]}` : "Your creator application was declined",
-      body: approved ? "Your channels are on the Creators page and the badge is on your profile." : (input.note || `You can apply again in ${CREATOR_REAPPLY_DAYS} days.`),
+      body: approved ? "Your channels are on the Creators page and the badge is on your profile." : (input.note || `You can apply again in ${(await loadSettings(db()))["creators.reapply_days"]} days.`),
       metadata: { kind: "creator" },
     });
     if (tellError) console.warn("[legacy-x-api] creator notification not saved", tellError.message);
@@ -4521,14 +4579,15 @@ export function createLegacyXRouter() {
   router.post("/plugin/players/access", pluginRoute("bans:read", async (req, res) => {
     const input = z.object({ steamIds: z.array(z.string().regex(/^\d{17}$/)).min(1).max(32) }).parse(req.body);
     res.set("Cache-Control", "no-store");
-    res.json({ players: await playerAccess(db(), input.steamIds) });
+    res.json({ players: await playerAccess(db(), input.steamIds, new Date(), leaveRulesFrom(await loadSettings(db()))) });
   }));
   // The signed-in player's own leave count and block, for the Connect button.
   router.get("/play/status", userRoute(async (_req, res, user) => {
     const now = new Date();
-    const leaves = await loadLeaves(db(), [user.id], now);
+    const rules = leaveRulesFrom(await loadSettings(db()));
+    const leaves = await loadLeaves(db(), [user.id], now, rules.windowMs);
     res.set("Cache-Control", "no-store");
-    res.json(leaveStatus(leaves.get(user.id) ?? [], now));
+    res.json(leaveStatus(leaves.get(user.id) ?? [], now, rules));
   }));
   router.post("/plugin/bans/check", pluginRoute("bans:read", async (req, res) => {
     const input = checkBansSchema.parse(req.body);

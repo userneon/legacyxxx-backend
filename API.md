@@ -121,4 +121,6 @@ SQL added on 2026-10-22 and 2026-10-23, to run in this order after the two above
 
 
 Staff player picker (owner request 2026-10-23): `GET /moderation/roster?query=` (any staff who can ban) returns up to 40 players, the most recently active first or those whose name matches, as `{steamId, name, avatar, level}`; the staff site uses it so nobody types a SteamID.
+
+Settings and cosmetics from the staff site (owner request 2026-10-23): run `legacy_x_site_settings.sql` (the 7th SQL file). `GET /staff/settings` and `PUT /staff/settings/:key` {value | null to reset} (Owner only) change the numbers listed in `server/legacyX/settings.ts` (leave block rule, check code lifetime / retention / downloads, creator re-apply days); the API reads them with a 30 second memory and falls back to the code defaults when a row or the table is missing. `GET /staff/cosmetics` and `PUT /staff/cosmetics/:id` (Owner or Manager) edit a cosmetic's names, unlock, price, line, order and on/off; art and colours stay in code. The ranking numbers are intentionally not settings (one formula, `docs/design/RANK-SYSTEM.md`).
 The Server Booster frame lasts only while the member boosts (owner decision 2026-10-23): the API takes it back when a Discord report that lists every booster (`boostersComplete`) no longer has them.

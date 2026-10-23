@@ -6,7 +6,7 @@ const ago = (minutes: number) => new Date(now.getTime() - minutes * 60_000).toIS
 
 describe("leave cooldown", () => {
   it("the 1st and 2nd leave in 24 hours only cost EXP; the 3rd blocks 30 minutes, then 30 more each time", () => {
-    expect([0, 1, 2, 3, 4, 5, 6].map(cooldownMinutesFor)).toEqual([0, 0, 0, 30, 60, 90, 120]);
+    expect([0, 1, 2, 3, 4, 5, 6].map((count) => cooldownMinutesFor(count))).toEqual([0, 0, 0, 30, 60, 90, 120]);
     expect(leaveStatus([], now)).toMatchObject({ leavesToday: 0, cooldown: null, next: { cooldownMinutes: 0 } });
     expect(leaveStatus([ago(100)], now)).toMatchObject({ leavesToday: 1, cooldown: null, next: { cooldownMinutes: 0 } });
     // the 2nd leave: the next one is the one that blocks
@@ -74,5 +74,17 @@ describe("reading leaves and logins", () => {
     expect(access.map((a) => [a.steamId.slice(-1), a.loggedIn])).toEqual([["1", true], ["2", false], ["3", false]]);
     expect(access[0]!.cooldown?.minutes).toBe(30);
     expect(access[1]!.cooldown).toBeNull();
+  });
+});
+
+describe("leave rules from the settings", () => {
+  it("uses the three numbers it is given", () => {
+    const rules = { windowMs: 3_600_000, blockFrom: 2, stepMinutes: 10 };
+    expect([1, 2, 3, 4].map((count) => cooldownMinutesFor(count, rules))).toEqual([0, 10, 20, 30]);
+    const now = new Date("2026-10-23T12:00:00Z");
+    const leaves = ["2026-10-23T11:50:00Z", "2026-10-23T11:55:00Z", "2026-10-23T09:00:00Z"];
+    const status = leaveStatus(leaves, now, rules);
+    expect(status.leavesToday).toBe(2);
+    expect(status.cooldown?.minutes).toBe(10);
   });
 });

@@ -30,6 +30,11 @@ export async function cachedFor<T>(key: string, ttlMs: number, load: () => Promi
   return pending;
 }
 
+/** Drop one kept answer so the next caller rebuilds it. */
+export function forgetCached(key: string) {
+  entries.delete(key);
+}
+
 export function clearResponseCache() {
   entries.clear();
 }
