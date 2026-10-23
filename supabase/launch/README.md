@@ -24,4 +24,4 @@ Checked on 2026-10-10 against the production project.
 
 ## 2026-10-23 changes
 
-`2026-10-23_run_in_order.sql` is the eight migrations added on 2026-10-22 and 2026-10-23 (emotes, Genesis, booster podium, retired name colours, creator applications, site settings, public chat) in one file, in the order to run them. Paste it into Supabase → SQL editor once. Each part is safe to run again.
+`2026-10-23_run_in_order.sql` is the ten migrations added since the shop goods (shop goods, LX top-ups, emotes, Genesis, booster podium, retired name colours, creator applications, site settings, public chat). Production has them all since 2026-10-23 in one file, in the order to run them. Paste it into Supabase → SQL editor once. Each part is safe to run again.

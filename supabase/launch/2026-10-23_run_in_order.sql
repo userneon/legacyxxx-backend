@@ -1,6 +1,77 @@
--- LEGACY-X: every SQL file added on 2026-10-22 and 2026-10-23, in the order to run them. Paste this whole file into Supabase -> SQL editor and run it once.
--- Needs legacy_x_shop_goods.sql, legacy_x_lx_topups.sql and legacy_x_cosmetics_premium.sql to have run before (they already ran in production).
+-- LEGACY-X: every SQL file added since the shop goods, in the order to run them (production already has all of them since 2026-10-23).
+-- Paste this whole file into Supabase -> SQL editor and run it once on a database that does not have them. Needs legacy_x_cosmetics_premium.sql to have run before.
 -- Every part is safe to run again. Take a backup first (Supabase -> Database -> Backups).
+
+-- ============================================================
+-- legacy_x_shop_goods.sql
+-- ============================================================
+-- Real goods in the Shop (NFC charms, stickers): the catalogue and the orders players ask for.
+--
+-- No payment happens in the app or on the site. A player asks for an item with a phone number; an Owner or Manager contacts them,
+-- takes the payment (bank transfer or QPay) and moves the order along: new → contacted → paid → shipped → done (or cancelled).
+-- Only the Root API (service_role) reads or writes these tables. Safe to re-run.
+
+BEGIN;
+
+CREATE TABLE IF NOT EXISTS legacy_x.shop_products (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  slug text NOT NULL UNIQUE CHECK (slug ~ '^[a-z0-9-]{2,40}$'),
+  name text NOT NULL CHECK (char_length(name) BETWEEN 2 AND 80),
+  description text NOT NULL DEFAULT '' CHECK (char_length(description) <= 600),
+  kind text NOT NULL DEFAULT 'other' CHECK (kind IN ('charm', 'sticker', 'other')),
+  price_mnt integer NOT NULL CHECK (price_mnt >= 0),
+  image_url text CHECK (image_url IS NULL OR image_url ~ '^https://'),
+  stock integer NOT NULL DEFAULT 0 CHECK (stock >= 0),
+  enabled boolean NOT NULL DEFAULT true,
+  sort integer NOT NULL DEFAULT 0,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS legacy_x.shop_orders (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL REFERENCES legacy_x.users(id) ON DELETE CASCADE,
+  product_id uuid NOT NULL REFERENCES legacy_x.shop_products(id) ON DELETE RESTRICT,
+  quantity integer NOT NULL CHECK (quantity BETWEEN 1 AND 10),
+  unit_price_mnt integer NOT NULL CHECK (unit_price_mnt >= 0),
+  phone text NOT NULL CHECK (phone ~ '^[0-9+ -]{8,20}$'),
+  note text NOT NULL DEFAULT '' CHECK (char_length(note) <= 200),
+  status text NOT NULL DEFAULT 'new' CHECK (status IN ('new', 'contacted', 'paid', 'shipped', 'done', 'cancelled')),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS shop_orders_user_idx ON legacy_x.shop_orders (user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS shop_orders_status_idx ON legacy_x.shop_orders (status, created_at);
+
+ALTER TABLE legacy_x.shop_products ENABLE ROW LEVEL SECURITY;
+ALTER TABLE legacy_x.shop_orders ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON legacy_x.shop_products, legacy_x.shop_orders FROM PUBLIC, anon, authenticated;
+GRANT SELECT, INSERT, UPDATE ON legacy_x.shop_products, legacy_x.shop_orders TO service_role;
+
+COMMIT;
+
+-- ============================================================
+-- legacy_x_lx_topups.sql
+-- ============================================================
+-- LX top-ups ride on the Shop goods orders: a product of kind 'lx' is a package that gives `grants_lx` LX when its order is
+-- marked paid (the API credits the wallet once, with the ref topup:<order id>). Run after legacy_x_shop_goods.sql. Safe to re-run.
+--
+-- The rate is 3,000 LX = 20,000 MNT (about 6.67 MNT per LX). The three packages below follow it; an Owner or Manager can change
+-- them, add bigger ones or hide them in Staff → Shop.
+
+BEGIN;
+
+ALTER TABLE legacy_x.shop_products DROP CONSTRAINT IF EXISTS shop_products_kind_check;
+ALTER TABLE legacy_x.shop_products ADD CONSTRAINT shop_products_kind_check CHECK (kind IN ('charm', 'sticker', 'other', 'lx'));
+ALTER TABLE legacy_x.shop_products ADD COLUMN IF NOT EXISTS grants_lx integer NOT NULL DEFAULT 0 CHECK (grants_lx >= 0);
+
+INSERT INTO legacy_x.shop_products (slug, name, description, kind, price_mnt, stock, grants_lx, sort) VALUES
+  ('lx-750', '750 LX', 'Small top-up', 'lx', 5000, 100000, 750, 10),
+  ('lx-1500', '1,500 LX', 'Medium top-up', 'lx', 10000, 100000, 1500, 20),
+  ('lx-3000', '3,000 LX', 'Large top-up. Enough for a clan.', 'lx', 20000, 100000, 3000, 30)
+ON CONFLICT (slug) DO NOTHING;
+
+COMMIT;
 
 -- ============================================================
 -- legacy_x_cosmetics_emotes.sql
