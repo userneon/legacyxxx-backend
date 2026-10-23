@@ -43,7 +43,7 @@ import { menuLoadoutQuery, menuRarity, menuTiles, MENU_AGENT_TEAMS, MENU_SKIN_PA
 import { PROFILE_NAME_MAX, PROFILE_SECTIONS, bestNameMatch, escapeLike, hiddenForViewer, loadoutShowcase, mapWinRates, normalizeHiddenSections, profileStats, buildBenchmark, BENCHMARK_MIN_MATCHES, staffCard, type ProfileSection } from "./profileOverview";
 import { activeBans, bannedPlayer, checkBansSchema, issueBan, issueBanSchema, issueIpBan, issueIpBanSchema, listActiveBans, revokeAllBans, revokeAllBansSchema, revokeBans, revokeBanSchema, revokeIpBans, revokeIpBanSchema } from "./bans";
 import { authorizationRequestSchema, resolveAuthorizations } from "./adminAuthorization";
-import { CREATOR_TIER_LABEL, cleanCreatorLinks, creatorTier, sortCreators, upsertCreatorSchema } from "./creators";
+import { CREATOR_REAPPLY_DAYS, CREATOR_TIER_LABEL, cleanCreatorLinks, creatorApplicationSchema, creatorDecisionSchema, creatorTier, sortCreators, upsertCreatorSchema } from "./creators";
 import { boosterPlaceOf, endBoosterFrames, grantBoosterFrames, isBoostingNow, syncBoosterPodium } from "./boosterRewards";
 import { claimFounder, founderCount, founderLabel, founderNumberOf, founderSalesOpen, FOUNDER_PRODUCT_KIND, productDeadlines } from "./founder";
 import { cachedFor as publicCached } from "./responseCache";
@@ -4065,6 +4065,83 @@ export function createLegacyXRouter() {
     if (!data) apiError(404, "No LEGACY-X account has that SteamID");
     return data as DbRow;
   };
+  // A player asks to become a creator from the Creators page; an Owner or Manager answers in Staff → Creators (supabase/legacy_x_creator_applications.sql).
+  router.post("/creators/applications", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
+    const input = creatorApplicationSchema.parse(req.body);
+    const already = await db().from("content_creators").select("user_id").eq("user_id", user.id).maybeSingle();
+    legacyXError(already.error, "Unable to check your creator status");
+    if (already.data) apiError(409, "You are already a creator", "creator_already");
+    const { data: last, error: lastError } = await db().from("creator_applications").select("status,created_at").eq("user_id", user.id).order("created_at", { ascending: false }).limit(1).maybeSingle();
+    legacyXError(lastError, "Unable to check your earlier application");
+    if (last && textValue(last.status) === "pending") apiError(409, "Your application is waiting for an answer", "creator_application_pending");
+    if (last && textValue(last.status) === "declined" && Date.now() - Date.parse(textValue(last.created_at)) < CREATOR_REAPPLY_DAYS * 86_400_000) apiError(429, `You can apply again ${CREATOR_REAPPLY_DAYS} days after your last application`, "creator_reapply_later");
+    const { data, error } = await db().from("creator_applications").insert({ user_id: user.id, bio: input.bio, links: input.links }).select("id,status,created_at").single();
+    if (error?.code === "23505") apiError(409, "Your application is waiting for an answer", "creator_application_pending");
+    legacyXError(error, "Unable to send your application");
+    await db().from("audit_logs").insert({ actor_type: "user", actor_id: user.id, action: "creator.apply", target_type: "creator_applications", target_id: textValue(data?.id), metadata: {} });
+    res.status(201).json({ id: textValue(data?.id), status: "pending", createdAt: textValue(data?.created_at) });
+  }));
+  router.get("/creators/applications/me", userRoute(async (_req, res, user) => {
+    const [creator, last] = await Promise.all([
+      db().from("content_creators").select("user_id").eq("user_id", user.id).maybeSingle(),
+      db().from("creator_applications").select("status,note,created_at,decided_at").eq("user_id", user.id).order("created_at", { ascending: false }).limit(1).maybeSingle(),
+    ]);
+    legacyXError(creator.error || last.error, "Unable to load your application");
+    const row = last.data as DbRow | null;
+    const declinedAt = row && textValue(row.status) === "declined" ? Date.parse(textValue(row.created_at)) : null;
+    res.set("Cache-Control", "no-store");
+    res.json({
+      isCreator: Boolean(creator.data),
+      application: row ? { status: textValue(row.status), note: textValue(row.note), createdAt: textValue(row.created_at), decidedAt: row.decided_at ? textValue(row.decided_at) : null } : null,
+      /** When a declined player may apply again (null: now, or nothing to wait for). */
+      canApplyAgainAt: declinedAt !== null && declinedAt + CREATOR_REAPPLY_DAYS * 86_400_000 > Date.now() ? new Date(declinedAt + CREATOR_REAPPLY_DAYS * 86_400_000).toISOString() : null,
+    });
+  }));
+  router.get("/staff/creators/applications", userRoute(async (_req, res, user) => {
+    await requireClanModerator(user.id);
+    const { data, error } = await db().from("creator_applications").select("id,user_id,bio,links,created_at").eq("status", "pending").order("created_at", { ascending: true }).limit(100);
+    legacyXError(error, "Unable to load applications");
+    const rows = (data ?? []) as DbRow[];
+    const players = rows.length ? await db().from("users").select("id,steam_id,username,avatar").in("id", rows.map((row) => textValue(row.user_id))) : { data: [] as DbRow[], error: null };
+    legacyXError(players.error, "Unable to load applicants");
+    const playerById = new Map(((players.data ?? []) as DbRow[]).map((player) => [textValue(player.id), player]));
+    res.set("Cache-Control", "no-store");
+    res.json({ applications: rows.map((row) => {
+      const player = playerById.get(textValue(row.user_id));
+      return { id: textValue(row.id), bio: textValue(row.bio), links: cleanCreatorLinks(row.links), createdAt: textValue(row.created_at), player: { steamId: textValue(player?.steam_id), username: textValue(player?.username), avatar: textValue(player?.avatar) || null } };
+    }) });
+  }));
+  router.put("/staff/creators/applications/:id", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
+    await requireClanModerator(user.id);
+    const id = z.string().uuid().parse(req.params.id);
+    const input = creatorDecisionSchema.parse(req.body);
+    const { data: application, error: readError } = await db().from("creator_applications").select("id,user_id,bio,links,status").eq("id", id).maybeSingle();
+    legacyXError(readError, "Unable to read the application");
+    if (!application) apiError(404, "Application not found");
+    if (textValue(application.status) !== "pending") apiError(409, "This application was already answered", "creator_application_answered");
+    // Claim it first (only a still-pending row changes), so two staff members answering together cannot both act.
+    const { data: claimed, error: claimError } = await db().from("creator_applications").update({ status: input.decision === "approve" ? "approved" : "declined", note: input.note, decided_by: user.id, decided_at: new Date().toISOString() }).eq("id", id).eq("status", "pending").select("id").maybeSingle();
+    legacyXError(claimError, "Unable to save the answer");
+    if (!claimed) apiError(409, "This application was already answered", "creator_application_answered");
+    const applicant = textValue(application.user_id);
+    if (input.decision === "approve") {
+      const { error } = await db().from("content_creators").upsert({ user_id: applicant, tier: input.tier, bio: textValue(application.bio).slice(0, 200), links: cleanCreatorLinks(application.links), sort: 0, added_by: user.id, updated_at: new Date().toISOString() }, { onConflict: "user_id" });
+      if (error) {
+        await db().from("creator_applications").update({ status: "pending", note: "", decided_by: null, decided_at: null }).eq("id", id);
+        legacyXError(error, "Unable to make the player a creator");
+      }
+    }
+    const approved = input.decision === "approve";
+    const { error: tellError } = await db().from("notifications").insert({
+      user_id: applicant, kind: "system",
+      title: approved ? `You are now a ${CREATOR_TIER_LABEL[input.tier]}` : "Your creator application was declined",
+      body: approved ? "Your channels are on the Creators page and the badge is on your profile." : (input.note || `You can apply again in ${CREATOR_REAPPLY_DAYS} days.`),
+      metadata: { kind: "creator" },
+    });
+    if (tellError) console.warn("[legacy-x-api] creator notification not saved", tellError.message);
+    await db().from("audit_logs").insert({ actor_type: "user", actor_id: user.id, action: approved ? "creator.approve" : "creator.decline", target_type: "creator_applications", target_id: id, metadata: { tier: approved ? input.tier : null } });
+    res.json({ id, status: approved ? "approved" : "declined" });
+  }));
   router.put("/staffpanel/creators/:steamId", staffPanelRoute(async (req, res, staff) => {
     const target = await creatorTarget(String(req.params.steamId));
     const input = upsertCreatorSchema.parse(req.body);

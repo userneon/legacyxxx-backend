@@ -51,6 +51,24 @@ export const upsertCreatorSchema = z.object({
   sort: z.number().int().min(-100).max(100).default(0),
 });
 
+const trimmedLinks = (value: z.infer<typeof linksSchema>) => Object.fromEntries(Object.entries(value).filter(([, url]) => url)) as Partial<Record<CreatorPlatform, string>>;
+
+/** A player's application to become a creator: a short line about their content and at least one valid channel link. */
+export const creatorApplicationSchema = z.object({
+  bio: z.string().trim().min(10, "Tell us a little about your content (10 characters or more)").max(200),
+  links: linksSchema.transform(trimmedLinks),
+}).strict().refine((value) => Object.keys(value.links).length > 0, { message: "Add at least one channel link", path: ["links"] });
+
+/** An Owner's or Manager's answer. `tier` is only used when approving. */
+export const creatorDecisionSchema = z.object({
+  decision: z.enum(["approve", "decline"]),
+  tier: z.enum(CREATOR_TIERS).default("creator"),
+  note: z.string().trim().max(200).default(""),
+}).strict();
+
+/** A player who was turned down may ask again after this long; one who is waiting cannot ask twice. */
+export const CREATOR_REAPPLY_DAYS = 7;
+
 /** Stored links, cleaned again on the way out: only known platforms with a valid link survive. */
 export function cleanCreatorLinks(raw: unknown): Partial<Record<CreatorPlatform, string>> {
   const out: Partial<Record<CreatorPlatform, string>> = {};

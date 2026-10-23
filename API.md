@@ -117,5 +117,6 @@ SQL added on 2026-10-22 and 2026-10-23, to run in this order after the two above
 3. `legacy_x_booster_podium.sql`: the Booster Gold, Silver and Bronze frames. The API gives them to the top three boosters on Leaders → Boosters and takes them from whoever loses the place (when the Discord bot reports and when a member links Discord).
 4. `legacy_x_cosmetics_retire_duplicates.sql`: switches off four name colours that look like another one and refunds their buyers once, at the current price.
 5. Optional: the file `lx_emotes_sql` writes (in the game server's plugin folder) adds a Shop row for every animated emote the server has.
+6. `legacy_x_creator_applications.sql`: the `creator_applications` table. A signed-in player sends `POST /creators/applications` {bio, links} (one open application per player; 7 days to ask again after a decline; `GET /creators/applications/me` tells the page where it stands). Owners and Managers list `GET /staff/creators/applications` and answer with `PUT /staff/creators/applications/:id` {decision: approve|decline, tier, note}; approving creates the `content_creators` row and both outcomes notify the player.
 
 The Server Booster frame lasts only while the member boosts (owner decision 2026-10-23): the API takes it back when a Discord report that lists every booster (`boostersComplete`) no longer has them.
