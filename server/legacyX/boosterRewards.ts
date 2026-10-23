@@ -101,7 +101,20 @@ export async function syncBoosterPodium(db: Db): Promise<void> {
     const { error } = await db.from("cosmetic_owned").upsert(plan.grant.map((pair) => ({ user_id: pair.userId, item_id: pair.itemId, source: "achievement" })), { onConflict: "user_id,item_id", ignoreDuplicates: true });
     legacyXError(error, "Unable to give the podium frames");
   }
+  // Someone who falls off the podium goes back to the Server Booster frame every booster keeps, if they have it; otherwise the frame just comes off.
+  const fallen = Array.from(new Set(plan.unequip.map((pair) => pair.userId)));
+  const hasBase = new Set<string>();
+  if (fallen.length > 0) {
+    const { data, error } = await db.from("cosmetic_owned").select("user_id").eq("item_id", BOOSTER_FRAME_ID).in("user_id", fallen);
+    legacyXError(error, "Unable to read the booster frames");
+    for (const row of (data ?? []) as Row[]) hasBase.add(String(row.user_id));
+  }
   for (const pair of plan.unequip) {
+    if (hasBase.has(pair.userId)) {
+      const { error } = await db.from("cosmetic_equipped").upsert({ user_id: pair.userId, kind: "frame", item_id: BOOSTER_FRAME_ID, updated_at: new Date().toISOString() }, { onConflict: "user_id,kind" });
+      legacyXError(error, "Unable to put the booster frame back");
+      continue;
+    }
     const { error } = await db.from("cosmetic_equipped").delete().eq("user_id", pair.userId).eq("kind", "frame").eq("item_id", pair.itemId);
     legacyXError(error, "Unable to take off a podium frame");
   }
