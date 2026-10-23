@@ -110,3 +110,12 @@ Run `supabase/legacy_x_shop_goods.sql` once. Nothing is paid through the API: a 
 ### LX top-up packages
 
 Run `supabase/legacy_x_lx_topups.sql` after the goods SQL. A product of kind `lx` is a package: `grantsLx` LX are credited to the buyer's wallet (reason "LX top-up: <name>", ref `topup:<order id>`, so once per order) when an Owner or Manager sets its order to `paid`, and the player gets a "LX added" notification. Setting `paid` again changes nothing; cancelling a paid order after the fact does not take the LX back. The rate is 3,000 LX = 20,000 MNT. Playing earns no LX unless `LX_PLAY_EARNING=on`.
+
+SQL added on 2026-10-22 and 2026-10-23, to run in this order after the two above (each is safe to run again):
+1. `legacy_x_cosmetics_emotes.sql`: the `emote` cosmetic kind, 8 chat emotes and the `game_key` column (the name an animated emote has in FortniteEmotesNDances). The `/cosmetics` answer gains `emotes`, `equippedEmote`, and `/plugin/community/players/:steamId` gains `emotes: { equipped, owned }`.
+2. `legacy_x_founder.sql`: the `banner` and `title` kinds, the Founder frame/banner/title, the Founder product (30,000 MNT, 500 packs, ends 30 Nov 2026 Ulaanbaatar time), `legacy_x.founders` and `founder_claim()`. Staff change the pack count with the product's stock; `ends_at` is changed in SQL only.
+3. `legacy_x_booster_podium.sql`: the Booster Gold, Silver and Bronze frames. The API gives them to the top three boosters on Leaders → Boosters and takes them from whoever loses the place (when the Discord bot reports and when a member links Discord).
+4. `legacy_x_cosmetics_retire_duplicates.sql`: switches off four name colours that look like another one and refunds their buyers once, at the current price.
+5. Optional: the file `lx_emotes_sql` writes (in the game server's plugin folder) adds a Shop row for every animated emote the server has.
+
+The Server Booster frame lasts only while the member boosts (owner decision 2026-10-23): the API takes it back when a Discord report that lists every booster (`boostersComplete`) no longer has them.
