@@ -2,7 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { legacyXError } from "./supabase";
 
 /**
- * The Founder pack (owner decision 2026-10-23): one numbered, limited set, bought through a Shop order (30,000 MNT, taken by staff) and
+ * The Genesis pack (owner decision 2026-10-23; it was called Founder until the same day, and the internal ids still are: Founder is also a staff role): one numbered, limited set, bought through a Shop order (30,000 MNT, taken by staff) and
  * given when the order is marked paid. See supabase/legacy_x_founder.sql. Nothing here sells for LX.
  */
 type Db = SupabaseClient<any, any, any, any, any>;
@@ -13,10 +13,10 @@ function apiError(statusCode: number, message: string, code?: string): never {
 }
 
 export const FOUNDER_PRODUCT_KIND = "founder";
-/** The three cosmetics the pack gives (the fourth thing, the badge, is the Founder number itself). */
+/** The three cosmetics the pack gives (the fourth thing, the badge, is the Genesis number itself). */
 export const FOUNDER_ITEM_IDS = ["founder", "banner-gold-foil", "title-founder"] as const;
 
-/** #0001 style label for a Founder number. */
+/** #0001 style label for a Genesis number. */
 export function founderLabel(number: number): string {
   return `#${String(Math.max(0, Math.trunc(number))).padStart(4, "0")}`;
 }
@@ -34,7 +34,7 @@ export async function founderCount(db: Db): Promise<number | null> {
   return error ? null : count ?? 0;
 }
 
-/** A player's Founder number, or null (also null when it cannot be read: the badge is decoration). */
+/** A player's Genesis number, or null (also null when it cannot be read: the badge is decoration). */
 export async function founderNumberOf(db: Db, userId: string): Promise<number | null> {
   try {
     const { data } = await db.from("founders").select("number").eq("user_id", userId).maybeSingle();
@@ -55,14 +55,14 @@ export async function productDeadlines(db: Db, ids: string[]): Promise<Map<strin
   return out;
 }
 
-/** Gives the buyer of a paid Founder order their number and cosmetics. Returns the number. Safe to call twice. */
+/** Gives the buyer of a paid Genesis order their number and cosmetics. Returns the number. Safe to call twice. */
 export async function claimFounder(db: Db, userId: string, orderId: string, limit: number): Promise<number> {
   const { data, error } = await db.rpc("founder_claim", { p_user: userId, p_order: orderId, p_limit: limit });
   if (error) {
-    if (String(error.message).includes("founder_sold_out")) apiError(409, "All Founder packs are taken", "founder_sold_out");
-    legacyXError(error, "Unable to give the Founder pack");
+    if (String(error.message).includes("founder_sold_out")) apiError(409, "All Genesis packs are taken", "founder_sold_out");
+    legacyXError(error, "Unable to give the Genesis pack");
   }
   const number = Number(data);
-  if (!Number.isFinite(number) || number < 1) apiError(500, "The Founder number was not saved");
+  if (!Number.isFinite(number) || number < 1) apiError(500, "The Genesis number was not saved");
   return number;
 }

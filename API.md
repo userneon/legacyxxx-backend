@@ -99,8 +99,8 @@ Run `supabase/legacy_x_shop_goods.sql` once. Nothing is paid through the API: a 
 
 | Path | Method | Auth | Notes |
 | --- | --- | --- | --- |
-| `/shop/products` | GET | Public | Enabled products `{ id, slug, name, description, kind, priceMnt, imageUrl, stock, grantsLx }`, cached 30 s. The Founder pack (`kind: "founder"`) also carries `founder: { limit, taken, remaining, endsAt, open }`. |
-| `/shop/orders` | POST | User | `{ productId, quantity 1-10, phone, note? }` → the order (status `new`). 409 `shop_out_of_stock`; 429 `shop_too_many_orders` at 5 open orders. Founder pack: quantity 1, 409 `founder_closed` / `founder_owned` / `founder_ordered`. Marking a Founder order `paid` (PUT `/staff/shop/orders/:id`) gives the next number (409 `founder_sold_out` past the limit) and the Founder frame, Gold Foil banner and Founder title; the profile overview then carries `founder` (number), `banner` and `title`. |
+| `/shop/products` | GET | Public | Enabled products `{ id, slug, name, description, kind, priceMnt, imageUrl, stock, grantsLx }`, cached 30 s. The Genesis pack (`kind: "founder"`, named Founder before 2026-10-23) also carries `founder: { limit, taken, remaining, endsAt, open }`. |
+| `/shop/orders` | POST | User | `{ productId, quantity 1-10, phone, note? }` → the order (status `new`). 409 `shop_out_of_stock`; 429 `shop_too_many_orders` at 5 open orders. Genesis pack: quantity 1, 409 `founder_closed` / `founder_owned` / `founder_ordered`. Marking a Genesis order `paid` (PUT `/staff/shop/orders/:id`) gives the next number (409 `founder_sold_out` past the limit) and the Genesis frame, Gold Foil banner and Genesis title; the profile overview then carries `founder` (number), `banner` and `title`. |
 | `/shop/orders/me` | GET | User | The player's own orders. |
 | `/staff/shop/orders` | GET | Owner or Manager | Orders still open (or `?status=`), with the player's phone and note. |
 | `/staff/shop/orders/:orderId` | PUT | Owner or Manager | `{ status }`: `new`, `contacted`, `paid`, `shipped`, `done`, `cancelled`. |
@@ -113,7 +113,7 @@ Run `supabase/legacy_x_lx_topups.sql` after the goods SQL. A product of kind `lx
 
 SQL added on 2026-10-22 and 2026-10-23, to run in this order after the two above (each is safe to run again):
 1. `legacy_x_cosmetics_emotes.sql`: the `emote` cosmetic kind, 8 chat emotes and the `game_key` column (the name an animated emote has in FortniteEmotesNDances). The `/cosmetics` answer gains `emotes`, `equippedEmote`, and `/plugin/community/players/:steamId` gains `emotes: { equipped, owned }`.
-2. `legacy_x_founder.sql`: the `banner` and `title` kinds, the Founder frame/banner/title, the Founder product (30,000 MNT, 500 packs, ends 30 Nov 2026 Ulaanbaatar time), `legacy_x.founders` and `founder_claim()`. Staff change the pack count with the product's stock; `ends_at` is changed in SQL only.
+2. `legacy_x_founder.sql` (then `legacy_x_genesis_rename.sql` if the first ran before the rename: Founder became Genesis because Founder is a staff role): the `banner` and `title` kinds, the Genesis frame/banner/title, the Genesis product (30,000 MNT, 500 packs, ends 30 Nov 2026 Ulaanbaatar time), `legacy_x.founders` and `founder_claim()`. Staff change the pack count with the product's stock; `ends_at` is changed in SQL only.
 3. `legacy_x_booster_podium.sql`: the Booster Gold, Silver and Bronze frames. The API gives them to the top three boosters on Leaders → Boosters and takes them from whoever loses the place (when the Discord bot reports and when a member links Discord).
 4. `legacy_x_cosmetics_retire_duplicates.sql`: switches off four name colours that look like another one and refunds their buyers once, at the current price.
 5. Optional: the file `lx_emotes_sql` writes (in the game server's plugin folder) adds a Shop row for every animated emote the server has.

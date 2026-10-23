@@ -3158,7 +3158,7 @@ export function createLegacyXRouter() {
     grantsLx: numberValue(row.grants_lx),
     ...(founder ? { founder } : {}),
   });
-  /** The Founder pack's numbers: how many packs there are, how many are taken, when it stops selling. Empty for every other product. */
+  /** The Genesis pack's numbers: how many packs there are, how many are taken, when it stops selling. Empty for every other product. */
   const founderInfoFor = async (rows: DbRow[]) => {
     const packs = rows.filter((row) => textValue(row.kind) === FOUNDER_PRODUCT_KIND);
     const info = new Map<string, { limit: number; taken: number; remaining: number; endsAt: string | null; open: boolean }>();
@@ -3205,12 +3205,12 @@ export function createLegacyXRouter() {
     if (numberValue(product.stock) < input.quantity) apiError(409, "Not enough in stock", "shop_out_of_stock");
     if (textValue(product.kind) === FOUNDER_PRODUCT_KIND) {
       // One numbered pack per player, only while the numbers last and before the deadline.
-      if (input.quantity !== 1) apiError(400, "There is one Founder pack per player");
-      if (!(await founderInfoFor([product as DbRow])).get(input.productId)?.open) apiError(409, "The Founder pack is no longer on sale", "founder_closed");
-      if (await founderNumberOf(db(), user.id)) apiError(409, "You are already a Founder", "founder_owned");
+      if (input.quantity !== 1) apiError(400, "There is one Genesis pack per player");
+      if (!(await founderInfoFor([product as DbRow])).get(input.productId)?.open) apiError(409, "The Genesis pack is no longer on sale", "founder_closed");
+      if (await founderNumberOf(db(), user.id)) apiError(409, "You are already in Genesis", "founder_owned");
       const { count: earlier, error: earlierError } = await db().from("shop_orders").select("id", { count: "exact", head: true }).eq("user_id", user.id).eq("product_id", input.productId).neq("status", "cancelled");
       legacyXError(earlierError, "Unable to check your orders");
-      if ((earlier ?? 0) > 0) apiError(409, "You already ordered the Founder pack", "founder_ordered");
+      if ((earlier ?? 0) > 0) apiError(409, "You already ordered the Genesis pack", "founder_ordered");
     }
     const { count, error: countError } = await db().from("shop_orders").select("id", { count: "exact", head: true }).eq("user_id", user.id).in("status", ["new", "contacted"]);
     legacyXError(countError, "Unable to check your orders");
@@ -3262,10 +3262,10 @@ export function createLegacyXRouter() {
     if (input.status === "paid") {
       const { data: product, error: productError } = await db().from("shop_products").select("kind,grants_lx,name,stock").eq("id", textValue(current.product_id)).maybeSingle();
       legacyXError(productError, "Unable to read the product");
-      // A paid Founder pack gives the next number and the Founder cosmetics, once per player.
+      // A paid Genesis pack gives the next number and the Genesis cosmetics, once per player.
       if (product && textValue(product.kind) === FOUNDER_PRODUCT_KIND) {
         const number = await claimFounder(db(), textValue(current.user_id), orderId, numberValue(product.stock));
-        const { error: tellError } = await db().from("notifications").insert({ user_id: textValue(current.user_id), kind: "system", title: `You are Founder ${founderLabel(number)}`, body: "The Founder frame, Gold Foil banner and Founder title are yours. Wear them in Profile → Appearance.", metadata: { kind: "founder" } });
+        const { error: tellError } = await db().from("notifications").insert({ user_id: textValue(current.user_id), kind: "system", title: `You are Genesis ${founderLabel(number)}`, body: "The Genesis frame, Gold Foil banner and Genesis title are yours. Wear them in Profile → Appearance.", metadata: { kind: "founder" } });
         if (tellError) console.warn("[legacy-x-api] founder notification not saved", tellError.message);
         await db().from("audit_logs").insert({ actor_type: "user", actor_id: user.id, action: "shop.founder.claim", target_type: "shop_orders", target_id: orderId, metadata: { number } });
       }
