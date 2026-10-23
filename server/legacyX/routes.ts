@@ -45,6 +45,7 @@ import { activeBans, bannedPlayer, checkBansSchema, issueBan, issueBanSchema, is
 import { authorizationRequestSchema, resolveAuthorizations } from "./adminAuthorization";
 import { CREATOR_TIER_LABEL, cleanCreatorLinks, creatorTier, sortCreators, upsertCreatorSchema } from "./creators";
 import { grantBoosterFrames, isBoostingNow } from "./boosterRewards";
+import { claimFounder, founderCount, founderLabel, founderNumberOf, founderSalesOpen, FOUNDER_PRODUCT_KIND, productDeadlines } from "./founder";
 import { cachedFor as publicCached } from "./responseCache";
 import { communityInputSchema, loadCommunity, recordCommunity } from "./discordCommunity";
 import { completeLink, discordLinkedUserIds, discordIdSchema, isLinkToken, linkCallbackUrl, linkResultPage, listLinks, pendingLinkRequest, returnToMatches, unlink } from "./discordLinks";
@@ -1345,7 +1346,7 @@ export function createLegacyXRouter() {
         memberSince: timestampValue(user.created_at) || null,
         steamBackground: steamMedia.background,
         steamMedia: { backgroundVideo: steamMedia.backgroundVideo, animatedAvatar: steamMedia.animatedAvatar, avatarFrame: steamMedia.avatarFrame },
-        ...(await (async () => { const mine = (await equippedCosmeticsFor([textValue(user.id)])).get(textValue(user.id)); return { frame: mine?.frame ?? null, nameStyle: mine?.nameStyle ?? null }; })()),
+        ...(await (async () => { const mine = (await equippedCosmeticsFor([textValue(user.id)])).get(textValue(user.id)); return { frame: mine?.frame ?? null, nameStyle: mine?.nameStyle ?? null, banner: mine?.banner ?? null, title: mine?.title ?? null, founder: await founderNumberOf(db(), textValue(user.id)) }; })()),
       },
       viewer: { isOwner, isStaff },
       // The owner's own switches, so the popover shows them; null for everyone else.
@@ -1740,7 +1741,7 @@ export function createLegacyXRouter() {
   });
   router.use("/cosmetics", cosmeticRateLimit);
   const cosmeticIdSchema = z.string().regex(/^[a-z0-9-]{2,40}$/);
-  const COSMETIC_KINDS = ["frame", "name_color", "name_glow", "emote"] as const;
+  const COSMETIC_KINDS = ["frame", "name_color", "name_glow", "emote", "banner", "title"] as const;
   type CosmeticKind = (typeof COSMETIC_KINDS)[number];
   const loadCosmeticCatalog = async () => {
     const { data, error } = await db().from("cosmetic_items").select("id,kind,name_en,name_mn,unlock,price,requirement,sort,color,glow,fx,rarity,featured").eq("enabled", true).order("sort");
@@ -1750,7 +1751,7 @@ export function createLegacyXRouter() {
   /** What each of these players wears: their frame (item id) and name style (plain colours); players with nothing are left out. */
   const equippedCosmeticsFor = async (userIds: string[]) => {
     const ids = Array.from(new Set(userIds.filter(Boolean)));
-    const worn = new Map<string, { frame: string | null; nameStyle: { color: string | null; glow: string | null; colorFx: string | null; glowFx: string | null } | null }>();
+    const worn = new Map<string, { frame: string | null; banner: string | null; title: string | null; nameStyle: { color: string | null; glow: string | null; colorFx: string | null; glowFx: string | null } | null }>();
     if (!ids.length) return worn;
     const [equipped, catalog] = await Promise.all([db().from("cosmetic_equipped").select("user_id,kind,item_id").in("user_id", ids), loadCosmeticCatalog().catch((error) => { console.error("[legacy-x-api] unable to load cosmetics", error?.message); return [] as DbRow[]; })]);
     if (equipped.error) { console.error("[legacy-x-api] unable to load equipped cosmetics", equipped.error.message); return worn; }
@@ -1759,9 +1760,11 @@ export function createLegacyXRouter() {
       const userId = textValue(row.user_id);
       const item = items.get(textValue(row.item_id));
       if (!item) continue;
-      const entry = worn.get(userId) ?? { frame: null, nameStyle: null };
+      const entry = worn.get(userId) ?? { frame: null, banner: null, title: null, nameStyle: null };
       if (row.kind === "frame") entry.frame = textValue(item.id);
-      else {
+      else if (row.kind === "banner") entry.banner = textValue(item.fx) || null;
+      else if (row.kind === "title") entry.title = textValue(item.name_en) || null;
+      else if (row.kind !== "emote") {
         const style = entry.nameStyle ?? { color: null, glow: null, colorFx: null, glowFx: null };
         if (row.kind === "name_color") { style.color = textValue(item.color) || null; style.colorFx = textValue(item.fx) || null; }
         if (row.kind === "name_glow") { style.glow = textValue(item.glow) || null; style.glowFx = textValue(item.fx) || null; }
@@ -1813,10 +1816,14 @@ export function createLegacyXRouter() {
       equippedNameColor: wearing.get("name_color") ?? null,
       equippedNameGlow: wearing.get("name_glow") ?? null,
       equippedEmote: wearing.get("emote") ?? null,
+      equippedBanner: wearing.get("banner") ?? null,
+      equippedTitle: wearing.get("title") ?? null,
       frames: ofKind("frame"),
       nameColors: ofKind("name_color"),
       nameGlows: ofKind("name_glow"),
       emotes: ofKind("emote"),
+      banners: ofKind("banner"),
+      titles: ofKind("title"),
     });
   }));
   router.post("/cosmetics/:itemId/buy", userRoute(async (req, res, user) => {
@@ -1825,7 +1832,7 @@ export function createLegacyXRouter() {
     if (!item) apiError(404, "Item not found");
     if (textValue(item.unlock) !== "coin") apiError(409, "This item is not for sale", "cosmetic_not_for_sale");
     const price = numberValue(item.price);
-    const label = item.kind === "frame" ? "Frame" : item.kind === "name_color" ? "Name colour" : item.kind === "emote" ? "Emote" : "Name glow";
+    const label = item.kind === "frame" ? "Frame" : item.kind === "name_color" ? "Name colour" : item.kind === "emote" ? "Emote" : item.kind === "banner" ? "Banner" : item.kind === "title" ? "Title" : "Name glow";
     // The ref is per player and item, so a double click or a retry charges once.
     try {
       await applyWalletChange(legacyXDb(), { userId: user.id, amount: -price, kind: "spend", reason: `${label}: ${textValue(item.name_en)}`, ref: `cosmetic:${itemId}`, actor: user.id });
@@ -3131,7 +3138,7 @@ export function createLegacyXRouter() {
   // contacts them, takes the payment and moves the order along. Products and orders live in supabase/legacy_x_shop_goods.sql.
   const SHOP_ORDER_STATUSES = ["new", "contacted", "paid", "shipped", "done", "cancelled"] as const;
   const MAX_OPEN_SHOP_ORDERS = 5;
-  const shopProductView = (row: DbRow) => ({
+  const shopProductView = (row: DbRow, founder?: { limit: number; taken: number; remaining: number; endsAt: string | null; open: boolean }) => ({
     id: textValue(row.id),
     slug: textValue(row.slug),
     name: textValue(row.name),
@@ -3142,7 +3149,22 @@ export function createLegacyXRouter() {
     stock: numberValue(row.stock),
     /** For kind "lx": how many LX the package gives once it is paid. */
     grantsLx: numberValue(row.grants_lx),
+    ...(founder ? { founder } : {}),
   });
+  /** The Founder pack's numbers: how many packs there are, how many are taken, when it stops selling. Empty for every other product. */
+  const founderInfoFor = async (rows: DbRow[]) => {
+    const packs = rows.filter((row) => textValue(row.kind) === FOUNDER_PRODUCT_KIND);
+    const info = new Map<string, { limit: number; taken: number; remaining: number; endsAt: string | null; open: boolean }>();
+    if (packs.length === 0) return info;
+    const [taken, deadlines] = await Promise.all([founderCount(db()), productDeadlines(db(), packs.map((row) => textValue(row.id)))]);
+    for (const row of packs) {
+      const limit = numberValue(row.stock);
+      const endsAt = deadlines.get(textValue(row.id)) ?? null;
+      const remaining = Math.max(0, limit - (taken ?? 0));
+      info.set(textValue(row.id), { limit, taken: taken ?? 0, remaining, endsAt, open: remaining > 0 && founderSalesOpen(endsAt) });
+    }
+    return info;
+  };
   const shopOrderView = (row: DbRow, product: DbRow | undefined) => ({
     id: textValue(row.id),
     productId: textValue(row.product_id),
@@ -3158,8 +3180,10 @@ export function createLegacyXRouter() {
   router.get("/shop/products", asyncRoute(async (_req, res) => {
     const { data, error } = await db().from("shop_products").select("id,slug,name,description,kind,price_mnt,image_url,stock,grants_lx").eq("enabled", true).order("sort").order("created_at");
     legacyXError(error, "Unable to load the shop");
-    res.set("Cache-Control", "public, max-age=60");
-    res.json({ products: ((data ?? []) as DbRow[]).map(shopProductView) });
+    const rows = (data ?? []) as DbRow[];
+    const founder = await founderInfoFor(rows);
+    res.set("Cache-Control", "public, max-age=30");
+    res.json({ products: rows.map((row) => shopProductView(row, founder.get(textValue(row.id)))) });
   }));
   router.post("/shop/orders", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
     const input = z.object({
@@ -3172,6 +3196,15 @@ export function createLegacyXRouter() {
     legacyXError(productError, "Unable to read the product");
     if (!product || !product.enabled) apiError(404, "Product not found");
     if (numberValue(product.stock) < input.quantity) apiError(409, "Not enough in stock", "shop_out_of_stock");
+    if (textValue(product.kind) === FOUNDER_PRODUCT_KIND) {
+      // One numbered pack per player, only while the numbers last and before the deadline.
+      if (input.quantity !== 1) apiError(400, "There is one Founder pack per player");
+      if (!(await founderInfoFor([product as DbRow])).get(input.productId)?.open) apiError(409, "The Founder pack is no longer on sale", "founder_closed");
+      if (await founderNumberOf(db(), user.id)) apiError(409, "You are already a Founder", "founder_owned");
+      const { count: earlier, error: earlierError } = await db().from("shop_orders").select("id", { count: "exact", head: true }).eq("user_id", user.id).eq("product_id", input.productId).neq("status", "cancelled");
+      legacyXError(earlierError, "Unable to check your orders");
+      if ((earlier ?? 0) > 0) apiError(409, "You already ordered the Founder pack", "founder_ordered");
+    }
     const { count, error: countError } = await db().from("shop_orders").select("id", { count: "exact", head: true }).eq("user_id", user.id).in("status", ["new", "contacted"]);
     legacyXError(countError, "Unable to check your orders");
     if ((count ?? 0) >= MAX_OPEN_SHOP_ORDERS) apiError(429, "You already have several open orders. Wait for us to contact you.", "shop_too_many_orders");
@@ -3220,8 +3253,15 @@ export function createLegacyXRouter() {
     if (!current) apiError(404, "Order not found");
     // A paid LX package credits the wallet, once: the ref is the order, so marking it paid again changes nothing.
     if (input.status === "paid") {
-      const { data: product, error: productError } = await db().from("shop_products").select("kind,grants_lx,name").eq("id", textValue(current.product_id)).maybeSingle();
+      const { data: product, error: productError } = await db().from("shop_products").select("kind,grants_lx,name,stock").eq("id", textValue(current.product_id)).maybeSingle();
       legacyXError(productError, "Unable to read the product");
+      // A paid Founder pack gives the next number and the Founder cosmetics, once per player.
+      if (product && textValue(product.kind) === FOUNDER_PRODUCT_KIND) {
+        const number = await claimFounder(db(), textValue(current.user_id), orderId, numberValue(product.stock));
+        const { error: tellError } = await db().from("notifications").insert({ user_id: textValue(current.user_id), kind: "system", title: `You are Founder ${founderLabel(number)}`, body: "The Founder frame, Gold Foil banner and Founder title are yours. Wear them in Profile → Appearance.", metadata: { kind: "founder" } });
+        if (tellError) console.warn("[legacy-x-api] founder notification not saved", tellError.message);
+        await db().from("audit_logs").insert({ actor_type: "user", actor_id: user.id, action: "shop.founder.claim", target_type: "shop_orders", target_id: orderId, metadata: { number } });
+      }
       const amount = product && textValue(product.kind) === "lx" ? numberValue(product.grants_lx) * numberValue(current.quantity) : 0;
       if (amount > 0) {
         const credit = await applyWalletChange(legacyXDb(), { userId: textValue(current.user_id), amount, kind: "grant", reason: `LX top-up: ${textValue(product?.name)}`, ref: `topup:${orderId}`, actor: user.id });
@@ -3240,8 +3280,10 @@ export function createLegacyXRouter() {
     await requireClanModerator(user.id);
     const { data, error } = await db().from("shop_products").select("id,slug,name,description,kind,price_mnt,image_url,stock,grants_lx,enabled,sort").order("sort").order("created_at");
     legacyXError(error, "Unable to load products");
+    const rows = (data ?? []) as DbRow[];
+    const founder = await founderInfoFor(rows);
     res.set("Cache-Control", "no-store");
-    res.json({ products: ((data ?? []) as DbRow[]).map((row) => ({ ...shopProductView(row), enabled: Boolean(row.enabled), sort: numberValue(row.sort) })) });
+    res.json({ products: rows.map((row) => ({ ...shopProductView(row, founder.get(textValue(row.id))), enabled: Boolean(row.enabled), sort: numberValue(row.sort) })) });
   }));
   router.put("/staff/shop/products/:slug", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
     await requireClanModerator(user.id);
@@ -3249,7 +3291,8 @@ export function createLegacyXRouter() {
     const input = z.object({
       name: z.string().trim().min(2).max(80),
       description: z.string().trim().max(600).default(""),
-      kind: z.enum(["charm", "sticker", "other", "lx"]).default("other"),
+      kind: z.enum(["charm", "sticker", "other", "lx", "founder"]).default("other"),
+      endsAt: z.string().datetime({ offset: true }).nullable().optional(),
       grantsLx: z.number().int().min(0).max(1_000_000).default(0),
       priceMnt: z.number().int().min(0).max(100_000_000),
       imageUrl: z.string().url().startsWith("https://").nullable().default(null),
@@ -3257,7 +3300,7 @@ export function createLegacyXRouter() {
       enabled: z.boolean().default(true),
       sort: z.number().int().min(-1000).max(1000).default(0),
     }).strict().parse(req.body);
-    const { data, error } = await db().from("shop_products").upsert({ slug, name: input.name, description: input.description, kind: input.kind, grants_lx: input.kind === "lx" ? input.grantsLx : 0, price_mnt: input.priceMnt, image_url: input.imageUrl, stock: input.stock, enabled: input.enabled, sort: input.sort, updated_at: new Date().toISOString() }, { onConflict: "slug" }).select("id,slug,name,description,kind,price_mnt,image_url,stock,grants_lx").single();
+    const { data, error } = await db().from("shop_products").upsert({ slug, name: input.name, description: input.description, kind: input.kind, grants_lx: input.kind === "lx" ? input.grantsLx : 0, price_mnt: input.priceMnt, image_url: input.imageUrl, stock: input.stock, enabled: input.enabled, sort: input.sort, ...(input.endsAt !== undefined ? { ends_at: input.endsAt } : {}), updated_at: new Date().toISOString() }, { onConflict: "slug" }).select("id,slug,name,description,kind,price_mnt,image_url,stock,grants_lx").single();
     legacyXError(error, "Unable to save the product");
     if (!data) apiError(500, "The product was not saved");
     await db().from("audit_logs").insert({ actor_type: "user", actor_id: user.id, action: "shop.product.save", target_type: "shop_products", target_id: textValue(data.id), metadata: { slug } });
