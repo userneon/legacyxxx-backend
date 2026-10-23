@@ -3272,16 +3272,22 @@ export function createLegacyXRouter() {
     const { data: current, error: readError } = await db().from("shop_orders").select("id,user_id,product_id,quantity").eq("id", orderId).maybeSingle();
     legacyXError(readError, "Unable to read the order");
     if (!current) apiError(404, "Order not found");
-    // A paid LX package credits the wallet, once: the ref is the order, so marking it paid again changes nothing.
-    if (input.status === "paid") {
+    // A paid LX package credits the wallet, once: the ref is the order, so marking it paid again changes nothing. The goods are also
+    // given when staff go straight to shipped or done: on 2026-10-23 a Genesis order was set to done without "Paid" and the buyer was left
+    // with nothing to wear. Giving them is safe to repeat (the number is per player, the credit is per order).
+    if (input.status === "paid" || input.status === "shipped" || input.status === "done") {
       const { data: product, error: productError } = await db().from("shop_products").select("kind,grants_lx,name,stock").eq("id", textValue(current.product_id)).maybeSingle();
       legacyXError(productError, "Unable to read the product");
       // A paid Genesis pack gives the next number and the Genesis cosmetics, once per player.
       if (product && textValue(product.kind) === FOUNDER_PRODUCT_KIND) {
+        const hadNumber = await founderNumberOf(db(), textValue(current.user_id));
         const number = await claimFounder(db(), textValue(current.user_id), orderId, numberValue(product.stock));
-        const { error: tellError } = await db().from("notifications").insert({ user_id: textValue(current.user_id), kind: "system", title: `You are Genesis ${founderLabel(number)}`, body: "The Genesis frame, Gold Foil banner and Genesis title are yours. Wear them in Profile → Appearance.", metadata: { kind: "founder" } });
-        if (tellError) console.warn("[legacy-x-api] founder notification not saved", tellError.message);
-        await db().from("audit_logs").insert({ actor_type: "user", actor_id: user.id, action: "shop.founder.claim", target_type: "shop_orders", target_id: orderId, metadata: { number } });
+        // Only the first time: marking paid and then done must not tell the buyer twice.
+        if (hadNumber === null) {
+          const { error: tellError } = await db().from("notifications").insert({ user_id: textValue(current.user_id), kind: "system", title: `You are Genesis ${founderLabel(number)}`, body: "The Genesis frame, Gold Foil banner and Genesis title are yours. Wear them in Profile → Appearance.", metadata: { kind: "founder" } });
+          if (tellError) console.warn("[legacy-x-api] founder notification not saved", tellError.message);
+          await db().from("audit_logs").insert({ actor_type: "user", actor_id: user.id, action: "shop.founder.claim", target_type: "shop_orders", target_id: orderId, metadata: { number } });
+        }
       }
       const amount = product && textValue(product.kind) === "lx" ? numberValue(product.grants_lx) * numberValue(current.quantity) : 0;
       if (amount > 0) {

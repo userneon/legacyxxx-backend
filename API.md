@@ -106,7 +106,7 @@ Run `supabase/legacy_x_shop_goods.sql` once. Nothing is paid through the API: a 
 
 ### LX top-up packages
 
-Run `supabase/legacy_x_lx_topups.sql` after the goods SQL. A product of kind `lx` is a package: `grantsLx` LX are credited to the buyer's wallet (reason "LX top-up: <name>", ref `topup:<order id>`, so once per order) when an Owner or Manager sets its order to `paid`, and the player gets a "LX added" notification. Setting `paid` again changes nothing; cancelling a paid order after the fact does not take the LX back. The rate is 3,000 LX = 20,000 MNT. Playing earns no LX unless `LX_PLAY_EARNING=on`.
+Run `supabase/legacy_x_lx_topups.sql` after the goods SQL. A product of kind `lx` is a package: `grantsLx` LX are credited to the buyer's wallet (reason "LX top-up: <name>", ref `topup:<order id>`, so once per order) when an Owner or Manager sets its order to `paid` (or straight to `shipped` or `done`: the Genesis pack is given the same way, once per player), and the player gets a "LX added" notification. Setting `paid` again changes nothing; cancelling a paid order after the fact does not take the LX back. The rate is 3,000 LX = 20,000 MNT. Playing earns no LX unless `LX_PLAY_EARNING=on`.
 
 SQL added on 2026-10-22 and 2026-10-23, to run in this order after the two above (each is safe to run again):
 1. `legacy_x_cosmetics_emotes.sql`: the `emote` cosmetic kind, 8 chat emotes and the `game_key` column. Emotes were retired on 2026-10-23: the API no longer lists, sells or equips them (`/cosmetics` has no `emotes` or `equippedEmote`, and `/plugin/community/players/:steamId` has no `emotes`), and `legacy_x_remove_emotes.sql` deletes their rows. Run it after this file.
