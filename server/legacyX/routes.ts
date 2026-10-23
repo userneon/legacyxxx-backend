@@ -3244,7 +3244,13 @@ export function createLegacyXRouter() {
     legacyXError(products.error, "Unable to load your orders");
     const names = new Map(((products.data ?? []) as DbRow[]).map((product) => [textValue(product.id), product]));
     res.set("Cache-Control", "no-store");
-    res.json({ orders: rows.map((row) => shopOrderView(row, names.get(textValue(row.product_id)))) });
+    // A Genesis order says whether the pack was really given (the player has a number), not only what staff set the order to.
+    const founderNumber = rows.some((row) => textValue(names.get(textValue(row.product_id))?.kind) === FOUNDER_PRODUCT_KIND) ? await founderNumberOf(db(), user.id) : null;
+    res.json({ orders: rows.map((row) => {
+      const product = names.get(textValue(row.product_id));
+      const view = shopOrderView(row, product);
+      return textValue(product?.kind) === FOUNDER_PRODUCT_KIND ? { ...view, founderNumber } : view;
+    }) });
   }));
   // Owners and Managers: the orders waiting for them (with the player's contact), their status, and the product list.
   router.get("/staff/shop/orders", userRoute(async (req, res, user) => {

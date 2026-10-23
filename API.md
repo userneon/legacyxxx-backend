@@ -98,7 +98,7 @@ Run `supabase/legacy_x_shop_goods.sql` once. Nothing is paid through the API: a 
 | --- | --- | --- | --- |
 | `/shop/products` | GET | Public | Enabled products `{ id, slug, name, description, kind, priceMnt, imageUrl, stock, grantsLx }`, cached 30 s. The Genesis pack (`kind: "founder"`, named Founder before 2026-10-23) also carries `founder: { limit, taken, remaining, endsAt, open }`. |
 | `/shop/orders` | POST | User | `{ productId, quantity 1-10, phone, note? }` → the order (status `new`). 409 `shop_out_of_stock`; 429 `shop_too_many_orders` at 5 open orders. Genesis pack: quantity 1, 409 `founder_closed` / `founder_owned` / `founder_ordered`. Marking a Genesis order `paid` (PUT `/staff/shop/orders/:id`) gives the next number (409 `founder_sold_out` past the limit) and the Genesis frame, Gold Foil banner and Genesis title; the profile overview then carries `founder` (number), `banner` and `title`. |
-| `/shop/orders/me` | GET | User | The player's own orders. |
+| `/shop/orders/me` | GET | User | The player's own orders. A Genesis order also has `founderNumber`: the number the player really has, or null if the pack was not given yet. |
 | `/staff/shop/orders` | GET | Owner or Manager | Orders still open (or `?status=`), with the player's phone and note. |
 | `/staff/shop/orders/:orderId` | PUT | Owner or Manager | `{ status }`: `new`, `contacted`, `paid`, `shipped`, `done`, `cancelled`. |
 | `/staff/shop/products` | GET | Owner or Manager | Every product, including disabled ones, with `enabled` and `sort`. |
