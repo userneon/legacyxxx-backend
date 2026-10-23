@@ -20,3 +20,8 @@ Checked on 2026-10-10 against the production project.
 2. Commit the schema-only dump (see above).
 3. Remove the test accounts (8 users at the last count) and their rows: checks, wallets, clans, cosmetics.
 4. `products` is missing: if the Owner products feature is meant to exist, run the `products` part of `legacy_x_admin_system.sql`; if not, ignore it.
+
+
+## 2026-10-23 changes
+
+`2026-10-23_run_in_order.sql` is the eight migrations added on 2026-10-22 and 2026-10-23 (emotes, Genesis, booster podium, retired name colours, creator applications, site settings, public chat) in one file, in the order to run them. Paste it into Supabase → SQL editor once. Each part is safe to run again.
