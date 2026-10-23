@@ -4200,7 +4200,7 @@ export function createLegacyXRouter() {
     legacyXError(error, "Unable to send the message");
     forgetCached(CHAT_CACHE_KEY);
     // Old messages go now and then, so the table stays small.
-    if (Math.random() < 0.05) void db().from("chat_messages").delete().lt("created_at", new Date(Date.now() - settings["chat.keep_hours"] * 3_600_000).toISOString());
+    if (settings["chat.keep_hours"] > 0 && Math.random() < 0.05) void db().from("chat_messages").delete().lt("created_at", new Date(Date.now() - settings["chat.keep_hours"] * 3_600_000).toISOString());
     res.status(201).json({ message: (await chatView([data as DbRow]))[0] });
   }));
   router.delete("/staff/chat/:id", userRoute(async (req, res, user) => {
