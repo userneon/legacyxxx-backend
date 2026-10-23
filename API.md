@@ -119,4 +119,6 @@ SQL added on 2026-10-22 and 2026-10-23, to run in this order after the two above
 5. Optional: the file `lx_emotes_sql` writes (in the game server's plugin folder) adds a Shop row for every animated emote the server has.
 6. `legacy_x_creator_applications.sql`: the `creator_applications` table. A signed-in player sends `POST /creators/applications` {bio, links} (one open application per player; 7 days to ask again after a decline; `GET /creators/applications/me` tells the page where it stands). Owners and Managers list `GET /staff/creators/applications` and answer with `PUT /staff/creators/applications/:id` {decision: approve|decline, tier, note}; approving creates the `content_creators` row and both outcomes notify the player.
 
+
+Staff player picker (owner request 2026-10-23): `GET /moderation/roster?query=` (any staff who can ban) returns up to 40 players, the most recently active first or those whose name matches, as `{steamId, name, avatar, level}`; the staff site uses it so nobody types a SteamID.
 The Server Booster frame lasts only while the member boosts (owner decision 2026-10-23): the API takes it back when a Discord report that lists every booster (`boostersComplete`) no longer has them.

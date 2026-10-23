@@ -3674,6 +3674,17 @@ export function createLegacyXRouter() {
     res.status(204).end();
   }));
   // A message from staff to one player, delivered to their notification bell.
+  // The staff player picker (Add staff, Add creator, Issue a penalty, Ask for a check): the players who were active last, or those whose name matches, so nobody has to type a SteamID.
+  router.get("/moderation/roster", userRoute(async (req, res, user) => {
+    await requireModerator(user.id, "ban");
+    const input = z.object({ query: z.string().trim().max(64).default("") }).parse(req.query);
+    let request = db().from("users").select("id,steam_id,username,avatar,level,updated_at");
+    if (input.query) request = request.ilike("username", `%${escapeLike(input.query)}%`);
+    const { data, error } = await request.order("updated_at", { ascending: false }).limit(40);
+    legacyXError(error, "Unable to load the players");
+    res.set("Cache-Control", "no-store");
+    res.json({ players: ((data ?? []) as DbRow[]).filter((row) => textValue(row.steam_id)).map((row) => ({ steamId: textValue(row.steam_id), name: textValue(row.username), avatar: textValue(row.avatar), level: numberValue(row.level) })) });
+  }));
   router.post("/moderation/notify", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
     const input = z.object({ steamId: z.string().regex(/^7656119\d{10}$/, "SteamID64 is required"), title: z.string().trim().min(1).max(120), body: z.string().trim().min(1).max(500) }).strict().parse(req.body);
     await requireModerator(user.id, "edit");
