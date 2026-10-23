@@ -273,6 +273,20 @@ async function createStaffSession(userId: string) {
   return raw;
 }
 
+/** The staff site (admin.legacyx.cc). Empty until ADMIN_ORIGIN is set; then it may sign in, and call the API, like the main site. */
+function adminOrigin() {
+  return process.env.ADMIN_ORIGIN?.trim().replace(/\/$/, "") || null;
+}
+
+/** The query a Steam sign-in comes back with: `staffpanel=1` for a staff re-check, `to=admin` when it started on the staff site. */
+function steamCallbackQuery(staffPanel: boolean, toAdmin: boolean) {
+  const query = new URLSearchParams();
+  if (staffPanel) query.set("staffpanel", "1");
+  if (toAdmin) query.set("to", "admin");
+  const text = query.toString();
+  return text ? `?${text}` : "";
+}
+
 function postLoginRedirect() {
   const configured = process.env.POST_LOGIN_REDIRECT?.trim();
   if (configured) return configured;
@@ -854,8 +868,8 @@ export function createLegacyXRouter() {
     res.setHeader("Cross-Origin-Resource-Policy", "same-site");
     const frontendOrigin = process.env.FRONTEND_ORIGIN?.trim().replace(/\/$/, "");
     const origin = req.header("origin");
-    if (frontendOrigin && origin === frontendOrigin) {
-      res.setHeader("Access-Control-Allow-Origin", frontendOrigin);
+    if (origin && ((frontendOrigin && origin === frontendOrigin) || origin === adminOrigin())) {
+      res.setHeader("Access-Control-Allow-Origin", origin);
       res.setHeader("Access-Control-Allow-Credentials", "true");
       res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type");
       res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
@@ -3800,20 +3814,22 @@ export function createLegacyXRouter() {
 
   const beginSteam = (req: Request, res: Response) => {
     const staffPanel = req.query.staffpanel === "1";
+    const toAdmin = req.query.to === "admin" && Boolean(adminOrigin());
     const origin = steamOpenIdOrigin(req);
-    const callback = staffPanel ? `${origin}/api/v1/auth/steam/callback?staffpanel=1` : undefined;
+    const callback = staffPanel || toAdmin ? `${origin}/api/v1/auth/steam/callback${steamCallbackQuery(staffPanel, toAdmin)}` : undefined;
     res.redirect(302, steamLoginUrl(origin, callback));
   };
   router.get("/auth/steam", beginSteam);
   router.post("/auth/steam", beginSteam);
   router.get("/auth/steam/callback", asyncRoute(async (req, res) => {
     const staffPanel = req.query.staffpanel === "1";
-    const redirect = postLoginRedirect();
+    const toAdmin = req.query.to === "admin" && Boolean(adminOrigin());
+    const redirect = toAdmin ? adminOrigin() : postLoginRedirect();
     try {
       // The assertion must have been issued for this very callback. Steam signs an assertion for whichever site asked for it, so
       // without this check a page that makes a visitor sign in with Steam could replay the answer here and log in as them.
       const loginOrigin = steamOpenIdOrigin(req);
-      const expectedReturn = `${loginOrigin}/api/v1/auth/steam/callback${staffPanel ? "?staffpanel=1" : ""}`;
+      const expectedReturn = `${loginOrigin}/api/v1/auth/steam/callback${steamCallbackQuery(staffPanel, toAdmin)}`;
       if (!returnToMatches(req.query as Record<string, unknown>, expectedReturn)) apiError(401, "Steam response was not issued for this sign-in");
       const steamId = await verifySteamCallback(req.query as Record<string, unknown>);
       let userId: string | null = null;

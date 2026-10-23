@@ -19,7 +19,8 @@ Copy `ENVIRONMENT.example` to `.env` on the VPS and replace every placeholder. K
 | `SUPABASE_SERVICE_ROLE_KEY` | Yes | Server-only Supabase service role key. |
 | `JWT_SECRET` | Yes | Random secret with at least 32 characters. |
 | `PUBLIC_API_ORIGIN` | Yes | `https://api.legacyx.cc`; used in Steam OpenID callback URLs. |
-| `FRONTEND_ORIGIN` | Yes | `https://legacyx.cc`; the only credentialed browser CORS origin. |
+| `FRONTEND_ORIGIN` | Yes | `https://legacyx.cc`; the credentialed browser CORS origin of the website. |
+| `ADMIN_ORIGIN` | No | `https://admin.legacyx.cc`, the staff site. Allowed as a second credentialed CORS origin, and a Steam sign-in started there (`/auth/steam?to=admin`) returns there. The session cookies are on `.legacyx.cc`, so a player signed in on one site is signed in on the other. Add the host to DNS and Nginx first (frontend repo, `ops/nginx/legacyx-admin.conf`). |
 | `AUTH_COOKIE_DOMAIN` | Yes | `.legacyx.cc` for API/frontend cross-subdomain session cookies. |
 | `POST_LOGIN_REDIRECT` | Yes | `https://legacyx.cc/`; destination after a successful Steam callback. |
 

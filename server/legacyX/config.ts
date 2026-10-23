@@ -37,6 +37,8 @@ export function validateProductionRuntime() {
   validateHttpsUrl("STEAM_OPENID_ORIGIN");
   validateHttpsUrl("FRONTEND_ORIGIN");
   validateHttpsUrl("POST_LOGIN_REDIRECT");
+  // The staff site is optional; when set it must be HTTPS like the others.
+  if (process.env.ADMIN_ORIGIN?.trim()) validateHttpsUrl("ADMIN_ORIGIN");
 
   if (requireValue("JWT_SECRET").length < 32) {
     throw new Error("JWT_SECRET must contain at least 32 characters in production");
