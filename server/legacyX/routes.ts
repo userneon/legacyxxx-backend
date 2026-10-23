@@ -44,7 +44,7 @@ import { PROFILE_NAME_MAX, PROFILE_SECTIONS, bestNameMatch, escapeLike, hiddenFo
 import { activeBans, bannedPlayer, checkBansSchema, issueBan, issueBanSchema, issueIpBan, issueIpBanSchema, listActiveBans, revokeAllBans, revokeAllBansSchema, revokeBans, revokeBanSchema, revokeIpBans, revokeIpBanSchema } from "./bans";
 import { authorizationRequestSchema, resolveAuthorizations } from "./adminAuthorization";
 import { CREATOR_TIER_LABEL, cleanCreatorLinks, creatorTier, sortCreators, upsertCreatorSchema } from "./creators";
-import { grantBoosterFrames, isBoostingNow, syncBoosterPodium } from "./boosterRewards";
+import { boosterPlaceOf, grantBoosterFrames, isBoostingNow, syncBoosterPodium } from "./boosterRewards";
 import { claimFounder, founderCount, founderLabel, founderNumberOf, founderSalesOpen, FOUNDER_PRODUCT_KIND, productDeadlines } from "./founder";
 import { cachedFor as publicCached } from "./responseCache";
 import { communityInputSchema, loadCommunity, recordCommunity } from "./discordCommunity";
@@ -1384,6 +1384,7 @@ export function createLegacyXRouter() {
       presence,
       discordLinked: (await discordLinkedUserIds(db(), [userId])).has(userId),
       discordBoosting: await isBoostingNow(db(), userId),
+      boosterPlace: await boosterPlaceOf(db(), userId),
       clan: (await clanTagsFor([userId])).get(userId) ?? null,
       ...ownerExtras,
     });

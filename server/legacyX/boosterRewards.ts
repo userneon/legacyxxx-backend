@@ -123,3 +123,15 @@ export async function syncBoosterPodium(db: Db): Promise<void> {
     legacyXError(error, "Unable to move a podium frame");
   }
 }
+
+/** 1, 2 or 3 while this player holds the Gold, Silver or Bronze booster frame (their place on the podium), otherwise null. Never throws: it is decoration. */
+export async function boosterPlaceOf(db: Db, userId: string): Promise<1 | 2 | 3 | null> {
+  try {
+    const { data } = await db.from("cosmetic_owned").select("item_id").eq("user_id", userId).in("item_id", [...BOOSTER_PODIUM_FRAMES]);
+    const owned = new Set(((data ?? []) as Row[]).map((row) => String(row.item_id)));
+    const index = BOOSTER_PODIUM_FRAMES.findIndex((itemId) => owned.has(itemId));
+    return index === 0 ? 1 : index === 1 ? 2 : index === 2 ? 3 : null;
+  } catch {
+    return null;
+  }
+}

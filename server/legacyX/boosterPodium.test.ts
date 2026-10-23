@@ -35,3 +35,18 @@ describe("booster podium", () => {
     expect(planPodium(["a", null, null], [], []).grant).toEqual([{ userId: "a", itemId: "booster-gold" }]);
   });
 });
+
+import { boosterPlaceOf } from "./boosterRewards";
+
+describe("booster place", () => {
+  const dbWith = (items: string[], fail = false) => ({ from: () => ({ select: () => ({ eq: () => ({ in: async () => { if (fail) throw new Error("down"); return { data: items.map((item_id) => ({ item_id })), error: null }; } }) }) }) }) as never;
+  it("reads the place from the podium frame the player holds", async () => {
+    await expect(boosterPlaceOf(dbWith(["booster-gold"]), "u")).resolves.toBe(1);
+    await expect(boosterPlaceOf(dbWith(["booster-silver"]), "u")).resolves.toBe(2);
+    await expect(boosterPlaceOf(dbWith(["booster-bronze"]), "u")).resolves.toBe(3);
+    await expect(boosterPlaceOf(dbWith([]), "u")).resolves.toBeNull();
+  });
+  it("is null when the database cannot be read", async () => {
+    await expect(boosterPlaceOf(dbWith([], true), "u")).resolves.toBeNull();
+  });
+});
