@@ -26,6 +26,7 @@ export const SETTINGS = [
   { key: "checks.retention_days", group: "Checks", label: "Keep checks for", hint: "Finished checks and their results are removed after this long.", unit: "days", def: 30, min: 1, max: 365 },
   { key: "checks.max_downloads", group: "Checks", label: "Downloads per check", hint: "How many times one code may download the checker.", unit: "times", def: 3, min: 1, max: 20 },
   { key: "chat.cooldown_seconds", group: "Chat", label: "Seconds between messages", hint: "A player may write one public chat message per this many seconds. 0 turns the wait off.", unit: "seconds", def: 3, min: 0, max: 60 },
+  { key: "chat.max_per_minute", group: "Chat", label: "Messages per minute", hint: "More than this many messages from one player in a minute are refused (spam).", unit: "messages", def: 10, min: 1, max: 60 },
   { key: "chat.keep_hours", group: "Chat", label: "Keep chat messages for", hint: "Older public chat messages are removed. 0 keeps them for ever. The default is 30 days.", unit: "hours", def: 720, min: 0, max: 8760 },
   { key: "creators.reapply_days", group: "Creators", label: "Apply again after a decline", hint: "A player whose creator application was declined may ask again after this long.", unit: "days", def: 7, min: 0, max: 365 },
 ] as const satisfies readonly SettingDef[];

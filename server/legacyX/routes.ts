@@ -33,7 +33,7 @@ import { RANK_CALCULATION_VERSION, calculateMatchExp, expLimitUsage, limitWindow
 import { buildRankedInput, rankedResultSchema, type MatchParticipant, type PlayerProgression } from "./rankedMatch";
 import { matchResultAnnouncement, resultSteamIds } from "./matchAnnouncement";
 import { leaveRulesFrom, leaveStatus, loadLeaves, playerAccess } from "./playAccess";
-import { CHAT_PAGE, checkChatBody, chatMessageSchema } from "./chat";
+import { CHAT_PAGE, checkChatBody, chatMessageSchema, spamProblem } from "./chat";
 import { cosmeticEditSchema } from "./cosmeticAdmin";
 import { SETTINGS, forgetSettings, loadSettings, settingDef, validSettingValue } from "./settings";
 import { ANNOUNCEMENT_MAX_AGE_HOURS, ANNOUNCEMENT_PAGE, announcementRow, announcementSchema, announcementView, type AnnouncementRecord } from "./announcements";
@@ -4185,7 +4185,7 @@ export function createLegacyXRouter() {
     const { data: staffRow } = await db().from("staff").select("role").eq("user_id", user.id).eq("status", "active").maybeSingle();
     const isStaff = Boolean(staffRow && ["OWNER", "MANAGER", "ADMIN"].includes(textValue(staffRow.role)));
     const checked = checkChatBody(input.body, isStaff);
-    if (!checked.ok) apiError(400, { empty: "Write something first", too_long: "That message is too long", link: "Links are not allowed in the chat" }[checked.problem], `chat_${checked.problem}`);
+    if (!checked.ok) apiError(400, { empty: "Write something first", too_long: "That message is too long", link: "Links are not allowed in the chat", repeated_characters: "Please do not repeat one character so many times", shouting: "Please do not write everything in capitals" }[checked.problem], `chat_${checked.problem}`);
     const gags = await db().from("penalties").select("expires_at").eq("user_id", user.id).eq("type", "gag").eq("is_unbanned", false);
     legacyXError(gags.error, "Unable to check your penalties");
     const gagged = ((gags.data ?? []) as DbRow[]).some((row) => !row.expires_at || Date.parse(textValue(row.expires_at)) > Date.now());
@@ -4195,6 +4195,12 @@ export function createLegacyXRouter() {
       const { data: last } = await db().from("chat_messages").select("created_at").eq("user_id", user.id).order("created_at", { ascending: false }).limit(1).maybeSingle();
       const left = last ? Math.ceil((Date.parse(textValue(last.created_at)) + wait * 1000 - Date.now()) / 1000) : 0;
       if (left > 0) apiError(429, `Wait ${left} second${left === 1 ? "" : "s"} before the next message`, "chat_cooldown");
+    }
+    if (!isStaff) {
+      // Flood checks over the last two minutes of the chat: repeats, the same text from several players, too many in a minute.
+      const { data: lately } = await db().from("chat_messages").select("user_id,body,created_at").gte("created_at", new Date(Date.now() - 120_000).toISOString()).order("created_at", { ascending: false }).limit(200);
+      const problem = spamProblem(checked.body, user.id, ((lately ?? []) as DbRow[]).map((row) => ({ userId: textValue(row.user_id), body: textValue(row.body), at: Date.parse(textValue(row.created_at)) })), Date.now(), settings["chat.max_per_minute"]);
+      if (problem) apiError(429, { duplicate: "You already wrote that", copied: "That message looks like spam", too_fast: "You are writing too fast, slow down" }[problem], `chat_${problem}`);
     }
     const { data, error } = await db().from("chat_messages").insert({ user_id: user.id, body: checked.body }).select("id,user_id,body,created_at,users!chat_messages_user_id_fkey(id,steam_id,username,avatar)").single();
     legacyXError(error, "Unable to send the message");
