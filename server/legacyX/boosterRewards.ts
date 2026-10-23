@@ -3,18 +3,19 @@ import { loadCommunity } from "./discordCommunity";
 import { legacyXError } from "./supabase";
 
 /**
- * What a Discord server booster gets (owner decision 2026-10-17): the Server Booster avatar frame, once, kept for good even when the
- * boosting stops; no coins. It goes to the LEGACY-X profile the member linked Discord to: a booster who links later gets it then.
- * While the member still boosts, the profile also shows a Booster badge (`discordBoosting`).
+ * What a Discord server booster gets: the Server Booster avatar frame; no coins. It goes to the LEGACY-X profile the member linked Discord
+ * to: a booster who links later gets it then. Owner decision 2026-10-23 (replacing "kept for good" of 2026-10-17): the frame lasts only while
+ * the member boosts. Discord does not say how many boosts a member has left, only whether any remains (`boosting`), so one boost ending while
+ * another still runs changes nothing; the frame goes when the last one ends. While the member boosts, the profile also shows a Booster badge.
  */
 type Db = SupabaseClient<any, any, any, any, any>;
 type Row = Record<string, unknown>;
 
 export const BOOSTER_FRAME_ID = "server-booster";
 
-/** Gives the frame to every linked member who has boosted (optionally only these Discord IDs). Returns how many were checked. */
+/** Gives the frame to every linked member who boosts right now (optionally only these Discord IDs). Returns how many were checked. */
 export async function grantBoosterFrames(db: Db, discordIds?: string[]): Promise<number> {
-  let query = db.from("discord_community_stats").select("discord_id").gt("boosts", 0).limit(5000);
+  let query = db.from("discord_community_stats").select("discord_id").gt("boosts", 0).eq("boosting", true).limit(5000);
   if (discordIds) {
     if (discordIds.length === 0) return 0;
     query = query.in("discord_id", discordIds.slice(0, 200));
@@ -33,6 +34,40 @@ export async function grantBoosterFrames(db: Db, discordIds?: string[]): Promise
     granted += rows.length;
   }
   return granted;
+}
+
+/** Which of these holders no longer boost: those whose linked Discord is not in the boosting set (or who have no link any more). */
+export function staleFrameHolders(holders: { userId: string; discordId: string | null }[], boosting: Set<string>): string[] {
+  return holders.filter((holder) => !holder.discordId || !boosting.has(holder.discordId)).map((holder) => holder.userId);
+}
+
+/** Takes the Server Booster frame (and takes it off) from everyone who stopped boosting. Frames a staff member gave by hand are left alone. */
+export async function endBoosterFrames(db: Db): Promise<number> {
+  const { data: owned, error } = await db.from("cosmetic_owned").select("user_id").eq("item_id", BOOSTER_FRAME_ID).eq("source", "achievement").limit(10000);
+  legacyXError(error, "Unable to read the booster frames");
+  const userIds = ((owned ?? []) as Row[]).map((row) => String(row.user_id));
+  const discordOf = new Map<string, string>();
+  for (let index = 0; index < userIds.length; index += 200) {
+    const { data, error: linkError } = await db.from("discord_links").select("user_id,discord_id").in("user_id", userIds.slice(index, index + 200));
+    legacyXError(linkError, "Unable to read Discord links");
+    for (const row of (data ?? []) as Row[]) discordOf.set(String(row.user_id), String(row.discord_id));
+  }
+  const boosting = new Set<string>();
+  const discordIds = Array.from(new Set(discordOf.values()));
+  for (let index = 0; index < discordIds.length; index += 200) {
+    const { data, error: statError } = await db.from("discord_community_stats").select("discord_id").eq("boosting", true).in("discord_id", discordIds.slice(index, index + 200));
+    legacyXError(statError, "Unable to read Discord boosters");
+    for (const row of (data ?? []) as Row[]) boosting.add(String(row.discord_id));
+  }
+  const stale = staleFrameHolders(userIds.map((userId) => ({ userId, discordId: discordOf.get(userId) ?? null })), boosting);
+  for (let index = 0; index < stale.length; index += 200) {
+    const batch = stale.slice(index, index + 200);
+    const { error: takeError } = await db.from("cosmetic_owned").delete().eq("item_id", BOOSTER_FRAME_ID).eq("source", "achievement").in("user_id", batch);
+    legacyXError(takeError, "Unable to take the booster frame back");
+    const { error: offError } = await db.from("cosmetic_equipped").delete().eq("kind", "frame").eq("item_id", BOOSTER_FRAME_ID).in("user_id", batch);
+    legacyXError(offError, "Unable to take off the booster frame");
+  }
+  return stale.length;
 }
 
 /** True while this user's linked Discord account boosts the server. Never throws: the badge is decoration. */
@@ -77,13 +112,15 @@ export function planPodium(holders: (string | null)[], owned: Pair[], equipped: 
 
 /** Reads the ladder and brings the three frames in line with it. Safe to call as often as the community report arrives. */
 export async function syncBoosterPodium(db: Db): Promise<void> {
-  const top = (await loadCommunity(db, "boosts", 3)).filter((entry) => entry.boosts > 0);
+  // A place is the member's place on the ladder; it is worn only while they boost, so a member who stopped leaves their place empty.
+  const top = await loadCommunity(db, "boosts", 3);
   const holders: (string | null)[] = [null, null, null];
-  if (top.length > 0) {
-    const { data, error } = await db.from("users").select("id,steam_id").in("steam_id", top.map((entry) => entry.steamId));
+  const wearing = top.filter((entry) => entry.boosts > 0 && entry.boosting);
+  if (wearing.length > 0) {
+    const { data, error } = await db.from("users").select("id,steam_id").in("steam_id", wearing.map((entry) => entry.steamId));
     legacyXError(error, "Unable to read the top boosters");
     const idBySteam = new Map(((data ?? []) as Row[]).map((row) => [String(row.steam_id), String(row.id)]));
-    top.forEach((entry, index) => { holders[index] = idBySteam.get(entry.steamId) ?? null; });
+    top.forEach((entry, index) => { if (entry.boosts > 0 && entry.boosting) holders[index] = idBySteam.get(entry.steamId) ?? null; });
   }
   const items = [...BOOSTER_PODIUM_FRAMES];
   const [owned, equipped] = await Promise.all([

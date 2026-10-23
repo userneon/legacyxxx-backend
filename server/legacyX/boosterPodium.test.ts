@@ -50,3 +50,14 @@ describe("booster place", () => {
     await expect(boosterPlaceOf(dbWith([], true), "u")).resolves.toBeNull();
   });
 });
+
+import { staleFrameHolders } from "./boosterRewards";
+
+describe("booster frame lasts only while boosting", () => {
+  it("takes the frame from those who no longer boost and keeps it for those who still do", () => {
+    const holders = [{ userId: "a", discordId: "1" }, { userId: "b", discordId: "2" }, { userId: "c", discordId: null }];
+    expect(staleFrameHolders(holders, new Set(["1"]))).toEqual(["b", "c"]);
+    expect(staleFrameHolders(holders, new Set(["1", "2"]))).toEqual(["c"]);
+    expect(staleFrameHolders([], new Set())).toEqual([]);
+  });
+});

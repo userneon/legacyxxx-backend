@@ -44,7 +44,7 @@ import { PROFILE_NAME_MAX, PROFILE_SECTIONS, bestNameMatch, escapeLike, hiddenFo
 import { activeBans, bannedPlayer, checkBansSchema, issueBan, issueBanSchema, issueIpBan, issueIpBanSchema, listActiveBans, revokeAllBans, revokeAllBansSchema, revokeBans, revokeBanSchema, revokeIpBans, revokeIpBanSchema } from "./bans";
 import { authorizationRequestSchema, resolveAuthorizations } from "./adminAuthorization";
 import { CREATOR_TIER_LABEL, cleanCreatorLinks, creatorTier, sortCreators, upsertCreatorSchema } from "./creators";
-import { boosterPlaceOf, grantBoosterFrames, isBoostingNow, syncBoosterPodium } from "./boosterRewards";
+import { boosterPlaceOf, endBoosterFrames, grantBoosterFrames, isBoostingNow, syncBoosterPodium } from "./boosterRewards";
 import { claimFounder, founderCount, founderLabel, founderNumberOf, founderSalesOpen, FOUNDER_PRODUCT_KIND, productDeadlines } from "./founder";
 import { cachedFor as publicCached } from "./responseCache";
 import { communityInputSchema, loadCommunity, recordCommunity } from "./discordCommunity";
@@ -4286,6 +4286,8 @@ export function createLegacyXRouter() {
     // Boosters who linked Discord get the Server Booster frame (once, kept for good). Best effort: the report is saved either way.
     const mentioned = Array.from(new Set([...input.boosters, ...input.boostEvents].map((entry) => entry.discordId)));
     await grantBoosterFrames(db(), mentioned).catch((error) => console.warn("[legacy-x-api] booster frames not given", error?.message));
+    // The Server Booster frame lasts only while the member boosts: it goes from everyone who stopped.
+    await endBoosterFrames(db()).catch((error) => console.warn("[legacy-x-api] booster frames not ended", error?.message));
     // The three top boosters wear Gold, Silver and Bronze, which follow the ranking. Best effort too (the SQL may not be run yet).
     await syncBoosterPodium(db()).catch((error) => console.warn("[legacy-x-api] booster podium not synced", error?.message));
     res.json({ saved });
