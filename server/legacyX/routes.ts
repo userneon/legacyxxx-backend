@@ -40,7 +40,7 @@ import { isMissingTableError, ownerLinks, ownerProfileSchema, ownerTeam, ownerUp
 import { liftInfo } from "./penaltyLift";
 import { ADMIN_PANEL_PAGE, adminBanItem, adminBansQuery, adminLoginItem, adminLoginsQuery } from "./adminPanel";
 import { menuLoadoutQuery, menuRarity, menuTiles, MENU_AGENT_TEAMS, MENU_SKIN_PAGE, MENU_SLOT_CATEGORY, entriesReplacedByEquip, menuAgentName, menuGunModel, menuSkinEquipBody, menuSkinItemsQuery, menuSkinName, menuSkinSlotSchema, menuSkinTypesQuery, menuSlotKey, sharedGunEntryMovedTo, type LoadoutRow, type MenuSkinSlot } from "./menuSkins";
-import { PROFILE_NAME_MAX, PROFILE_SECTIONS, bestNameMatch, escapeLike, hiddenForViewer, loadoutShowcase, mapWinRates, normalizeHiddenSections, profileStats, staffCard, type ProfileSection } from "./profileOverview";
+import { PROFILE_NAME_MAX, PROFILE_SECTIONS, bestNameMatch, escapeLike, hiddenForViewer, loadoutShowcase, mapWinRates, normalizeHiddenSections, profileStats, buildBenchmark, BENCHMARK_MIN_MATCHES, staffCard, type ProfileSection } from "./profileOverview";
 import { activeBans, bannedPlayer, checkBansSchema, issueBan, issueBanSchema, issueIpBan, issueIpBanSchema, listActiveBans, revokeAllBans, revokeAllBansSchema, revokeBans, revokeBanSchema, revokeIpBans, revokeIpBanSchema } from "./bans";
 import { authorizationRequestSchema, resolveAuthorizations } from "./adminAuthorization";
 import { CREATOR_TIER_LABEL, cleanCreatorLinks, creatorTier, sortCreators, upsertCreatorSchema } from "./creators";
@@ -1285,6 +1285,12 @@ export function createLegacyXRouter() {
    * public; stats / matches & maps / loadout honour the player's "What others can see" switches for
    * everyone except the owner and staff — hidden sections are left out of the payload.
    */
+  /** How the community's ranked players stand (for the "above average" lines on a profile); built from the progression table, kept for 10 minutes. Null if it cannot be read. */
+  const statBenchmark = () => publicCached("profile-stat-benchmark", 10 * 60_000, async () => {
+    const { data, error } = await db().from("competitive_player_progression").select("matches_completed,kills,deaths,headshot_kills,wins").gte("matches_completed", BENCHMARK_MIN_MATCHES).limit(20000);
+    if (error) throw new Error(error.message);
+    return buildBenchmark((data ?? []) as DbRow[]);
+  }).catch((error) => { console.warn("[legacy-x-api] stat benchmark unavailable", error?.message); return null; });
   router.get("/profile/:userId/overview", optionalUserRoute(async (req, res, viewer) => {
     const raw = String(req.params.userId ?? "");
     if (raw === "me" && !viewer) apiError(401, "Sign in to view your profile");
@@ -1367,7 +1373,7 @@ export function createLegacyXRouter() {
       } : null,
       lastPlayedAt: timestampValue(progression?.last_match_at) || null,
       trust: { steamAccountCreatedAt: steamCreatedAt, activePenalty: activePenalty ? { id: activePenalty.id, type: activePenalty.type } : null },
-      stats: hidden.includes("stats") ? null : profileStats(progression),
+      stats: hidden.includes("stats") ? null : profileStats(progression, await statBenchmark()),
       recentMatches: hidden.includes("matches") ? null : expRows.slice(0, 10).map(mapExpRecentMatch),
       maps: hidden.includes("matches") ? null : mapWinRates(expRows),
       penalties: penalties.sort((a, b) => Number(b === activePenalty) - Number(a === activePenalty)).slice(0, 5),

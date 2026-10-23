@@ -32,22 +32,82 @@ export function hiddenForViewer(hidden: ProfileSection[], viewer: { isOwner: boo
 /** null / missing stay NaN so a tile without data is dropped instead of showing 0. */
 const num = (value: unknown) => (value === null || value === undefined || value === "" ? Number.NaN : Number(value));
 
-/** Stat tiles from competitive progression; a tile is dropped when its data doesn't exist. */
-export function profileStats(progression: Row | null) {
-  if (!progression) return null;
+export type StatKey = "matches" | "winRate" | "kd" | "hs" | "avgKills";
+export const BENCHMARK_MIN_MATCHES = 5;
+export const BENCHMARK_MIN_PLAYERS = 10;
+
+/** The raw (unrounded) numbers behind one player's tiles; a key is missing when its data doesn't exist. */
+function rawStats(progression: Row): Partial<Record<StatKey, number>> {
   const matches = num(progression.matches_completed) || 0;
-  if (matches <= 0) return null;
+  const out: Partial<Record<StatKey, number>> = {};
+  if (matches <= 0) return out;
   const kills = num(progression.kills);
   const deaths = num(progression.deaths);
   const headshots = num(progression.headshot_kills);
   const wins = num(progression.wins) || 0;
-  const tiles: { key: "matches" | "winRate" | "kd" | "hs" | "avgKills"; label: string; value: number }[] = [
-    { key: "matches", label: "Matches", value: matches },
-    { key: "winRate", label: "Win rate", value: Math.round((wins / matches) * 100) },
-  ];
-  if (Number.isFinite(kills) && Number.isFinite(deaths) && deaths > 0) tiles.push({ key: "kd", label: "K/D", value: Math.round((kills / deaths) * 100) / 100 });
-  if (Number.isFinite(kills) && Number.isFinite(headshots) && kills > 0) tiles.push({ key: "hs", label: "HS %", value: Math.round((headshots / kills) * 100) });
-  if (Number.isFinite(kills)) tiles.push({ key: "avgKills", label: "Avg kills", value: Math.round((kills / matches) * 10) / 10 });
+  out.matches = matches;
+  out.winRate = (wins / matches) * 100;
+  if (Number.isFinite(kills) && Number.isFinite(deaths) && deaths > 0) out.kd = kills / deaths;
+  if (Number.isFinite(kills) && Number.isFinite(headshots) && kills > 0) out.hs = (headshots / kills) * 100;
+  if (Number.isFinite(kills)) out.avgKills = kills / matches;
+  return out;
+}
+
+/** How the community stands: every player with at least BENCHMARK_MIN_MATCHES ranked matches, one sorted list per stat. */
+export type StatBenchmark = { players: number; values: Record<StatKey, number[]> };
+
+export function buildBenchmark(rows: Row[]): StatBenchmark {
+  const values: Record<StatKey, number[]> = { matches: [], winRate: [], kd: [], hs: [], avgKills: [] };
+  let players = 0;
+  for (const row of rows) {
+    if ((num(row.matches_completed) || 0) < BENCHMARK_MIN_MATCHES) continue;
+    players += 1;
+    const raw = rawStats(row);
+    for (const key of Object.keys(values) as StatKey[]) {
+      const value = raw[key];
+      if (value !== undefined && Number.isFinite(value)) values[key].push(value);
+    }
+  }
+  for (const key of Object.keys(values) as StatKey[]) values[key].sort((a, b) => a - b);
+  return { players, values };
+}
+
+const DECIMALS: Record<StatKey, number> = { matches: 0, winRate: 0, kd: 2, hs: 0, avgKills: 1 };
+const roundTo = (value: number, decimals: number) => Math.round(value * 10 ** decimals) / 10 ** decimals;
+
+/** Share (0-100) of the benchmark with a lower value, ties counting half. */
+function percentileOf(sorted: number[], value: number) {
+  if (sorted.length === 0) return null;
+  let below = 0;
+  let equal = 0;
+  for (const item of sorted) {
+    if (item < value) below += 1;
+    else if (item === value) equal += 1;
+  }
+  return Math.round(((below + equal / 2) / sorted.length) * 100);
+}
+
+/**
+ * Stat tiles from competitive progression; a tile is dropped when its data doesn't exist. With a benchmark of at least BENCHMARK_MIN_PLAYERS
+ * players each tile also carries `average` (the community's), and `percentile` (how many players it beats) once the player has
+ * BENCHMARK_MIN_MATCHES matches of their own. Nothing is guessed: with too few players both stay null.
+ */
+export function profileStats(progression: Row | null, benchmark?: StatBenchmark | null) {
+  if (!progression) return null;
+  const matches = num(progression.matches_completed) || 0;
+  if (matches <= 0) return null;
+  const raw = rawStats(progression);
+  const labels: Record<StatKey, string> = { matches: "Matches", winRate: "Win rate", kd: "K/D", hs: "HS %", avgKills: "Avg kills" };
+  const useBenchmark = benchmark != null && benchmark.players >= BENCHMARK_MIN_PLAYERS;
+  const ranked = matches >= BENCHMARK_MIN_MATCHES;
+  const tiles: { key: StatKey; label: string; value: number; average: number | null; percentile: number | null }[] = [];
+  for (const key of ["matches", "winRate", "kd", "hs", "avgKills"] as StatKey[]) {
+    const value = raw[key];
+    if (value === undefined) continue;
+    const list = useBenchmark ? benchmark.values[key] : [];
+    const average = list.length > 0 ? roundTo(list.reduce((sum, item) => sum + item, 0) / list.length, DECIMALS[key]) : null;
+    tiles.push({ key, label: labels[key], value: roundTo(value, DECIMALS[key]), average, percentile: ranked && list.length > 0 ? percentileOf(list, value) : null });
+  }
   return tiles;
 }
 

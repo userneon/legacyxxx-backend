@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { bestNameMatch, escapeLike, hiddenForViewer, loadoutShowcase, mapWinRates, normalizeHiddenSections, profileStats, staffCard } from "./profileOverview";
+import { bestNameMatch, buildBenchmark, escapeLike, hiddenForViewer, loadoutShowcase, mapWinRates, normalizeHiddenSections, profileStats, staffCard } from "./profileOverview";
 
 describe("profile visibility", () => {
   it("normalizes new and legacy section names", () => {
@@ -21,6 +21,33 @@ describe("profileStats", () => {
     expect(profileStats({ matches_completed: 4, wins: 1, kills: null, deaths: 0 })?.map((tile) => tile.key)).toEqual(["matches", "winRate"]);
     expect(profileStats({ matches_completed: 0 })).toBeNull();
     expect(profileStats(null)).toBeNull();
+  });
+});
+
+describe("community averages", () => {
+  const players = Array.from({ length: 12 }, (_, index) => ({ matches_completed: 10, wins: index, kills: 100 + index * 10, deaths: 100, headshot_kills: 40 }));
+
+  it("adds the community average and where the player stands", () => {
+    const bench = buildBenchmark(players);
+    expect(bench.players).toBe(12);
+    const tiles = profileStats({ matches_completed: 10, wins: 11, kills: 210, deaths: 100, headshot_kills: 40 }, bench);
+    const kd = tiles?.find((tile) => tile.key === "kd");
+    expect(kd).toMatchObject({ value: 2.1, average: 1.55 });
+    expect(kd?.percentile).toBeGreaterThan(90);
+    expect(tiles?.find((tile) => tile.key === "winRate")).toMatchObject({ average: 55 });
+  });
+
+  it("ignores players with fewer than 5 matches and shows no average for a small community", () => {
+    const few = buildBenchmark([...players.slice(0, 5), { matches_completed: 2, wins: 2, kills: 90, deaths: 1, headshot_kills: 9 }]);
+    expect(few.players).toBe(5);
+    expect(profileStats({ matches_completed: 10, wins: 5, kills: 100, deaths: 100, headshot_kills: 10 }, few)?.every((tile) => tile.average === null && tile.percentile === null)).toBe(true);
+    expect(profileStats({ matches_completed: 10, wins: 5, kills: 100, deaths: 100, headshot_kills: 10 }, null)?.every((tile) => tile.average === null)).toBe(true);
+  });
+
+  it("gives no ranking to a player with fewer than 5 matches", () => {
+    const tiles = profileStats({ matches_completed: 3, wins: 3, kills: 90, deaths: 10, headshot_kills: 40 }, buildBenchmark(players));
+    expect(tiles?.every((tile) => tile.percentile === null)).toBe(true);
+    expect(tiles?.find((tile) => tile.key === "kd")?.average).toBe(1.55);
   });
 });
 
