@@ -3340,6 +3340,24 @@ export function createLegacyXRouter() {
     await logClan(clan, user.id, "moderated", null, "clan deleted by staff");
     res.status(204).end();
   }));
+  // Staff hand a clan to another member (the leader is gone, banned or asks for it); the old leader stays as a co-leader, as in a normal hand-over.
+  router.post("/staff/clans/:clanId/transfer", userRoute(async (req, res, user) => {
+    await requireClanModerator(user.id);
+    const clanId = await clanIdOf(req.params.clanId);
+    const input = z.object({ userId: z.string().uuid() }).strict().parse(req.body);
+    const { data: clan, error: clanError } = await db().from("clans").select("id,name,owner_id").eq("id", clanId).maybeSingle();
+    legacyXError(clanError, "Unable to read the clan");
+    if (!clan) apiError(404, "Clan not found");
+    const leaderId = textValue(clan.owner_id);
+    if (input.userId === leaderId) apiError(409, "That player already leads the clan", "clan_rejected");
+    const { error } = await db().rpc("transfer_clan_leader", { p_clan_id: clanId, p_from: leaderId, p_to: input.userId });
+    clanRpcError(error);
+    legacyXError(error, "Unable to hand over the clan");
+    await logClan(clan, user.id, "moderated", input.userId, "leader changed by staff");
+    await tellPlayer(input.userId, "You lead a clan now", `${textValue(clan.name)} was handed over to you by the staff.`, { clanId, kind: "transferred" });
+    if (leaderId) await tellPlayer(leaderId, "Your clan has a new leader", `${textValue(clan.name)} was handed to another member by the staff. You are a co-leader now.`, { clanId, kind: "transferred" });
+    res.status(204).end();
+  }));
   router.delete("/staff/clans/:clanId/art/:kind", userRoute(async (req, res, user) => {
     await requireClanModerator(user.id);
     const clanId = await clanIdOf(req.params.clanId);
