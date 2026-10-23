@@ -3340,22 +3340,40 @@ export function createLegacyXRouter() {
     await logClan(clan, user.id, "moderated", null, "clan deleted by staff");
     res.status(204).end();
   }));
-  // Staff hand a clan to another member (the leader is gone, banned or asks for it); the old leader stays as a co-leader, as in a normal hand-over.
+  // Staff hand a clan to any player (the leader is gone, banned or asks for it): a member, or a player who is in no clan, who joins it first.
+  // The old leader stays as a co-leader, as in a normal hand-over.
   router.post("/staff/clans/:clanId/transfer", userRoute(async (req, res, user) => {
     await requireClanModerator(user.id);
     const clanId = await clanIdOf(req.params.clanId);
-    const input = z.object({ userId: z.string().uuid() }).strict().parse(req.body);
+    const input = z.object({ userId: z.string().uuid().optional(), steamId: z.string().regex(/^7656119\d{10}$/).optional() }).strict().refine((value) => Boolean(value.userId) !== Boolean(value.steamId), { message: "Give a player" }).parse(req.body);
     const { data: clan, error: clanError } = await db().from("clans").select("id,name,owner_id").eq("id", clanId).maybeSingle();
     legacyXError(clanError, "Unable to read the clan");
     if (!clan) apiError(404, "Clan not found");
+    let heir = input.userId ?? "";
+    if (input.steamId) {
+      const { data: found, error: foundError } = await db().from("users").select("id").eq("steam_id", input.steamId).maybeSingle();
+      legacyXError(foundError, "Unable to find the player");
+      if (!found) apiError(404, "That player has not signed in to LEGACY-X yet", "clan_player_not_found");
+      heir = textValue(found.id);
+    }
     const leaderId = textValue(clan.owner_id);
-    if (input.userId === leaderId) apiError(409, "That player already leads the clan", "clan_rejected");
-    const { error } = await db().rpc("transfer_clan_leader", { p_clan_id: clanId, p_from: leaderId, p_to: input.userId });
+    if (heir === leaderId) apiError(409, "That player already leads the clan", "clan_rejected");
+    const { data: seat, error: seatError } = await db().from("clan_members").select("clan_id").eq("clan_id", clanId).eq("user_id", heir).maybeSingle();
+    legacyXError(seatError, "Unable to check the clan members");
+    let joined = false;
+    if (!seat) {
+      // Not a member yet: they join first (the same rules as anyone: one clan only, and room in this one).
+      const joinResult = await db().rpc("join_clan", { p_user_id: heir, p_clan_id: clanId });
+      clanRpcError(joinResult.error);
+      legacyXError(joinResult.error, "Unable to add the player to the clan");
+      joined = true;
+    }
+    const { error } = await db().rpc("transfer_clan_leader", { p_clan_id: clanId, p_from: leaderId, p_to: heir });
     clanRpcError(error);
     legacyXError(error, "Unable to hand over the clan");
-    await logClan(clan, user.id, "moderated", input.userId, "leader changed by staff");
-    await tellPlayer(input.userId, "You lead a clan now", `${textValue(clan.name)} was handed over to you by the staff.`, { clanId, kind: "transferred" });
-    if (leaderId) await tellPlayer(leaderId, "Your clan has a new leader", `${textValue(clan.name)} was handed to another member by the staff. You are a co-leader now.`, { clanId, kind: "transferred" });
+    await logClan(clan, user.id, "moderated", heir, joined ? "joined and made leader by staff" : "leader changed by staff");
+    await tellPlayer(heir, "You lead a clan now", `${textValue(clan.name)} was handed over to you by the staff.`, { clanId, kind: "transferred" });
+    if (leaderId) await tellPlayer(leaderId, "Your clan has a new leader", `${textValue(clan.name)} was handed to another player by the staff. You are a co-leader now.`, { clanId, kind: "transferred" });
     res.status(204).end();
   }));
   router.delete("/staff/clans/:clanId/art/:kind", userRoute(async (req, res, user) => {
