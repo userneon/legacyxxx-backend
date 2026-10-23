@@ -9,7 +9,7 @@ import { cachedFor, forgetCached } from "./responseCache";
  */
 export interface SettingDef {
   key: string;
-  group: "Play" | "Checks" | "Creators";
+  group: "Play" | "Checks" | "Creators" | "Chat";
   label: string;
   hint: string;
   unit: string;
@@ -25,6 +25,8 @@ export const SETTINGS = [
   { key: "checks.code_minutes", group: "Checks", label: "Check code lifetime", hint: "How long the one-time code works after staff ask for a check.", unit: "minutes", def: 60, min: 5, max: 1440 },
   { key: "checks.retention_days", group: "Checks", label: "Keep checks for", hint: "Finished checks and their results are removed after this long.", unit: "days", def: 30, min: 1, max: 365 },
   { key: "checks.max_downloads", group: "Checks", label: "Downloads per check", hint: "How many times one code may download the checker.", unit: "times", def: 3, min: 1, max: 20 },
+  { key: "chat.cooldown_seconds", group: "Chat", label: "Seconds between messages", hint: "A player may write one public chat message per this many seconds. 0 turns the wait off.", unit: "seconds", def: 3, min: 0, max: 60 },
+  { key: "chat.keep_hours", group: "Chat", label: "Keep chat messages for", hint: "Older public chat messages are removed.", unit: "hours", def: 48, min: 1, max: 720 },
   { key: "creators.reapply_days", group: "Creators", label: "Apply again after a decline", hint: "A player whose creator application was declined may ask again after this long.", unit: "days", def: 7, min: 0, max: 365 },
 ] as const satisfies readonly SettingDef[];
 

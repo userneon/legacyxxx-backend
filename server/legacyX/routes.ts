@@ -33,6 +33,7 @@ import { RANK_CALCULATION_VERSION, calculateMatchExp, expLimitUsage, limitWindow
 import { buildRankedInput, rankedResultSchema, type MatchParticipant, type PlayerProgression } from "./rankedMatch";
 import { matchResultAnnouncement, resultSteamIds } from "./matchAnnouncement";
 import { leaveRulesFrom, leaveStatus, loadLeaves, playerAccess } from "./playAccess";
+import { CHAT_PAGE, checkChatBody, chatMessageSchema } from "./chat";
 import { cosmeticEditSchema } from "./cosmeticAdmin";
 import { SETTINGS, forgetSettings, loadSettings, settingDef, validSettingValue } from "./settings";
 import { ANNOUNCEMENT_MAX_AGE_HOURS, ANNOUNCEMENT_PAGE, announcementRow, announcementSchema, announcementView, type AnnouncementRecord } from "./announcements";
@@ -48,7 +49,7 @@ import { authorizationRequestSchema, resolveAuthorizations } from "./adminAuthor
 import { CREATOR_TIER_LABEL, cleanCreatorLinks, creatorApplicationSchema, creatorDecisionSchema, creatorTier, sortCreators, upsertCreatorSchema } from "./creators";
 import { boosterPlaceOf, endBoosterFrames, grantBoosterFrames, isBoostingNow, syncBoosterPodium } from "./boosterRewards";
 import { claimFounder, founderCount, founderLabel, founderNumberOf, founderSalesOpen, FOUNDER_PRODUCT_KIND, productDeadlines } from "./founder";
-import { cachedFor as publicCached } from "./responseCache";
+import { cachedFor as publicCached, forgetCached } from "./responseCache";
 import { communityInputSchema, loadCommunity, recordCommunity } from "./discordCommunity";
 import { completeLink, discordLinkedUserIds, discordIdSchema, isLinkToken, linkCallbackUrl, linkResultPage, listLinks, pendingLinkRequest, returnToMatches, unlink } from "./discordLinks";
 import { issueCommPenalty, issueCommPenaltySchema, liftCommPenalties, liftCommPenaltySchema, listActiveCommPenalties } from "./gamePenalties";
@@ -4152,6 +4153,65 @@ export function createLegacyXRouter() {
     if (!data) apiError(404, "No such cosmetic");
     await db().from("audit_logs").insert({ actor_type: "user", actor_id: user.id, action: "cosmetic.edit", target_type: "cosmetic_items", target_id: id, metadata: { unlock: input.unlock, price: input.price, enabled: input.enabled } });
     res.json({ id });
+  }));
+  // The public chat (owner request 2026-10-23). Everyone reads the last messages; a signed-in player without an active gag writes; staff remove a message.
+  const CHAT_CACHE_KEY = "public-chat";
+  const chatView = async (rows: DbRow[]) => {
+    const authors = rows.map((row) => textValue(row.user_id));
+    const [worn, staff] = await Promise.all([
+      equippedCosmeticsFor(authors),
+      authors.length ? db().from("staff").select("user_id,role").in("user_id", Array.from(new Set(authors))).eq("status", "active") : Promise.resolve({ data: [] as DbRow[], error: null }),
+    ]);
+    const roleOf = new Map(((staff.error ? [] : staff.data) ?? []).map((row: DbRow) => [textValue(row.user_id), textValue(row.role)]));
+    return rows.map((row) => {
+      const author = firstRow(row.users) ?? {};
+      const id = textValue(row.user_id);
+      const role = roleOf.get(id);
+      return { id: textValue(row.id), body: textValue(row.body), createdAt: textValue(row.created_at), author: { steamId: textValue(author.steam_id), name: textValue(author.username), avatar: textValue(author.avatar) || null, ...lookOf(worn, id), staffRole: role === "OWNER" || role === "MANAGER" || role === "ADMIN" ? role : null } };
+    });
+  };
+  router.get("/public/chat", asyncRoute(async (_req, res) => {
+    const messages = await publicCached(CHAT_CACHE_KEY, 1500, async () => {
+      const { data, error } = await db().from("chat_messages").select("id,user_id,body,created_at,users!chat_messages_user_id_fkey(id,steam_id,username,avatar)").is("deleted_at", null).order("created_at", { ascending: false }).limit(CHAT_PAGE);
+      legacyXError(error, "Unable to load the chat");
+      return chatView(((data ?? []) as DbRow[]).reverse());
+    });
+    res.set("Cache-Control", "no-store");
+    res.json({ messages });
+  }));
+  router.post("/chat", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
+    const input = chatMessageSchema.parse(req.body);
+    const settings = await loadSettings(db());
+    const { data: staffRow } = await db().from("staff").select("role").eq("user_id", user.id).eq("status", "active").maybeSingle();
+    const isStaff = Boolean(staffRow && ["OWNER", "MANAGER", "ADMIN"].includes(textValue(staffRow.role)));
+    const checked = checkChatBody(input.body, isStaff);
+    if (!checked.ok) apiError(400, { empty: "Write something first", too_long: "That message is too long", link: "Links are not allowed in the chat" }[checked.problem], `chat_${checked.problem}`);
+    const gags = await db().from("penalties").select("expires_at").eq("user_id", user.id).eq("type", "gag").eq("is_unbanned", false);
+    legacyXError(gags.error, "Unable to check your penalties");
+    const gagged = ((gags.data ?? []) as DbRow[]).some((row) => !row.expires_at || Date.parse(textValue(row.expires_at)) > Date.now());
+    if (gagged) apiError(403, "You are gagged and cannot write in the chat", "chat_gagged");
+    const wait = settings["chat.cooldown_seconds"];
+    if (wait > 0) {
+      const { data: last } = await db().from("chat_messages").select("created_at").eq("user_id", user.id).order("created_at", { ascending: false }).limit(1).maybeSingle();
+      const left = last ? Math.ceil((Date.parse(textValue(last.created_at)) + wait * 1000 - Date.now()) / 1000) : 0;
+      if (left > 0) apiError(429, `Wait ${left} second${left === 1 ? "" : "s"} before the next message`, "chat_cooldown");
+    }
+    const { data, error } = await db().from("chat_messages").insert({ user_id: user.id, body: checked.body }).select("id,user_id,body,created_at,users!chat_messages_user_id_fkey(id,steam_id,username,avatar)").single();
+    legacyXError(error, "Unable to send the message");
+    forgetCached(CHAT_CACHE_KEY);
+    // Old messages go now and then, so the table stays small.
+    if (Math.random() < 0.05) void db().from("chat_messages").delete().lt("created_at", new Date(Date.now() - settings["chat.keep_hours"] * 3_600_000).toISOString());
+    res.status(201).json({ message: (await chatView([data as DbRow]))[0] });
+  }));
+  router.delete("/staff/chat/:id", userRoute(async (req, res, user) => {
+    await requireModerator(user.id, "ban");
+    const id = z.string().uuid().parse(req.params.id);
+    const { data, error } = await db().from("chat_messages").update({ deleted_at: new Date().toISOString(), deleted_by: user.id }).eq("id", id).is("deleted_at", null).select("id").maybeSingle();
+    legacyXError(error, "Unable to remove the message");
+    if (!data) apiError(404, "No such message");
+    forgetCached(CHAT_CACHE_KEY);
+    await db().from("audit_logs").insert({ actor_type: "user", actor_id: user.id, action: "chat.remove", target_type: "chat_messages", target_id: id, metadata: {} });
+    res.status(204).end();
   }));
   // Staff → Settings (Owner only): the numbers in settings.ts, with their defaults and ranges. A change shows within seconds; "reset" removes the stored value.
   router.get("/staff/settings", userRoute(async (_req, res, user) => {
