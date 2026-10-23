@@ -44,7 +44,7 @@ import { PROFILE_NAME_MAX, PROFILE_SECTIONS, bestNameMatch, escapeLike, hiddenFo
 import { activeBans, bannedPlayer, checkBansSchema, issueBan, issueBanSchema, issueIpBan, issueIpBanSchema, listActiveBans, revokeAllBans, revokeAllBansSchema, revokeBans, revokeBanSchema, revokeIpBans, revokeIpBanSchema } from "./bans";
 import { authorizationRequestSchema, resolveAuthorizations } from "./adminAuthorization";
 import { CREATOR_TIER_LABEL, cleanCreatorLinks, creatorTier, sortCreators, upsertCreatorSchema } from "./creators";
-import { grantBoosterFrames, isBoostingNow } from "./boosterRewards";
+import { grantBoosterFrames, isBoostingNow, syncBoosterPodium } from "./boosterRewards";
 import { claimFounder, founderCount, founderLabel, founderNumberOf, founderSalesOpen, FOUNDER_PRODUCT_KIND, productDeadlines } from "./founder";
 import { cachedFor as publicCached } from "./responseCache";
 import { communityInputSchema, loadCommunity, recordCommunity } from "./discordCommunity";
@@ -4285,6 +4285,8 @@ export function createLegacyXRouter() {
     // Boosters who linked Discord get the Server Booster frame (once, kept for good). Best effort: the report is saved either way.
     const mentioned = Array.from(new Set([...input.boosters, ...input.boostEvents].map((entry) => entry.discordId)));
     await grantBoosterFrames(db(), mentioned).catch((error) => console.warn("[legacy-x-api] booster frames not given", error?.message));
+    // The three top boosters wear Gold, Silver and Bronze, which follow the ranking. Best effort too (the SQL may not be run yet).
+    await syncBoosterPodium(db()).catch((error) => console.warn("[legacy-x-api] booster podium not synced", error?.message));
     res.json({ saved });
   }));
   router.get("/public/discord/community", asyncRoute(async (req, res) => {
@@ -4374,6 +4376,7 @@ export function createLegacyXRouter() {
     if (!(await completeLink(db(), token, userId))) return expiredLink(res);
     // A booster who links Discord now gets the Server Booster frame on this profile.
     await grantBoosterFrames(db(), [request.discordId]).catch(() => undefined);
+    await syncBoosterPodium(db()).catch(() => undefined);
     const { data: user } = await db().from("users").select("username").eq("id", userId).maybeSingle();
     const steamName = typeof user?.username === "string" && user.username ? user.username : steamId;
     sendLinkPage(res, 200, true, "Амжилттай холбогдлоо", `Discord акаунт ${request.discordName || request.discordId} нь Steam акаунт ${steamName}-тэй холбогдлоо. Rank role хэдэн секундын дотор Discord дээр гарч ирнэ.`);
