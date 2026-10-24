@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { cleanCreatorLinks, creatorApplicationSchema, creatorDecisionSchema, sortCreators, upsertCreatorSchema, validCreatorLink } from "./creators";
+import { withHttps, cleanCreatorLinks, creatorApplicationSchema, creatorDecisionSchema, sortCreators, upsertCreatorSchema, validCreatorLink } from "./creators";
 
 describe("content creators", () => {
   it("accepts only https links on each platform's own host", () => {
@@ -41,5 +41,15 @@ describe("content creators", () => {
     expect(creatorDecisionSchema.parse({ decision: "approve" })).toEqual({ decision: "approve", tier: "creator", note: "" });
     expect(creatorDecisionSchema.parse({ decision: "decline", note: " not yet " }).note).toBe("not yet");
     expect(() => creatorDecisionSchema.parse({ decision: "maybe" })).toThrow();
+  });
+
+  it("takes a pasted link without https as the https link it means", () => {
+    expect(withHttps("www.tiktok.com/@evrixcs")).toBe("https://www.tiktok.com/@evrixcs");
+    expect(withHttps("http://twitch.tv/name")).toBe("https://twitch.tv/name");
+    expect(withHttps("https://kick.com/name")).toBe("https://kick.com/name");
+    expect(withHttps("ftp://kick.com/name")).toBe("ftp://kick.com/name");
+    const parsed = creatorApplicationSchema.safeParse({ bio: "I make CS2 clips every week", links: { tiktok: "www.tiktok.com/@evrixcs" } });
+    expect(parsed.success && parsed.data.links.tiktok).toBe("https://www.tiktok.com/@evrixcs");
+    expect(creatorApplicationSchema.safeParse({ bio: "I make CS2 clips every week", links: { tiktok: "www.example.com/@x" } }).success).toBe(false);
   });
 });

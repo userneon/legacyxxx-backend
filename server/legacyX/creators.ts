@@ -31,8 +31,17 @@ export function validCreatorLink(platform: CreatorPlatform, value: string): bool
   return CREATOR_PLATFORMS[platform].some((allowed) => host === allowed || host.endsWith(`.${allowed}`));
 }
 
+/** What players paste: "www.tiktok.com/@name" or "http://…" is taken as the https link it means. */
+export function withHttps(value: string): string {
+  const text = value.trim();
+  if (!text) return text;
+  if (/^http:\/\//i.test(text)) return `https://${text.slice(7)}`;
+  if (text.includes("://")) return text;
+  return `https://${text.replace(/^\/+/, "")}`;
+}
+
 const link = (platform: CreatorPlatform) => z.string().trim().max(200).optional()
-  .transform((value) => value || undefined)
+  .transform((value) => (value ? withHttps(value) : undefined))
   .refine((value) => value === undefined || validCreatorLink(platform, value), { message: `Not a ${platform} link` });
 
 const linksSchema = z.object({

@@ -4268,7 +4268,14 @@ export function createLegacyXRouter() {
     const id = z.string().uuid().parse(req.params.id);
     const { data, error } = await db().from("chat_messages").update({ deleted_at: new Date().toISOString(), deleted_by: user.id }).eq("id", id).is("deleted_at", null).select("id").maybeSingle();
     legacyXError(error, "Unable to remove the message");
-    if (!data) apiError(404, "No such message");
+    if (!data) {
+      // Already removed (a double click, another staff member, or a list that was a few seconds old): that is what was asked for.
+      const { data: existing } = await db().from("chat_messages").select("id").eq("id", id).maybeSingle();
+      if (!existing) apiError(404, "No such message");
+      forgetCached(CHAT_CACHE_KEY);
+      res.status(204).end();
+      return;
+    }
     forgetCached(CHAT_CACHE_KEY);
     await db().from("audit_logs").insert({ actor_type: "user", actor_id: user.id, action: "chat.remove", target_type: "chat_messages", target_id: id, metadata: {} });
     res.status(204).end();
