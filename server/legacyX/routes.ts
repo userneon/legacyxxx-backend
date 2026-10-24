@@ -1765,6 +1765,16 @@ export function createLegacyXRouter() {
   const cosmeticIdSchema = z.string().regex(/^[a-z0-9-]{2,40}$/);
   const COSMETIC_KINDS = ["frame", "name_color", "name_glow", "banner", "title", "smoke_color"] as const;
   type CosmeticKind = (typeof COSMETIC_KINDS)[number];
+  // Bought cosmetics are rented: a share of the item's price (its 30-day price) buys 1 day, 7 days, 30 days or forever.
+  const COSMETIC_DURATIONS = [
+    { key: "1d", days: 1, percent: 25 },
+    { key: "7d", days: 7, percent: 60 },
+    { key: "30d", days: 30, percent: 100 },
+    { key: "forever", days: null, percent: 300 },
+  ] as const;
+  const cosmeticDurationSchema = z.enum(["1d", "7d", "30d", "forever"]);
+  const cosmeticPrices = (basePrice: number) => Object.fromEntries(COSMETIC_DURATIONS.map((duration) => [duration.key, Math.max(1, Math.round((basePrice * duration.percent) / 100))]));
+  const stillRunning = (expiresAt: unknown, now = Date.now()) => !expiresAt || Date.parse(textValue(expiresAt)) > now;
   const loadCosmeticCatalog = async () => {
     const { data, error } = await db().from("cosmetic_items").select("id,kind,name_en,name_mn,unlock,price,requirement,sort,color,glow,fx,rarity,featured").eq("enabled", true).in("kind", [...COSMETIC_KINDS]).order("sort");
     legacyXError(error, "Unable to load cosmetics");
@@ -1778,10 +1788,14 @@ export function createLegacyXRouter() {
     const [equipped, catalog] = await Promise.all([db().from("cosmetic_equipped").select("user_id,kind,item_id").in("user_id", ids), loadCosmeticCatalog().catch((error) => { console.error("[legacy-x-api] unable to load cosmetics", error?.message); return [] as DbRow[]; })]);
     if (equipped.error) { console.error("[legacy-x-api] unable to load equipped cosmetics", equipped.error.message); return worn; }
     const items = new Map(catalog.map((item) => [textValue(item.id), item]));
+    // What was rented and has run out is no longer worn, even before anything tidies the row away.
+    const ran = new Set<string>();
+    const renting = await db().from("cosmetic_owned").select("user_id,item_id,expires_at").in("user_id", ids).not("expires_at", "is", null);
+    if (!renting.error) for (const row of (renting.data ?? []) as DbRow[]) if (!stillRunning(row.expires_at)) ran.add(`${textValue(row.user_id)}:${textValue(row.item_id)}`);
     for (const row of (equipped.data ?? []) as DbRow[]) {
       const userId = textValue(row.user_id);
       const item = items.get(textValue(row.item_id));
-      if (!item) continue;
+      if (!item || ran.has(`${userId}:${textValue(row.item_id)}`)) continue;
       const entry = worn.get(userId) ?? { frame: null, banner: null, title: null, nameStyle: null };
       if (row.kind === "frame") entry.frame = textValue(item.id);
       else if (row.kind === "banner") entry.banner = textValue(item.fx) || null;
@@ -1798,12 +1812,16 @@ export function createLegacyXRouter() {
   };
   /** The frame and name style fields every player card carries (null when nothing is worn). */
   const lookOf = (worn: Awaited<ReturnType<typeof equippedCosmeticsFor>>, userId: string) => ({ frame: worn.get(userId)?.frame ?? null, nameStyle: worn.get(userId)?.nameStyle ?? null });
-  const cosmeticView = (item: DbRow, ownedIds: Set<string>, owners: Map<string, number>) => ({
+  const cosmeticView = (item: DbRow, ownedIds: Set<string>, owners: Map<string, number>, endsAt: Map<string, string | null>) => ({
     id: textValue(item.id),
     name: textValue(item.name_en),
     nameMn: textValue(item.name_mn),
     unlock: textValue(item.unlock),
     price: numberValue(item.price),
+    /** What each rental length costs (only for items sold with LX). */
+    ...(textValue(item.unlock) === "coin" ? { prices: cosmeticPrices(numberValue(item.price)) } : {}),
+    /** When a rented item runs out; absent when it is yours for good. */
+    ...(endsAt.get(textValue(item.id)) ? { expiresAt: endsAt.get(textValue(item.id)) } : {}),
     requirement: textValue(item.requirement),
     owned: textValue(item.unlock) === "free" || ownedIds.has(textValue(item.id)),
     rarity: Math.min(4, Math.max(1, numberValue(item.rarity) || 1)),
@@ -1819,19 +1837,21 @@ export function createLegacyXRouter() {
     const none = { data: [] as DbRow[], error: null };
     const [catalog, owned, worn, equippedRows, everyOwned, players] = await Promise.all([
       loadCosmeticCatalog(),
-      user ? db().from("cosmetic_owned").select("item_id").eq("user_id", user.id) : Promise.resolve(none),
+      user ? db().from("cosmetic_owned").select("item_id,expires_at").eq("user_id", user.id) : Promise.resolve(none),
       user ? equippedCosmeticsFor([user.id]) : Promise.resolve(new Map()),
       user ? db().from("cosmetic_equipped").select("kind,item_id").eq("user_id", user.id) : Promise.resolve(none),
-      db().from("cosmetic_owned").select("item_id").limit(100000),
+      db().from("cosmetic_owned").select("item_id,expires_at").limit(100000),
       db().from("users").select("id", { count: "exact", head: true }),
     ]);
     legacyXError(owned.error || equippedRows.error, "Unable to load your cosmetics");
     // Counts are cosmetic extras: if they cannot be read the shop still works, just without them.
     const owners = new Map<string, number>();
-    if (!everyOwned.error) for (const row of (everyOwned.data ?? []) as DbRow[]) owners.set(textValue(row.item_id), (owners.get(textValue(row.item_id)) ?? 0) + 1);
-    const ownedIds = new Set(((owned.data ?? []) as DbRow[]).map((row) => textValue(row.item_id)));
-    const wearing = new Map(((equippedRows.data ?? []) as DbRow[]).map((row) => [textValue(row.kind), textValue(row.item_id)]));
-    const ofKind = (kind: CosmeticKind) => catalog.filter((item) => item.kind === kind).map((item) => cosmeticView(item, ownedIds, owners));
+    if (!everyOwned.error) for (const row of ((everyOwned.data ?? []) as DbRow[]).filter((entry) => stillRunning(entry.expires_at))) owners.set(textValue(row.item_id), (owners.get(textValue(row.item_id)) ?? 0) + 1);
+    const runningRows = ((owned.data ?? []) as DbRow[]).filter((row) => stillRunning(row.expires_at));
+    const ownedIds = new Set(runningRows.map((row) => textValue(row.item_id)));
+    const endsAt = new Map<string, string | null>(runningRows.map((row) => [textValue(row.item_id), row.expires_at ? timestampValue(row.expires_at) : null]));
+    const wearing = new Map(((equippedRows.data ?? []) as DbRow[]).filter((row) => textValue(catalog.find((item) => textValue(item.id) === textValue(row.item_id))?.unlock) !== "coin" || ownedIds.has(textValue(row.item_id))).map((row) => [textValue(row.kind), textValue(row.item_id)]));
+    const ofKind = (kind: CosmeticKind) => catalog.filter((item) => item.kind === kind).map((item) => cosmeticView(item, ownedIds, owners, endsAt));
     res.json({
       players: players.error ? null : players.count ?? 0,
       equippedFrame: user ? worn.get(user.id)?.frame ?? null : null,
@@ -1850,25 +1870,36 @@ export function createLegacyXRouter() {
   }));
   router.post("/cosmetics/:itemId/buy", userRoute(async (req, res, user) => {
     const itemId = cosmeticIdSchema.parse(req.params.itemId);
+    const input = z.object({ duration: cosmeticDurationSchema.default("30d") }).strict().parse(req.body ?? {});
     const item = (await loadCosmeticCatalog()).find((entry) => textValue(entry.id) === itemId);
     if (!item) apiError(404, "Item not found");
     if (textValue(item.unlock) !== "coin") apiError(409, "This item is not for sale", "cosmetic_not_for_sale");
-    const price = numberValue(item.price);
+    const length = COSMETIC_DURATIONS.find((entry) => entry.key === input.duration)!;
+    const price = Number(cosmeticPrices(numberValue(item.price))[length.key]);
     const label = item.kind === "frame" ? "Frame" : item.kind === "name_color" ? "Name colour" : item.kind === "banner" ? "Banner" : item.kind === "title" ? "Title" : item.kind === "smoke_color" ? "Smoke colour" : "Name glow";
-    // The ref is per player and item, so a double click or a retry charges once.
+    // Already yours: a rental is added on to the time left, and an item that is yours for good cannot be bought again.
+    const { data: current, error: currentError } = await db().from("cosmetic_owned").select("expires_at,source").eq("user_id", user.id).eq("item_id", itemId).maybeSingle();
+    legacyXError(currentError, "Unable to check your cosmetics");
+    const now = Date.now();
+    const running = current && stillRunning((current as DbRow).expires_at, now);
+    if (running && (!(current as DbRow).expires_at || textValue((current as DbRow).source) !== "coin")) apiError(409, "You already own this for good", "cosmetic_owned_forever");
+    const startsFrom = running ? Date.parse(textValue((current as DbRow).expires_at)) : now;
+    const endsAt = length.days === null ? null : new Date(startsFrom + length.days * 86_400_000).toISOString();
+    // The ref is per player, item and length for ten seconds, so a double click or a retry charges once, and a later renewal charges again.
+    const ref = `cosmetic:${itemId}:${user.id}:${length.key}:${Math.floor(now / 10_000)}`;
     try {
-      await applyWalletChange(legacyXDb(), { userId: user.id, amount: -price, kind: "spend", reason: `${label}: ${textValue(item.name_en)}`, ref: `cosmetic:${itemId}`, actor: user.id });
+      await applyWalletChange(legacyXDb(), { userId: user.id, amount: -price, kind: "spend", reason: `${label}: ${textValue(item.name_en)} (${length.key === "forever" ? "forever" : `${length.days} day${length.days === 1 ? "" : "s"}`})`, ref, actor: user.id });
     } catch (error) {
       if (error instanceof NotEnoughCoinsError) apiError(402, `This costs ${price} LX`, "cosmetic_no_coins");
       throw error;
     }
-    const { error } = await db().from("cosmetic_owned").upsert({ user_id: user.id, item_id: itemId, source: "coin" }, { onConflict: "user_id,item_id", ignoreDuplicates: true });
+    const { error } = await db().from("cosmetic_owned").upsert({ user_id: user.id, item_id: itemId, source: "coin", expires_at: endsAt, acquired_at: new Date(now).toISOString() }, { onConflict: "user_id,item_id" });
     if (error) {
-      await applyWalletChange(legacyXDb(), { userId: user.id, amount: price, kind: "refund", reason: `${label} purchase failed`, ref: `cosmetic:${itemId}:refund`, actor: user.id }).catch((refundError) => console.error("[legacy-x-api] cosmetic refund failed", refundError));
+      await applyWalletChange(legacyXDb(), { userId: user.id, amount: price, kind: "refund", reason: `${label} purchase failed`, ref: `${ref}:refund`, actor: user.id }).catch((refundError) => console.error("[legacy-x-api] cosmetic refund failed", refundError));
       legacyXError(error, "Unable to save the purchase");
     }
-    await db().from("audit_logs").insert({ actor_type: "user", actor_id: user.id, action: "cosmetic.buy", target_type: "cosmetic_items", target_id: itemId, metadata: { price } });
-    res.status(201).json({ owned: true });
+    await db().from("audit_logs").insert({ actor_type: "user", actor_id: user.id, action: "cosmetic.buy", target_type: "cosmetic_items", target_id: itemId, metadata: { price, duration: length.key, extended: Boolean(running) } });
+    res.status(201).json({ owned: true, expiresAt: endsAt });
   }));
   // Wear one, or take it off with item: null. The older { frame } body still works.
   router.put("/cosmetics/equip", userRoute(async (req, res, user) => {
@@ -1885,9 +1916,9 @@ export function createLegacyXRouter() {
     const item = (await loadCosmeticCatalog()).find((entry) => textValue(entry.id) === input.item);
     if (!item || item.kind !== input.kind) apiError(404, "Item not found");
     if (textValue(item.unlock) !== "free") {
-      const { data, error: ownedError } = await db().from("cosmetic_owned").select("item_id").eq("user_id", user.id).eq("item_id", input.item).maybeSingle();
+      const { data, error: ownedError } = await db().from("cosmetic_owned").select("item_id,expires_at").eq("user_id", user.id).eq("item_id", input.item).maybeSingle();
       legacyXError(ownedError, "Unable to check your cosmetics");
-      if (!data) apiError(403, "You do not own this yet", "cosmetic_not_owned");
+      if (!data || !stillRunning((data as DbRow).expires_at)) apiError(403, "You do not own this yet", "cosmetic_not_owned");
     }
     const { error } = await db().from("cosmetic_equipped").upsert({ user_id: user.id, kind: input.kind, item_id: input.item, updated_at: new Date().toISOString() }, { onConflict: "user_id,kind" });
     legacyXError(error, "Unable to wear it");
@@ -4764,7 +4795,9 @@ export function createLegacyXRouter() {
     // The colour of the player's own smoke grenades (the worn Smoke colour cosmetic), for the game server to apply.
     const { data: smokeRow } = await db().from("cosmetic_equipped").select("item_id").eq("user_id", data.user_id).eq("kind", "smoke_color").maybeSingle();
     let smokeColor: string | null = null;
-    if (smokeRow) {
+    // A rented colour that has run out is not applied.
+    const { data: smokeRental } = smokeRow ? await db().from("cosmetic_owned").select("expires_at").eq("user_id", data.user_id).eq("item_id", textValue((smokeRow as DbRow).item_id)).maybeSingle() : { data: null };
+    if (smokeRow && (!smokeRental || stillRunning((smokeRental as DbRow).expires_at))) {
       const { data: smokeItem } = await db().from("cosmetic_items").select("color").eq("id", textValue((smokeRow as DbRow).item_id)).eq("kind", "smoke_color").eq("enabled", true).maybeSingle();
       const hex = textValue((smokeItem as DbRow | null)?.color);
       smokeColor = /^#[0-9a-f]{6}$/i.test(hex) ? hex : null;
