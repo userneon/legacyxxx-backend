@@ -4671,7 +4671,7 @@ export function createLegacyXRouter() {
     res.json({ topic: input.topic, enabled: input.enabled });
   }));
   router.get("/auth/discord/callback", asyncRoute(async (req, res) => {
-    const back = (result: string) => res.set("Cache-Control", "no-store").redirect(302, `${steamOpenIdOrigin(req)}/settings?discord=${result}`);
+    const back = (result: string) => res.set("Cache-Control", "no-store").redirect(302, `${steamOpenIdOrigin(req)}/discord?discord=${result}`);
     const config = discordOAuthConfig();
     const { code, state, error } = req.query as Record<string, unknown>;
     if (!config) return back("unavailable");
