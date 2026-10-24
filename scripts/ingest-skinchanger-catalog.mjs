@@ -84,6 +84,8 @@ function classify(raw, sourceCategory) {
   const sourceGroup = text(raw.category?.name, text(raw.category, ""));
   if (sourceCategory === "weapon") {
     if (sourceGroup === "Knives") return "knife";
+    // The Zeus x27 is the one Equipment item with finishes; the rest of that group (Medi-Shot) has none.
+    if (text(raw.id) === "base_weapon-weapon_taser") return "weapon";
     return firearmGroups.has(sourceGroup) ? "weapon" : null;
   }
   if (sourceCategory === "weapon_skin") {
