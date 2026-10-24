@@ -17,3 +17,12 @@ INSERT INTO legacy_x.cosmetic_items (id, kind, name_en, name_mn, unlock, price, 
   ('smoke-gold', 'smoke_color', 'Gold', 'Алт', 'coin', 300, '', 8, '#fbbf24', 3),
   ('smoke-shadow', 'smoke_color', 'Shadow', 'Сүүдэр', 'coin', 300, '', 9, '#27272a', 3)
 ON CONFLICT (id) DO NOTHING;
+
+-- Premium two-colour smokes (2026-10-24): `color2` is the second colour of a gradient smoke; the game alternates the two grenade by grenade.
+ALTER TABLE legacy_x.cosmetic_items ADD COLUMN IF NOT EXISTS color2 text CHECK (color2 IS NULL OR color2 ~ '^#[0-9a-f]{6}$');
+INSERT INTO legacy_x.cosmetic_items (id, kind, name_en, name_mn, unlock, price, requirement, sort, color, color2, rarity) VALUES
+  ('smoke-aurora', 'smoke_color', 'Aurora', 'Туяа', 'coin', 400, '', 10, '#2dd4bf', '#8b5cf6', 4),
+  ('smoke-sunrise', 'smoke_color', 'Sunrise', 'Мандах', 'coin', 400, '', 11, '#f97316', '#ec4899', 4),
+  ('smoke-ember', 'smoke_color', 'Ember', 'Дөл', 'coin', 450, '', 12, '#e11d48', '#fbbf24', 4),
+  ('smoke-glacier', 'smoke_color', 'Glacier', 'Мөсөн гол', 'coin', 400, '', 13, '#38bdf8', '#f5f5f5', 4)
+ON CONFLICT (id) DO NOTHING;

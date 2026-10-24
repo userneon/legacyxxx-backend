@@ -1776,7 +1776,7 @@ export function createLegacyXRouter() {
   const cosmeticPrices = (basePrice: number) => Object.fromEntries(COSMETIC_DURATIONS.map((duration) => [duration.key, Math.max(1, Math.round((basePrice * duration.percent) / 100))]));
   const stillRunning = (expiresAt: unknown, now = Date.now()) => !expiresAt || Date.parse(textValue(expiresAt)) > now;
   const loadCosmeticCatalog = async () => {
-    const { data, error } = await db().from("cosmetic_items").select("id,kind,name_en,name_mn,unlock,price,requirement,sort,color,glow,fx,rarity,featured").eq("enabled", true).in("kind", [...COSMETIC_KINDS]).order("sort");
+    const { data, error } = await db().from("cosmetic_items").select("id,kind,name_en,name_mn,unlock,price,requirement,sort,color,color2,glow,fx,rarity,featured").eq("enabled", true).in("kind", [...COSMETIC_KINDS]).order("sort");
     legacyXError(error, "Unable to load cosmetics");
     return (data ?? []) as DbRow[];
   };
@@ -1829,6 +1829,8 @@ export function createLegacyXRouter() {
     /** How many players own it (null for free items, which everyone has). */
     owners: textValue(item.unlock) === "free" ? null : owners.get(textValue(item.id)) ?? 0,
     ...(item.color ? { color: textValue(item.color) } : {}),
+    /** The second colour of a two-colour (gradient) item. */
+    ...(item.color2 ? { color2: textValue(item.color2) } : {}),
     ...(item.glow ? { glow: textValue(item.glow) } : {}),
     ...(item.fx ? { fx: textValue(item.fx) } : {}),
   });
@@ -4795,16 +4797,20 @@ export function createLegacyXRouter() {
     // The colour of the player's own smoke grenades (the worn Smoke colour cosmetic), for the game server to apply.
     const { data: smokeRow } = await db().from("cosmetic_equipped").select("item_id").eq("user_id", data.user_id).eq("kind", "smoke_color").maybeSingle();
     let smokeColor: string | null = null;
+    let smokeColor2: string | null = null;
     // A rented colour that has run out is not applied.
     const { data: smokeRental } = smokeRow ? await db().from("cosmetic_owned").select("expires_at").eq("user_id", data.user_id).eq("item_id", textValue((smokeRow as DbRow).item_id)).maybeSingle() : { data: null };
     if (smokeRow && (!smokeRental || stillRunning((smokeRental as DbRow).expires_at))) {
-      const { data: smokeItem } = await db().from("cosmetic_items").select("color").eq("id", textValue((smokeRow as DbRow).item_id)).eq("kind", "smoke_color").eq("enabled", true).maybeSingle();
+      const { data: smokeItem } = await db().from("cosmetic_items").select("color,color2").eq("id", textValue((smokeRow as DbRow).item_id)).eq("kind", "smoke_color").eq("enabled", true).maybeSingle();
       const hex = textValue((smokeItem as DbRow | null)?.color);
       smokeColor = /^#[0-9a-f]{6}$/i.test(hex) ? hex : null;
+      const hex2 = textValue((smokeItem as DbRow | null)?.color2);
+      smokeColor2 = smokeColor && /^#[0-9a-f]{6}$/i.test(hex2) ? hex2 : null;
     }
     res.json({ profile: {
       ...profile,
       smoke_color: smokeColor,
+      smoke_color2: smokeColor2,
       position: ladder ? numberValue((ladder as DbRow).position) : null,
       kills: countOrNull("kills"),
       deaths: countOrNull("deaths"),
