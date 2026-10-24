@@ -99,6 +99,7 @@ describe("Discord links", () => {
         { user_id: "u1", discord_id: "111111111111111111", discord_name: "a", linked_at: "t1", users: { steam_id: "76561198000000001", username: "Alpha" } },
         { user_id: "u2", discord_id: "222222222222222222", discord_name: "b", linked_at: "t2", users: [{ steam_id: "76561198000000002", username: "Bravo" }] },
       ], error: null }, { data: [{ discord_id: "111111111111111111" }, { discord_id: "222222222222222222" }], error: null }],
+      "discord_pings.select": [{ data: [{ user_id: "u1", topic: "updates" }, { user_id: "u1", topic: "live" }, { user_id: "u1", topic: "bogus" }], error: null }],
       "competitive_player_profiles.select": [{ data: [{ user_id: "u1", rank_id: 12, rank_name: "Vanguard II", current_exp: 2400, matches_completed: 30 }], error: null }],
       "clan_members.select": [{ data: [{ user_id: "u2", role: "leader" }], error: null }],
       "staff.select": [{ data: [{ user_id: "u1", role: "MANAGER" }], error: null }],
@@ -110,8 +111,8 @@ describe("Discord links", () => {
       ], error: null }],
     });
     expect(await listLinks(db)).toEqual([
-      { discordId: "111111111111111111", discordName: "a", linkedAt: "t1", steamId: "76561198000000001", username: "Alpha", rankId: 12, rankName: "Vanguard II", currentExp: 2400, matchesCompleted: 30, clanRole: null, staffRole: "manager", creatorTier: null, boosterPlace: 2 },
-      { discordId: "222222222222222222", discordName: "b", linkedAt: "t2", steamId: "76561198000000002", username: "Bravo", rankId: null, rankName: null, currentExp: 0, matchesCompleted: 0, clanRole: "leader", staffRole: null, creatorTier: "main", boosterPlace: 1 },
+      { discordId: "111111111111111111", discordName: "a", linkedAt: "t1", steamId: "76561198000000001", username: "Alpha", rankId: 12, rankName: "Vanguard II", currentExp: 2400, matchesCompleted: 30, clanRole: null, staffRole: "manager", creatorTier: null, boosterPlace: 2, pings: ["updates", "live"] },
+      { discordId: "222222222222222222", discordName: "b", linkedAt: "t2", steamId: "76561198000000002", username: "Bravo", rankId: null, rankName: null, currentExp: 0, matchesCompleted: 0, clanRole: "leader", staffRole: null, creatorTier: "main", boosterPlace: 1, pings: [] },
     ]);
   });
 

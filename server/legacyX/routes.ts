@@ -49,7 +49,7 @@ import { boosterPlaceOf, endBoosterFrames, grantBoosterFrames, isBoostingNow, sy
 import { claimFounder, founderCount, founderLabel, founderNumberOf, founderSalesOpen, FOUNDER_PRODUCT_KIND, productDeadlines } from "./founder";
 import { cachedFor as publicCached, forgetCached } from "./responseCache";
 import { communityInputSchema, loadCommunity, recordCommunity } from "./discordCommunity";
-import { completeLink, discordLinkedUserIds, discordIdSchema, isLinkToken, linkCallbackUrl, linkResultPage, listLinks, pendingLinkRequest, returnToMatches, unlink } from "./discordLinks";
+import { PING_TOPICS, pingTopicKeys, completeLink, discordLinkedUserIds, discordIdSchema, isLinkToken, linkCallbackUrl, linkResultPage, listLinks, pendingLinkRequest, returnToMatches, unlink } from "./discordLinks";
 import { issueCommPenalty, issueCommPenaltySchema, liftCommPenalties, liftCommPenaltySchema, listActiveCommPenalties } from "./gamePenalties";
 import { createReadStream } from "node:fs";
 import { pipeline } from "node:stream/promises";
@@ -4652,6 +4652,23 @@ export function createLegacyXRouter() {
   router.delete("/discord/link", sensitiveMutationRateLimit, userRoute(async (_req, res, user) => {
     await removeOwnDiscordLink(db(), user.id);
     res.status(204).end();
+  }));
+  // Which Discord pings the signed-in player wants. Needs a linked Discord account: the bot gives the matching "Ping: …" role.
+  router.get("/discord/pings", userRoute(async (_req, res, user) => {
+    const { data, error } = await db().from("discord_pings").select("topic").eq("user_id", user.id);
+    legacyXError(error, "Unable to load your pings");
+    const on = new Set(((data ?? []) as DbRow[]).map((row) => textValue(row.topic)));
+    res.set("Cache-Control", "no-store");
+    res.json({ linked: Boolean(await ownDiscordLink(db(), user.id)), topics: PING_TOPICS.map((topic) => ({ ...topic, enabled: on.has(topic.key) })) });
+  }));
+  router.put("/discord/pings", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
+    const input = z.object({ topic: z.enum(pingTopicKeys), enabled: z.boolean() }).strict().parse(req.body);
+    if (!(await ownDiscordLink(db(), user.id))) apiError(409, "Link your Discord account first", "discord_not_linked");
+    const { error } = input.enabled
+      ? await db().from("discord_pings").upsert({ user_id: user.id, topic: input.topic }, { onConflict: "user_id,topic", ignoreDuplicates: true })
+      : await db().from("discord_pings").delete().eq("user_id", user.id).eq("topic", input.topic);
+    legacyXError(error, "Unable to save your ping");
+    res.json({ topic: input.topic, enabled: input.enabled });
   }));
   router.get("/auth/discord/callback", asyncRoute(async (req, res) => {
     const back = (result: string) => res.set("Cache-Control", "no-store").redirect(302, `${steamOpenIdOrigin(req)}/settings?discord=${result}`);

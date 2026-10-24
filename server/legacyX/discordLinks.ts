@@ -83,6 +83,16 @@ export async function completeLink(db: Db, token: string, userId: string) {
   return typeof data === "string" && data ? data : null;
 }
 
+/** What a linked player can be pinged for in Discord. Each one is a "Ping: …" role the bot keeps in step with these switches. */
+export const PING_TOPICS = [
+  { key: "updates", label: "Updates", description: "Website and game server updates" },
+  { key: "news", label: "News", description: "Counter-Strike 2 news" },
+  { key: "live", label: "Creators live", description: "A LEGACY-X creator goes live" },
+  { key: "play", label: "Servers need players", description: "A server is short of players" },
+] as const;
+export type PingTopic = (typeof PING_TOPICS)[number]["key"];
+export const pingTopicKeys = PING_TOPICS.map((topic) => topic.key) as [PingTopic, ...PingTopic[]];
+
 export type DiscordLink = {
   discordId: string;
   discordName: string;
@@ -101,6 +111,8 @@ export type DiscordLink = {
   creatorTier: string | null;
   /** 1, 2 or 3 for the three members who boost right now with the most boosts (the Boosters page's order), else null. */
   boosterPlace: number | null;
+  /** The ping topics the player switched on (see PING_TOPICS). Gives the matching "Ping: …" roles. */
+  pings: PingTopic[];
 };
 
 type Row = Record<string, unknown>;
@@ -166,6 +178,15 @@ export async function listLinks(db: Db, discordId?: string): Promise<DiscordLink
     for (const row of (creatorRows ?? []) as Row[]) creatorTiers.set(text(row.user_id), text(row.tier));
   }
   const places = await boosterPlaces(db);
+  const pings = new Map<string, PingTopic[]>();
+  for (let index = 0; index < userIds.length; index += 200) {
+    const { data: rows, error: pingError } = await db.from("discord_pings").select("user_id,topic").in("user_id", userIds.slice(index, index + 200));
+    legacyXError(pingError, "Unable to load linked players' pings");
+    for (const row of (rows ?? []) as Row[]) {
+      const topic = text(row.topic) as PingTopic;
+      if (pingTopicKeys.includes(topic)) pings.set(text(row.user_id), [...(pings.get(text(row.user_id)) ?? []), topic]);
+    }
+  }
 
   return links.map((link) => {
     const user = one(link.users);
@@ -184,6 +205,7 @@ export async function listLinks(db: Db, discordId?: string): Promise<DiscordLink
       staffRole: staffRoles.get(text(link.user_id)) || null,
       creatorTier: creatorTiers.get(text(link.user_id)) || null,
       boosterPlace: places.get(text(link.discord_id)) ?? null,
+      pings: pings.get(text(link.user_id)) ?? [],
     };
   });
 }
