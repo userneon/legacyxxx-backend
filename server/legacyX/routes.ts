@@ -4616,6 +4616,19 @@ export function createLegacyXRouter() {
     res.set("Cache-Control", "public, max-age=60");
     res.json({ entries: await loadCommunity(db(), sort, 1000) });
   }));
+  // The bot reports who of the linked accounts is on the Discord server (a full look every few minutes, and one account when it joins or leaves).
+  router.post("/plugin/discord/members", pluginRoute("discord:link", async (req, res) => {
+    const ids = z.array(discordIdSchema).max(6000).default([]);
+    const input = z.object({ present: ids, absent: ids }).strict().parse(req.body);
+    const stamp = new Date().toISOString();
+    for (const [flag, list] of [[true, input.present], [false, input.absent]] as const) {
+      for (let index = 0; index < list.length; index += 200) {
+        const { error } = await db().from("discord_links").update({ in_guild: flag, in_guild_at: stamp }).in("discord_id", list.slice(index, index + 200));
+        legacyXError(error, "Unable to save who is on the Discord server");
+      }
+    }
+    res.json({ present: input.present.length, absent: input.absent.length });
+  }));
   router.get("/plugin/discord/links", pluginRoute("discord:link", async (_req, res) => {
     res.set("Cache-Control", "no-store");
     res.json({ links: await listLinks(db()) });

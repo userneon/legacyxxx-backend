@@ -89,9 +89,9 @@ export async function linkDiscordAccount(db: Db, userId: string, identity: Disco
 
 /** The player's own link, or null. */
 export async function ownDiscordLink(db: Db, userId: string) {
-  const { data, error } = await db.from("discord_links").select("discord_id,discord_name,linked_at").eq("user_id", userId).maybeSingle();
+  const { data, error } = await db.from("discord_links").select("discord_id,discord_name,linked_at,in_guild").eq("user_id", userId).maybeSingle();
   legacyXError(error, "Unable to load the Discord link");
-  return data ? { discordId: String(data.discord_id), discordName: String(data.discord_name ?? ""), linkedAt: String(data.linked_at) } : null;
+  return data ? { discordId: String(data.discord_id), discordName: String(data.discord_name ?? ""), linkedAt: String(data.linked_at), inServer: typeof data.in_guild === "boolean" ? data.in_guild : null } : null;
 }
 
 export async function removeOwnDiscordLink(db: Db, userId: string) {

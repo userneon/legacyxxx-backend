@@ -9,3 +9,6 @@ CREATE TABLE IF NOT EXISTS legacy_x.discord_pings (
 ALTER TABLE legacy_x.discord_pings ENABLE ROW LEVEL SECURITY;
 REVOKE ALL ON legacy_x.discord_pings FROM PUBLIC, anon, authenticated;
 GRANT SELECT, INSERT, DELETE ON legacy_x.discord_pings TO service_role;
+
+-- Whether a linked account is on the Discord server right now (2026-10-24), reported by the bot: NULL until it has looked.
+ALTER TABLE legacy_x.discord_links ADD COLUMN IF NOT EXISTS in_guild boolean, ADD COLUMN IF NOT EXISTS in_guild_at timestamptz;
