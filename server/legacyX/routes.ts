@@ -958,6 +958,20 @@ export function createLegacyXRouter() {
     if (!data) apiError(404, "Clan was not found");
     return textValue((data as DbRow).id);
   };
+  /** The questions of every clan that recruits (recruitment on); a clan that does not is absent from the map. */
+  const clanRecruitmentFor = async (clanIds: string[]) => {
+    const found = new Map<string, string[]>();
+    if (clanIds.length === 0) return found;
+    const { data, error } = await db().from("clan_recruitment").select("clan_id,questions").eq("enabled", true).in("clan_id", clanIds);
+    if (error) { console.error("[legacy-x-api] unable to load clan recruitment", error.message); return found; }
+    for (const row of (data ?? []) as DbRow[]) found.set(textValue(row.clan_id), (Array.isArray(row.questions) ? row.questions : []).map((question) => textValue(question)).filter(Boolean));
+    return found;
+  };
+  /** What the leader set up, on or off (the questions are kept while it is off). */
+  const recruitmentOf = async (clanId: string) => {
+    const { data } = await db().from("clan_recruitment").select("enabled,questions").eq("clan_id", clanId).maybeSingle();
+    return { enabled: Boolean(data?.enabled), questions: (Array.isArray(data?.questions) ? (data?.questions as unknown[]) : []).map((question) => textValue(question)).filter(Boolean) };
+  };
   const loadClanDetail = async (clanId: string, viewerId?: string) => {
     const [clanResult, membersResult] = await Promise.all([
       db().from("clans").select("*,clan_members(count)").eq("id", clanId).maybeSingle(),
@@ -969,7 +983,8 @@ export function createLegacyXRouter() {
     const worn = await equippedCosmeticsFor(((membersResult.data ?? []) as DbRow[]).map((member) => textValue(member.user_id)));
     const members = ((membersResult.data ?? []) as DbRow[]).map((member) => ({ ...mapClanMember(member), ...lookOf(worn, textValue(member.user_id)) }));
     const viewerRole = viewerId ? members.find((member) => member.id === viewerId)?.role ?? null : null;
-    return { ...mapClanCard(clan), look: (await clanLooksFor(db(), [clanId])).get(clanId) ?? null, description: clan.description ?? undefined, members, viewer: { role: viewerRole, canModerate: viewerId ? await canModerateClans(viewerId) : false } };
+    const recruiting = await clanRecruitmentFor([clanId]);
+    return { ...mapClanCard(clan), look: (await clanLooksFor(db(), [clanId])).get(clanId) ?? null, recruit: recruiting.has(clanId) ? { questions: recruiting.get(clanId) ?? [] } : null, ...(viewerRole === "leader" ? { recruitment: await recruitmentOf(clanId) } : {}), description: clan.description ?? undefined, members, viewer: { role: viewerRole, canModerate: viewerId ? await canModerateClans(viewerId) : false } };
   };
   // Public website reads deliberately bypass AdminPlus. CS2 plugins/admin tools
   // write to Supabase; the website reads these safe projections through root API.
@@ -2475,7 +2490,8 @@ export function createLegacyXRouter() {
     const { data, error } = await query.range(input.offset, input.offset + input.limit - 1);
     legacyXError(error, "Unable to load clans");
     const looks = await clanLooksFor(db(), ((data ?? []) as DbRow[]).map((row) => textValue(row.id)));
-    res.json(((data ?? []) as DbRow[]).map((row) => ({ ...mapClanCard(row), look: looks.get(textValue(row.id)) ?? null })));
+    const recruiting = await clanRecruitmentFor(((data ?? []) as DbRow[]).map((row) => textValue(row.id)));
+    res.json(((data ?? []) as DbRow[]).map((row) => ({ ...mapClanCard(row), look: looks.get(textValue(row.id)) ?? null, recruit: recruiting.has(textValue(row.id)) ? { questions: recruiting.get(textValue(row.id)) ?? [] } : null })));
   }));
   // Ranking: the total EXP of a clan's members, counted from real ranked results.
   router.get("/clans/leaderboard", optionalUserRoute(async (_req, res) => {
@@ -2495,8 +2511,9 @@ export function createLegacyXRouter() {
       totals.set(textValue(row.clan_id), total);
     }
     const looks = await clanLooksFor(db(), ((clans.data ?? []) as DbRow[]).map((clan) => textValue(clan.id)));
+    const recruiting = await clanRecruitmentFor(((clans.data ?? []) as DbRow[]).map((clan) => textValue(clan.id)));
     const ranked = ((clans.data ?? []) as DbRow[])
-      .map((clan) => ({ ...mapClanCard(clan, totals.get(textValue(clan.id))?.members ?? 0), look: looks.get(textValue(clan.id)) ?? null, totalExp: totals.get(textValue(clan.id))?.exp ?? 0, matches: totals.get(textValue(clan.id))?.matches ?? 0, wins: totals.get(textValue(clan.id))?.wins ?? 0 }))
+      .map((clan) => ({ ...mapClanCard(clan, totals.get(textValue(clan.id))?.members ?? 0), look: looks.get(textValue(clan.id)) ?? null, recruit: recruiting.has(textValue(clan.id)) ? { questions: recruiting.get(textValue(clan.id)) ?? [] } : null, totalExp: totals.get(textValue(clan.id))?.exp ?? 0, matches: totals.get(textValue(clan.id))?.matches ?? 0, wins: totals.get(textValue(clan.id))?.wins ?? 0 }))
       .filter((clan) => clan.currentPlayers > 0)
       .sort((a, b) => b.totalExp - a.totalExp || b.wins - a.wins || a.name.localeCompare(b.name))
       .slice(0, 50)
@@ -2590,7 +2607,20 @@ export function createLegacyXRouter() {
     const { description, joinMode, maxPlayers } = input;
     const { error } = await db().from("clans").update({ ...(description !== undefined ? { description } : {}), ...(joinMode ? { join_mode: joinMode } : {}), ...(maxPlayers !== undefined ? { max_players: maxPlayers } : {}) }).eq("id", clanId);
     legacyXError(error, "Unable to update clan");
+    // Open joining and recruitment questions do not go together: opening the clan switches recruitment off.
+    if (joinMode === "open") await db().from("clan_recruitment").update({ enabled: false }).eq("clan_id", clanId);
     await logClan(clan, user.id, "settings", null, [joinMode ? `join: ${joinMode}` : "", maxPlayers !== undefined ? `max: ${maxPlayers}` : "", description !== undefined ? "description" : ""].filter(Boolean).join(", "));
+    res.json(await loadClanDetail(clanId, user.id));
+  }));
+  // Recruitment: the leader switches it on and asks up to three short questions; asking to join then needs an answer to each. Switching it on means requests (not open joining).
+  router.put("/clans/:clanId/recruitment", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
+    const clanId = await clanIdOf(req.params.clanId);
+    const clan = await requireClanLeader(clanId, user.id);
+    const input = z.object({ enabled: z.boolean(), questions: z.array(z.string().trim().min(2).max(100)).max(3) }).strict().parse(req.body);
+    const saved = await db().from("clan_recruitment").upsert({ clan_id: clanId, enabled: input.enabled, questions: input.questions, updated_at: new Date().toISOString() }, { onConflict: "clan_id" });
+    legacyXError(saved.error, "Unable to save recruitment");
+    if (input.enabled) { const mode = await db().from("clans").update({ join_mode: "request" }).eq("id", clanId); legacyXError(mode.error, "Unable to update clan"); }
+    await logClan(clan, user.id, "settings", null, `recruitment: ${input.enabled ? `on, ${input.questions.length} questions` : "off"}`);
     res.json(await loadClanDetail(clanId, user.id));
   }));
   // A new name or tag costs coins and may be changed once a week (the leader only).
@@ -3058,13 +3088,16 @@ export function createLegacyXRouter() {
     const clanId = await clanIdOf(req.params.clanId);
     const clan = await loadClanBasics(clanId);
     await waitAfterLeaving(user.id);
+    const questions = (await clanRecruitmentFor([clanId])).get(clanId) ?? [];
+    const joinInput = z.object({ answers: z.array(z.string().trim().min(1).max(300)).max(3).optional() }).strict().parse(req.body ?? {});
+    if (questions.length > 0 && (joinInput.answers?.length ?? 0) !== questions.length) apiError(400, "Answer every question to ask to join", "clan_answers_required");
     if (clan.join_mode === "request") {
       const { data: already } = await db().from("clan_members").select("clan_id").eq("user_id", user.id).maybeSingle();
       if (already) apiError(409, "You already belong to a clan", "clan_already_member");
       const { data: open } = await db().from("clan_join_requests").select("clan_id").eq("user_id", user.id);
       const waiting = (open ?? []) as DbRow[];
       if (!waiting.some((row) => row.clan_id === clanId) && waiting.length >= CLAN_LIMITS.pendingRequests) apiError(409, `You can have ${CLAN_LIMITS.pendingRequests} open requests at a time`, "clan_requests_limit");
-      const { error } = await db().from("clan_join_requests").upsert({ clan_id: clanId, user_id: user.id }, { onConflict: "clan_id,user_id", ignoreDuplicates: true });
+      const { error } = await db().from("clan_join_requests").upsert({ clan_id: clanId, user_id: user.id, answers: questions.length > 0 ? questions.map((question, index) => ({ q: question, a: joinInput.answers?.[index] ?? "" })) : null }, { onConflict: "clan_id,user_id" });
       legacyXError(error, "Unable to send the request");
       if (!waiting.some((row) => row.clan_id === clanId)) {
         await logClan(clan, user.id, "requested");
@@ -3090,9 +3123,9 @@ export function createLegacyXRouter() {
   router.get("/clans/:clanId/requests", userRoute(async (req, res, user) => {
     const clanId = await clanIdOf(req.params.clanId);
     await requireClanManager(clanId, user.id);
-    const { data, error } = await db().from("clan_join_requests").select("user_id,created_at,users(id,username,avatar)").eq("clan_id", clanId).order("created_at");
+    const { data, error } = await db().from("clan_join_requests").select("user_id,created_at,answers,users(id,username,avatar)").eq("clan_id", clanId).order("created_at");
     legacyXError(error, "Unable to load requests");
-    res.json(((data ?? []) as DbRow[]).map((row) => { const player = firstRow(row.users) ?? {}; return { id: textValue(row.user_id), name: textValue(player.username), avatar: textValue(player.avatar), at: textValue(row.created_at) }; }));
+    res.json(((data ?? []) as DbRow[]).map((row) => { const player = firstRow(row.users) ?? {}; return { id: textValue(row.user_id), name: textValue(player.username), avatar: textValue(player.avatar), at: textValue(row.created_at), answers: Array.isArray(row.answers) ? (row.answers as DbRow[]).map((entry) => ({ q: textValue(entry.q), a: textValue(entry.a) })) : [] }; }));
   }));
   router.post("/clans/:clanId/requests/:userId/accept", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
     const clanId = await clanIdOf(req.params.clanId);
