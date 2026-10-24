@@ -998,13 +998,13 @@ export function createLegacyXRouter() {
   };
   /** Clan tags of the given players (the clan feature may be switched off, then nobody has one). */
   const clanTagsFor = async (userIds: string[]) => {
-    const tags = new Map<string, { id: string; name: string; tag: string }>();
+    const tags = new Map<string, { id: string; number: number | null; name: string; tag: string }>();
     if (!userIds.length || !isDeferredFeatureEnabled("clan")) return tags;
-    const { data, error } = await db().from("clan_members").select("user_id,clans(id,name,tag)").in("user_id", userIds);
+    const { data, error } = await db().from("clan_members").select("user_id,clans(id,number,name,tag)").in("user_id", userIds);
     if (error) { console.warn("[legacy-x-api] clan tags unavailable", error.message); return tags; }
     for (const row of (data ?? []) as DbRow[]) {
       const clan = firstRow(row.clans);
-      if (clan) tags.set(textValue(row.user_id), { id: textValue(clan.id), name: textValue(clan.name), tag: textValue(clan.tag) });
+      if (clan) tags.set(textValue(row.user_id), { id: textValue(clan.id), number: typeof clan.number === "number" ? clan.number : null, name: textValue(clan.name), tag: textValue(clan.tag) });
     }
     return tags;
   };
