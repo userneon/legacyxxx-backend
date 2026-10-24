@@ -57,7 +57,7 @@ import { loadCheckerRules, probesOf } from "./checkerRules";
 import { judgeFacts } from "./checkerJudge";
 import { checkerBase, checkerMsi, checkerSha256, zipChunks, zipLength } from "./checkerZip";
 import { checkDownloadUrl, downloadHostAllowed, CHECK_ROLES, HWID_MATCH_KINDS, checkReportSchema, createCheckSchema, generateCheckCode, hashCheckCode, normalizeCheckCode, summarizeReport, sharesSamePc, recentSteamIds } from "./playerChecks";
-import { CLAN_LOOK_ITEMS, CLAN_LOOK_KINDS, CLAN_PAGE_EFFECTS, clanLookItem, clanLooksFor } from "./clanLooks";
+import { CLAN_LOOK_ITEMS, CLAN_LOOK_KINDS, clanLookItem, clanLooksFor } from "./clanLooks";
 import { killEventSchema, killFeed } from "./killfeed";
 import { heartbeatSchema, ingestHeartbeat } from "./serverHeartbeat";
 import { backfillProfiles, ensureAccounts, isBare, nameFromGame } from "./profileBackfill";
@@ -1775,6 +1775,8 @@ export function createLegacyXRouter() {
   const cosmeticDurationSchema = z.enum(["1d", "7d", "30d", "forever"]);
   const cosmeticPrices = (basePrice: number) => Object.fromEntries(COSMETIC_DURATIONS.map((duration) => [duration.key, Math.max(1, Math.round((basePrice * duration.percent) / 100))]));
   const stillRunning = (expiresAt: unknown, now = Date.now()) => !expiresAt || Date.parse(textValue(expiresAt)) > now;
+  /** Items whose colour the player picks (cosmetic_custom): the catalog colour is only the starting one. */
+  const CUSTOM_COSMETICS = new Map<string, "color" | "glow">([["name-custom", "color"], ["glow-custom", "glow"]]);
   const loadCosmeticCatalog = async () => {
     const { data, error } = await db().from("cosmetic_items").select("id,kind,name_en,name_mn,unlock,price,requirement,sort,color,color2,glow,fx,rarity,featured").eq("enabled", true).in("kind", [...COSMETIC_KINDS]).order("sort");
     legacyXError(error, "Unable to load cosmetics");
@@ -1785,6 +1787,8 @@ export function createLegacyXRouter() {
     const ids = Array.from(new Set(userIds.filter(Boolean)));
     const worn = new Map<string, { frame: string | null; banner: string | null; title: string | null; nameStyle: { color: string | null; glow: string | null; colorFx: string | null; glowFx: string | null } | null }>();
     if (!ids.length) return worn;
+    const customRows = await db().from("cosmetic_custom").select("user_id,item_id,color").in("user_id", ids).in("item_id", Array.from(CUSTOM_COSMETICS.keys()));
+    const picked = new Map<string, string>(((customRows.error ? [] : customRows.data ?? []) as DbRow[]).map((row) => [`${textValue(row.user_id)}:${textValue(row.item_id)}`, textValue(row.color)]));
     const [equipped, catalog] = await Promise.all([db().from("cosmetic_equipped").select("user_id,kind,item_id").in("user_id", ids), loadCosmeticCatalog().catch((error) => { console.error("[legacy-x-api] unable to load cosmetics", error?.message); return [] as DbRow[]; })]);
     if (equipped.error) { console.error("[legacy-x-api] unable to load equipped cosmetics", equipped.error.message); return worn; }
     const items = new Map(catalog.map((item) => [textValue(item.id), item]));
@@ -1802,8 +1806,9 @@ export function createLegacyXRouter() {
       else if (row.kind === "title") entry.title = textValue(item.name_en) || null;
       else if (row.kind === "name_color" || row.kind === "name_glow") {
         const style = entry.nameStyle ?? { color: null, glow: null, colorFx: null, glowFx: null };
-        if (row.kind === "name_color") { style.color = textValue(item.color) || null; style.colorFx = textValue(item.fx) || null; }
-        if (row.kind === "name_glow") { style.glow = textValue(item.glow) || null; style.glowFx = textValue(item.fx) || null; }
+        const chosen = picked.get(`${userId}:${textValue(item.id)}`);
+        if (row.kind === "name_color") { style.color = (CUSTOM_COSMETICS.get(textValue(item.id)) === "color" && chosen) || textValue(item.color) || null; style.colorFx = textValue(item.fx) || null; }
+        if (row.kind === "name_glow") { style.glow = (CUSTOM_COSMETICS.get(textValue(item.id)) === "glow" && chosen) || textValue(item.glow) || null; style.glowFx = textValue(item.fx) || null; }
         entry.nameStyle = style;
       }
       worn.set(userId, entry);
@@ -1829,6 +1834,8 @@ export function createLegacyXRouter() {
     /** How many players own it (null for free items, which everyone has). */
     owners: textValue(item.unlock) === "free" ? null : owners.get(textValue(item.id)) ?? 0,
     ...(item.color ? { color: textValue(item.color) } : {}),
+    /** The player picks the colour of this one (PUT /cosmetics/custom). */
+    ...(CUSTOM_COSMETICS.has(textValue(item.id)) ? { custom: true } : {}),
     /** The second colour of a two-colour (gradient) item. */
     ...(item.color2 ? { color2: textValue(item.color2) } : {}),
     ...(item.glow ? { glow: textValue(item.glow) } : {}),
@@ -1853,7 +1860,15 @@ export function createLegacyXRouter() {
     const ownedIds = new Set(runningRows.map((row) => textValue(row.item_id)));
     const endsAt = new Map<string, string | null>(runningRows.map((row) => [textValue(row.item_id), row.expires_at ? timestampValue(row.expires_at) : null]));
     const wearing = new Map(((equippedRows.data ?? []) as DbRow[]).filter((row) => textValue(catalog.find((item) => textValue(item.id) === textValue(row.item_id))?.unlock) !== "coin" || ownedIds.has(textValue(row.item_id))).map((row) => [textValue(row.kind), textValue(row.item_id)]));
-    const ofKind = (kind: CosmeticKind) => catalog.filter((item) => item.kind === kind).map((item) => cosmeticView(item, ownedIds, owners, endsAt));
+    const mine = user ? await db().from("cosmetic_custom").select("item_id,color").eq("user_id", user.id) : { data: [] as DbRow[], error: null };
+    const mineColours = new Map<string, string>(((mine.error ? [] : mine.data ?? []) as DbRow[]).map((row) => [textValue(row.item_id), textValue(row.color)]));
+    // The colour a player picked replaces the item's starting colour in their own shop view.
+    const ofKind = (kind: CosmeticKind) => catalog.filter((item) => item.kind === kind).map((item) => {
+      const view = cosmeticView(item, ownedIds, owners, endsAt) as Record<string, unknown>;
+      const chosen = mineColours.get(textValue(item.id));
+      const field = CUSTOM_COSMETICS.get(textValue(item.id));
+      return chosen && field ? { ...view, [field]: chosen } : view;
+    });
     res.json({
       players: players.error ? null : players.count ?? 0,
       equippedFrame: user ? worn.get(user.id)?.frame ?? null : null,
@@ -1904,6 +1919,22 @@ export function createLegacyXRouter() {
     res.status(201).json({ owned: true, expiresAt: endsAt });
   }));
   // Wear one, or take it off with item: null. The older { frame } body still works.
+  // Pick the colour of a custom item you own (a player buys it like any other cosmetic first); saving wears it.
+  router.put("/cosmetics/custom", userRoute(async (req, res, user) => {
+    const input = z.object({ item: cosmeticIdSchema, color: z.string().regex(/^#[0-9a-fA-F]{6}$/).transform((value) => value.toLowerCase()) }).strict().parse(req.body);
+    if (!CUSTOM_COSMETICS.has(input.item)) apiError(404, "Item not found");
+    const item = (await loadCosmeticCatalog()).find((entry) => textValue(entry.id) === input.item);
+    if (!item) apiError(404, "Item not found");
+    const { data, error: ownedError } = await db().from("cosmetic_owned").select("item_id,expires_at").eq("user_id", user.id).eq("item_id", input.item).maybeSingle();
+    legacyXError(ownedError, "Unable to check your cosmetics");
+    if (!data || !stillRunning((data as DbRow).expires_at)) apiError(403, "You do not own this yet", "cosmetic_not_owned");
+    const now = new Date().toISOString();
+    const saved = await db().from("cosmetic_custom").upsert({ user_id: user.id, item_id: input.item, color: input.color, updated_at: now }, { onConflict: "user_id,item_id" });
+    legacyXError(saved.error, "Unable to save the colour");
+    const worn = await db().from("cosmetic_equipped").upsert({ user_id: user.id, kind: textValue(item.kind), item_id: input.item, updated_at: now }, { onConflict: "user_id,kind" });
+    legacyXError(worn.error, "Unable to wear it");
+    res.json({ kind: textValue(item.kind), item: input.item, color: input.color });
+  }));
   router.put("/cosmetics/equip", userRoute(async (req, res, user) => {
     const input = z.union([
       z.object({ frame: cosmeticIdSchema.nullable() }).strict().transform((value) => ({ kind: "frame" as CosmeticKind, item: value.frame })),
@@ -2614,15 +2645,15 @@ export function createLegacyXRouter() {
   // Clan appearance (tag colour, tag glow, backdrop): the leader buys with coins, the clan owns it and wears one of each.
   // What a leader buys belongs to the player, not the clan: it stays theirs when the clan is deleted and goes with them to the next one.
   const lookView = async (clanId: string | null, userId: string) => {
-    const [owned, worn, custom] = await Promise.all([db().from("clan_look_owned_player").select("item_id").eq("user_id", userId), clanId ? db().from("clan_look_equipped").select("kind,item_id").eq("clan_id", clanId) : Promise.resolve({ data: [] as DbRow[], error: null }), clanId ? db().from("clan_look_custom").select("from_color,to_color,effect").eq("clan_id", clanId).maybeSingle() : Promise.resolve({ data: null as DbRow | null, error: null })]);
+    const [owned, worn, custom] = await Promise.all([db().from("clan_look_owned_player").select("item_id").eq("user_id", userId), clanId ? db().from("clan_look_equipped").select("kind,item_id").eq("clan_id", clanId) : Promise.resolve({ data: [] as DbRow[], error: null }), clanId ? db().from("clan_look_custom").select("item_id,color_a,color_b").eq("clan_id", clanId) : Promise.resolve({ data: [] as DbRow[], error: null })]);
     legacyXError(owned.error || worn.error || custom.error, "Unable to load the clan's looks");
     const ownedIds = new Set(((owned.data ?? []) as DbRow[]).map((row) => textValue(row.item_id)));
     const wearing = Object.fromEntries(((worn.data ?? []) as DbRow[]).map((row) => [textValue(row.kind), textValue(row.item_id)]));
     return {
       items: CLAN_LOOK_ITEMS.map((item) => ({ ...item, owned: ownedIds.has(item.id) })),
       equipped: { tag_color: wearing.tag_color ?? null, tag_glow: wearing.tag_glow ?? null, backdrop: wearing.backdrop ?? null, page: wearing.page ?? null },
-      /** The colours the clan picked for its custom page background, or null before it picked any. */
-      custom: custom.data ? { from: textValue(custom.data.from_color), to: textValue(custom.data.to_color), effect: custom.data.effect ? textValue(custom.data.effect) : null } : null,
+      /** The colours the clan picked for each custom item (a is the colour, or the gradient's start; b the gradient's end). */
+      custom: Object.fromEntries(((custom.data ?? []) as DbRow[]).map((row) => [textValue(row.item_id), { a: textValue(row.color_a), b: row.color_b ? textValue(row.color_b) : null }])),
     };
   };
   // Buying needs no clan: a player can buy now and wear it once they lead one.
@@ -2665,22 +2696,24 @@ export function createLegacyXRouter() {
     await logClan(clan, user.id, "settings", null, `look: ${item.name} (bought)`);
     res.status(201).json(await lookView(clanId, user.id));
   }));
-  // The custom page background: the leader who owns it picks the two colours and the effect, and saving wears it.
+  // A custom look (tag colour, tag glow, backdrop, page background): the leader who owns the item picks its colours, and saving wears it.
   router.put("/clans/:clanId/looks/custom", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
     const clanId = await clanIdOf(req.params.clanId);
     const clan = await requireClanLeader(clanId, user.id);
     const hex = z.string().regex(/^#[0-9a-fA-F]{6}$/).transform((value) => value.toLowerCase());
-    const input = z.object({ from: hex, to: hex, effect: z.enum(CLAN_PAGE_EFFECTS as [string, ...string[]]).nullable() }).strict().parse(req.body);
-    const item = CLAN_LOOK_ITEMS.find((entry) => entry.custom);
-    if (!item) apiError(404, "Item not found");
+    const input = z.object({ item: z.string().regex(/^[a-z0-9-]{2,40}$/), a: hex, b: hex.nullable().default(null) }).strict().parse(req.body);
+    const item = clanLookItem(input.item);
+    if (!item || !item.custom) apiError(404, "Item not found");
+    const twoColours = item.kind === "backdrop" || item.kind === "page";
+    if (twoColours && !input.b) apiError(400, "Pick both colours", "clan_look_colours");
     const { data: have } = await db().from("clan_look_owned_player").select("item_id").eq("user_id", user.id).eq("item_id", item.id).maybeSingle();
     if (!have) apiError(403, "You do not have this yet", "clan_look_not_owned");
     const now = new Date().toISOString();
-    const saved = await db().from("clan_look_custom").upsert({ clan_id: clanId, from_color: input.from, to_color: input.to, effect: input.effect, updated_at: now }, { onConflict: "clan_id" });
-    legacyXError(saved.error, "Unable to save the background");
-    const worn = await db().from("clan_look_equipped").upsert({ clan_id: clanId, kind: "page", item_id: item.id, updated_at: now }, { onConflict: "clan_id,kind" });
+    const saved = await db().from("clan_look_custom").upsert({ clan_id: clanId, item_id: item.id, color_a: input.a, color_b: twoColours ? input.b : null, updated_at: now }, { onConflict: "clan_id,item_id" });
+    legacyXError(saved.error, "Unable to save the colours");
+    const worn = await db().from("clan_look_equipped").upsert({ clan_id: clanId, kind: item.kind, item_id: item.id, updated_at: now }, { onConflict: "clan_id,kind" });
     legacyXError(worn.error, "Unable to wear it");
-    await logClan(clan, user.id, "settings", null, `look: custom background ${input.from} → ${input.to}${input.effect ? ` (${input.effect})` : ""}`);
+    await logClan(clan, user.id, "settings", null, `look: ${item.name} ${input.a}${twoColours ? ` → ${input.b}` : ""}`);
     res.json(await lookView(clanId, user.id));
   }));
   // Wear one, or take it off with item: null.

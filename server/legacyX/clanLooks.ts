@@ -22,11 +22,10 @@ export interface ClanLookItem {
   to?: string;
   /** page only: an animated background (from is its colour, to the base). */
   effect?: ClanPageEffect;
-  /** page only: the clan picks the two colours and the effect itself (stored in clan_look_custom); from, to and effect here are the starting values. */
+  /** The clan picks the colours itself (stored in clan_look_custom); color, glow, from and to here are the starting values. Costs 50% above the plain item. */
   custom?: boolean;
 }
 
-export const CLAN_PAGE_EFFECTS: readonly ClanPageEffect[] = ["slats", "waves", "dots", "aurora", "threads", "particles", "lightning", "rays", "lines", "plasma"];
 
 export const CLAN_LOOK_ITEMS: ClanLookItem[] = [
   { id: "tag-crimson", kind: "tag_color", name: "Crimson", price: 150, rarity: 1, color: "#fb7185" },
@@ -68,7 +67,20 @@ export const CLAN_LOOK_ITEMS: ClanLookItem[] = [
   { id: "back-glacier", kind: "backdrop", name: "Glacier", price: 650, rarity: 3, from: "#0e7490", to: "#1e40af" },
   { id: "back-royal", kind: "backdrop", name: "Royal", price: 800, rarity: 4, from: "#6d28d9", to: "#b45309" },
   { id: "back-nebula", kind: "backdrop", name: "Nebula", price: 800, rarity: 4, from: "#be185d", to: "#0e7490" },
-  { id: "page-custom", kind: "page", name: "Custom Background", price: 1500, rarity: 4, from: "#7c3aed", to: "#0a0a0a", custom: true },
+  { id: "tag-custom", kind: "tag_color", name: "Custom colour", price: 225, rarity: 3, color: "#c4b5fd", custom: true },
+  { id: "clan-glow-custom", kind: "tag_glow", name: "Custom glow", price: 375, rarity: 3, glow: "#8b5cf6", fx: "neon", custom: true },
+  { id: "back-custom", kind: "backdrop", name: "Custom gradient", price: 450, rarity: 3, from: "#4c1d95", to: "#0a0a0a", custom: true },
+  { id: "page-custom-plain", kind: "page", name: "Custom gradient", price: 1500, rarity: 3, from: "#7c3aed", to: "#0a0a0a", custom: true },
+  { id: "page-custom-slats", kind: "page", name: "Custom Micro Slats", price: 2250, rarity: 4, from: "#cbd5e1", to: "#0a0a0a", effect: "slats", custom: true },
+  { id: "page-custom-waves", kind: "page", name: "Custom Pattern Waves", price: 2250, rarity: 4, from: "#e5e5e5", to: "#0a0a0a", effect: "waves", custom: true },
+  { id: "page-custom-dots", kind: "page", name: "Custom Dot Field", price: 1950, rarity: 4, from: "#d4d4d4", to: "#0a0a0a", effect: "dots", custom: true },
+  { id: "page-custom-aurora", kind: "page", name: "Custom Aurora Veil", price: 2100, rarity: 4, from: "#6ee7b7", to: "#0a0a0a", effect: "aurora", custom: true },
+  { id: "page-custom-threads", kind: "page", name: "Custom Silk Threads", price: 1950, rarity: 4, from: "#6ee7b7", to: "#0a0a0a", effect: "threads", custom: true },
+  { id: "page-custom-particles", kind: "page", name: "Custom Star Dust", price: 1950, rarity: 4, from: "#fcd34d", to: "#0a0a0a", effect: "particles", custom: true },
+  { id: "page-custom-lightning", kind: "page", name: "Custom Lightning", price: 2250, rarity: 4, from: "#7dd3fc", to: "#0a0a0a", effect: "lightning", custom: true },
+  { id: "page-custom-rays", kind: "page", name: "Custom Light Rays", price: 2100, rarity: 4, from: "#e5e5e5", to: "#0a0a0a", effect: "rays", custom: true },
+  { id: "page-custom-lines", kind: "page", name: "Custom Wave Lines", price: 1650, rarity: 4, from: "#fb7185", to: "#0a0a0a", effect: "lines", custom: true },
+  { id: "page-custom-plasma", kind: "page", name: "Custom Plasma", price: 2250, rarity: 4, from: "#fb923c", to: "#0a0a0a", effect: "plasma", custom: true },
   { id: "page-ember", kind: "page", name: "Ember Glow", price: 1000, rarity: 2, from: "#7c2d12", to: "#0a0a0a" },
   { id: "page-ocean", kind: "page", name: "Deep Sea", price: 1000, rarity: 2, from: "#0c4a6e", to: "#0a0a0a" },
   { id: "page-forest", kind: "page", name: "Pine Forest", price: 1000, rarity: 2, from: "#14532d", to: "#0a0a0a" },
@@ -128,7 +140,7 @@ export async function clanLooksFor(db: SupabaseClient, clanIds: string[]): Promi
     console.error("[legacy-x-api] unable to load clan looks", error.message);
     return looks;
   }
-  const customClans: string[] = [];
+  const customWorn: Array<{ clanId: string; itemId: string }> = [];
   for (const row of (data ?? []) as Array<{ clan_id: string; kind: string; item_id: string }>) {
     const item = clanLookItem(row.item_id);
     if (!item || item.kind !== row.kind) continue;
@@ -137,16 +149,22 @@ export async function clanLooksFor(db: SupabaseClient, clanIds: string[]): Promi
     if (item.kind === "tag_glow") { look.tagGlow = item.glow ?? null; look.tagGlowFx = item.fx ?? null; }
     if (item.kind === "backdrop" && item.from && item.to) look.backdrop = { from: item.from, to: item.to };
     if (item.kind === "page" && item.from && item.to) look.page = { from: item.from, to: item.to, effect: item.effect ?? null };
-    if (item.kind === "page" && item.custom) customClans.push(row.clan_id);
+    if (item.custom) customWorn.push({ clanId: row.clan_id, itemId: item.id });
     looks.set(row.clan_id, look);
   }
-  // A clan wearing the custom background shows the colours it picked; until it picks any, the item's starting colours.
-  if (customClans.length > 0) {
-    const { data: picked, error: pickedError } = await db.from("clan_look_custom").select("clan_id,from_color,to_color,effect").in("clan_id", customClans);
-    if (pickedError) console.error("[legacy-x-api] unable to load custom clan backgrounds", pickedError.message);
-    for (const row of (picked ?? []) as Array<{ clan_id: string; from_color: string; to_color: string; effect: string | null }>) {
+  // A clan wearing a custom item shows the colours it picked; until it picks any, the item's starting colours.
+  if (customWorn.length > 0) {
+    const { data: picked, error: pickedError } = await db.from("clan_look_custom").select("clan_id,item_id,color_a,color_b").in("clan_id", customWorn.map((entry) => entry.clanId));
+    if (pickedError) console.error("[legacy-x-api] unable to load custom clan looks", pickedError.message);
+    for (const row of (picked ?? []) as Array<{ clan_id: string; item_id: string; color_a: string; color_b: string | null }>) {
+      if (!customWorn.some((entry) => entry.clanId === row.clan_id && entry.itemId === row.item_id)) continue;
+      const item = clanLookItem(row.item_id);
       const look = looks.get(row.clan_id);
-      if (look) look.page = { from: row.from_color, to: row.to_color, effect: CLAN_PAGE_EFFECTS.find((effect) => effect === row.effect) ?? null };
+      if (!item || !look) continue;
+      if (item.kind === "tag_color") look.tagColor = row.color_a;
+      if (item.kind === "tag_glow") look.tagGlow = row.color_a;
+      if (item.kind === "backdrop" && row.color_b) look.backdrop = { from: row.color_a, to: row.color_b };
+      if (item.kind === "page" && row.color_b) look.page = { from: row.color_a, to: row.color_b, effect: item.effect ?? null };
     }
   }
   return looks;
