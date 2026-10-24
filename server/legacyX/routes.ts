@@ -1763,7 +1763,7 @@ export function createLegacyXRouter() {
   });
   router.use("/cosmetics", cosmeticRateLimit);
   const cosmeticIdSchema = z.string().regex(/^[a-z0-9-]{2,40}$/);
-  const COSMETIC_KINDS = ["frame", "name_color", "name_glow", "banner", "title"] as const;
+  const COSMETIC_KINDS = ["frame", "name_color", "name_glow", "banner", "title", "smoke_color"] as const;
   type CosmeticKind = (typeof COSMETIC_KINDS)[number];
   const loadCosmeticCatalog = async () => {
     const { data, error } = await db().from("cosmetic_items").select("id,kind,name_en,name_mn,unlock,price,requirement,sort,color,glow,fx,rarity,featured").eq("enabled", true).in("kind", [...COSMETIC_KINDS]).order("sort");
@@ -1839,11 +1839,13 @@ export function createLegacyXRouter() {
       equippedNameGlow: wearing.get("name_glow") ?? null,
       equippedBanner: wearing.get("banner") ?? null,
       equippedTitle: wearing.get("title") ?? null,
+      equippedSmokeColor: wearing.get("smoke_color") ?? null,
       frames: ofKind("frame"),
       nameColors: ofKind("name_color"),
       nameGlows: ofKind("name_glow"),
       banners: ofKind("banner"),
       titles: ofKind("title"),
+      smokeColors: ofKind("smoke_color"),
     });
   }));
   router.post("/cosmetics/:itemId/buy", userRoute(async (req, res, user) => {
@@ -1852,7 +1854,7 @@ export function createLegacyXRouter() {
     if (!item) apiError(404, "Item not found");
     if (textValue(item.unlock) !== "coin") apiError(409, "This item is not for sale", "cosmetic_not_for_sale");
     const price = numberValue(item.price);
-    const label = item.kind === "frame" ? "Frame" : item.kind === "name_color" ? "Name colour" : item.kind === "banner" ? "Banner" : item.kind === "title" ? "Title" : "Name glow";
+    const label = item.kind === "frame" ? "Frame" : item.kind === "name_color" ? "Name colour" : item.kind === "banner" ? "Banner" : item.kind === "title" ? "Title" : item.kind === "smoke_color" ? "Smoke colour" : "Name glow";
     // The ref is per player and item, so a double click or a retry charges once.
     try {
       await applyWalletChange(legacyXDb(), { userId: user.id, amount: -price, kind: "spend", reason: `${label}: ${textValue(item.name_en)}`, ref: `cosmetic:${itemId}`, actor: user.id });
@@ -4759,8 +4761,17 @@ export function createLegacyXRouter() {
     const { data: progression } = await db().from("competitive_player_progression").select("kills,deaths,wins,losses,draws").eq("user_id", data.user_id).maybeSingle();
     const counts = recordValue(progression);
     const countOrNull = (key: string) => (progression ? numberValue(counts[key]) ?? 0 : null);
+    // The colour of the player's own smoke grenades (the worn Smoke colour cosmetic), for the game server to apply.
+    const { data: smokeRow } = await db().from("cosmetic_equipped").select("item_id").eq("user_id", data.user_id).eq("kind", "smoke_color").maybeSingle();
+    let smokeColor: string | null = null;
+    if (smokeRow) {
+      const { data: smokeItem } = await db().from("cosmetic_items").select("color").eq("id", textValue((smokeRow as DbRow).item_id)).eq("kind", "smoke_color").eq("enabled", true).maybeSingle();
+      const hex = textValue((smokeItem as DbRow | null)?.color);
+      smokeColor = /^#[0-9a-f]{6}$/i.test(hex) ? hex : null;
+    }
     res.json({ profile: {
       ...profile,
+      smoke_color: smokeColor,
       position: ladder ? numberValue((ladder as DbRow).position) : null,
       kills: countOrNull("kills"),
       deaths: countOrNull("deaths"),
