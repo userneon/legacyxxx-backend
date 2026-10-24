@@ -57,7 +57,7 @@ import { loadCheckerRules, probesOf } from "./checkerRules";
 import { judgeFacts } from "./checkerJudge";
 import { checkerBase, checkerMsi, checkerSha256, zipChunks, zipLength } from "./checkerZip";
 import { checkDownloadUrl, downloadHostAllowed, CHECK_ROLES, HWID_MATCH_KINDS, checkReportSchema, createCheckSchema, generateCheckCode, hashCheckCode, normalizeCheckCode, summarizeReport, sharesSamePc, recentSteamIds } from "./playerChecks";
-import { CLAN_LOOK_ITEMS, CLAN_LOOK_KINDS, clanLookItem, clanLooksFor } from "./clanLooks";
+import { CLAN_LOOK_ITEMS, CLAN_LOOK_KINDS, CLAN_PAGE_EFFECTS, clanLookItem, clanLooksFor } from "./clanLooks";
 import { killEventSchema, killFeed } from "./killfeed";
 import { heartbeatSchema, ingestHeartbeat } from "./serverHeartbeat";
 import { backfillProfiles, ensureAccounts, isBare, nameFromGame } from "./profileBackfill";
@@ -2614,13 +2614,15 @@ export function createLegacyXRouter() {
   // Clan appearance (tag colour, tag glow, backdrop): the leader buys with coins, the clan owns it and wears one of each.
   // What a leader buys belongs to the player, not the clan: it stays theirs when the clan is deleted and goes with them to the next one.
   const lookView = async (clanId: string | null, userId: string) => {
-    const [owned, worn] = await Promise.all([db().from("clan_look_owned_player").select("item_id").eq("user_id", userId), clanId ? db().from("clan_look_equipped").select("kind,item_id").eq("clan_id", clanId) : Promise.resolve({ data: [] as DbRow[], error: null })]);
-    legacyXError(owned.error || worn.error, "Unable to load the clan's looks");
+    const [owned, worn, custom] = await Promise.all([db().from("clan_look_owned_player").select("item_id").eq("user_id", userId), clanId ? db().from("clan_look_equipped").select("kind,item_id").eq("clan_id", clanId) : Promise.resolve({ data: [] as DbRow[], error: null }), clanId ? db().from("clan_look_custom").select("from_color,to_color,effect").eq("clan_id", clanId).maybeSingle() : Promise.resolve({ data: null as DbRow | null, error: null })]);
+    legacyXError(owned.error || worn.error || custom.error, "Unable to load the clan's looks");
     const ownedIds = new Set(((owned.data ?? []) as DbRow[]).map((row) => textValue(row.item_id)));
     const wearing = Object.fromEntries(((worn.data ?? []) as DbRow[]).map((row) => [textValue(row.kind), textValue(row.item_id)]));
     return {
       items: CLAN_LOOK_ITEMS.map((item) => ({ ...item, owned: ownedIds.has(item.id) })),
       equipped: { tag_color: wearing.tag_color ?? null, tag_glow: wearing.tag_glow ?? null, backdrop: wearing.backdrop ?? null, page: wearing.page ?? null },
+      /** The colours the clan picked for its custom page background, or null before it picked any. */
+      custom: custom.data ? { from: textValue(custom.data.from_color), to: textValue(custom.data.to_color), effect: custom.data.effect ? textValue(custom.data.effect) : null } : null,
     };
   };
   // Buying needs no clan: a player can buy now and wear it once they lead one.
@@ -2662,6 +2664,24 @@ export function createLegacyXRouter() {
     const item = await buyClanLook(user.id, String(req.params.itemId));
     await logClan(clan, user.id, "settings", null, `look: ${item.name} (bought)`);
     res.status(201).json(await lookView(clanId, user.id));
+  }));
+  // The custom page background: the leader who owns it picks the two colours and the effect, and saving wears it.
+  router.put("/clans/:clanId/looks/custom", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
+    const clanId = await clanIdOf(req.params.clanId);
+    const clan = await requireClanLeader(clanId, user.id);
+    const hex = z.string().regex(/^#[0-9a-fA-F]{6}$/).transform((value) => value.toLowerCase());
+    const input = z.object({ from: hex, to: hex, effect: z.enum(CLAN_PAGE_EFFECTS as [string, ...string[]]).nullable() }).strict().parse(req.body);
+    const item = CLAN_LOOK_ITEMS.find((entry) => entry.custom);
+    if (!item) apiError(404, "Item not found");
+    const { data: have } = await db().from("clan_look_owned_player").select("item_id").eq("user_id", user.id).eq("item_id", item.id).maybeSingle();
+    if (!have) apiError(403, "You do not have this yet", "clan_look_not_owned");
+    const now = new Date().toISOString();
+    const saved = await db().from("clan_look_custom").upsert({ clan_id: clanId, from_color: input.from, to_color: input.to, effect: input.effect, updated_at: now }, { onConflict: "clan_id" });
+    legacyXError(saved.error, "Unable to save the background");
+    const worn = await db().from("clan_look_equipped").upsert({ clan_id: clanId, kind: "page", item_id: item.id, updated_at: now }, { onConflict: "clan_id,kind" });
+    legacyXError(worn.error, "Unable to wear it");
+    await logClan(clan, user.id, "settings", null, `look: custom background ${input.from} → ${input.to}${input.effect ? ` (${input.effect})` : ""}`);
+    res.json(await lookView(clanId, user.id));
   }));
   // Wear one, or take it off with item: null.
   router.put("/clans/:clanId/looks/equip", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
