@@ -1909,6 +1909,15 @@ export function createLegacyXRouter() {
     description: z.string().trim().max(120).default(""),
   }).strict();
   const collectionIdSchema = z.string().uuid();
+  /** A collection address is its short number (/skinchanger/collections/1) or its long id; both end up as the id. */
+  const collectionIdOf = async (value: unknown) => {
+    const raw = String(value ?? "");
+    if (!/^[0-9]{1,9}$/.test(raw)) return collectionIdSchema.parse(raw);
+    const { data, error } = await db().from("skin_collections").select("id").eq("number", Number(raw)).is("deleted_at", null).maybeSingle();
+    legacyXError(error, "Unable to find the collection");
+    if (!data) apiError(404, "Collection not found");
+    return textValue((data as DbRow).id);
+  };
 
   router.get("/skinchanger/collections", userRoute(async (req, res, user) => {
     const input = z.object({
@@ -1916,7 +1925,7 @@ export function createLegacyXRouter() {
       query: z.string().trim().max(40).optional(),
     }).parse(req.query);
     let rowsQuery = db().from("skin_collections")
-      .select("id,owner_user_id,name,description,entries,item_count,likes_count,applies_count,created_at")
+      .select("id,number,owner_user_id,name,description,entries,item_count,likes_count,applies_count,created_at")
       .is("deleted_at", null)
       .limit(60);
     if (input.sort === "mine") rowsQuery = rowsQuery.eq("owner_user_id", user.id);
@@ -1954,6 +1963,7 @@ export function createLegacyXRouter() {
         const owner = owners.get(textValue(row.owner_user_id)) ?? {};
         return {
           id: textValue(row.id),
+          number: numberValue(row.number),
           name: textValue(row.name),
           description: textValue(row.description),
           author: { steamId: textValue(owner.steam_id), username: textValue(owner.username), avatar: textValue(owner.avatar) },
@@ -1981,9 +1991,9 @@ export function createLegacyXRouter() {
 
   // One collection with every item it holds, for the detail view.
   router.get("/skinchanger/collections/:collectionId", userRoute(async (req, res, user) => {
-    const collectionId = collectionIdSchema.parse(req.params.collectionId);
+    const collectionId = await collectionIdOf(req.params.collectionId);
     const { data, error } = await db().from("skin_collections")
-      .select("id,owner_user_id,name,description,entries,item_count,likes_count,applies_count,created_at")
+      .select("id,number,owner_user_id,name,description,entries,item_count,likes_count,applies_count,created_at")
       .eq("id", collectionId).is("deleted_at", null).maybeSingle();
     legacyXError(error, "Unable to load the collection");
     if (!data) apiError(404, "Collection not found");
@@ -2004,6 +2014,7 @@ export function createLegacyXRouter() {
     res.json({
       collection: {
         id: textValue(row.id),
+        number: numberValue(row.number),
         name: textValue(row.name),
         description: textValue(row.description),
         author: { steamId: textValue(ownerRow.steam_id), username: textValue(ownerRow.username), avatar: textValue(ownerRow.avatar) },
@@ -2055,7 +2066,7 @@ export function createLegacyXRouter() {
   }));
 
   router.delete("/skinchanger/collections/:collectionId", userRoute(async (req, res, user) => {
-    const collectionId = collectionIdSchema.parse(req.params.collectionId);
+    const collectionId = await collectionIdOf(req.params.collectionId);
     const { data, error } = await db().from("skin_collections").select("id,owner_user_id").eq("id", collectionId).is("deleted_at", null).maybeSingle();
     legacyXError(error, "Unable to load the collection");
     if (!data) apiError(404, "Collection not found");
@@ -2071,7 +2082,7 @@ export function createLegacyXRouter() {
   }));
 
   router.put("/skinchanger/collections/:collectionId/like", userRoute(async (req, res, user) => {
-    const collectionId = collectionIdSchema.parse(req.params.collectionId);
+    const collectionId = await collectionIdOf(req.params.collectionId);
     const input = z.object({ liked: z.boolean() }).strict().parse(req.body);
     const { data, error } = await db().rpc("skin_collection_set_like", { p_collection_id: collectionId, p_user_id: user.id, p_liked: input.liked });
     legacyXError(error, "Unable to save the like");
@@ -2080,7 +2091,7 @@ export function createLegacyXRouter() {
 
   // Replaces the player's whole loadout with the collection's look (the web asks first).
   router.post("/skinchanger/collections/:collectionId/apply", userRoute(async (req, res, user) => {
-    const collectionId = collectionIdSchema.parse(req.params.collectionId);
+    const collectionId = await collectionIdOf(req.params.collectionId);
     const { data, error } = await db().from("skin_collections").select("id,entries").eq("id", collectionId).is("deleted_at", null).maybeSingle();
     legacyXError(error, "Unable to load the collection");
     if (!data) apiError(404, "Collection not found");
