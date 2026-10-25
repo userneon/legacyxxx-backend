@@ -1778,7 +1778,7 @@ export function createLegacyXRouter() {
   });
   router.use("/cosmetics", cosmeticRateLimit);
   const cosmeticIdSchema = z.string().regex(/^[a-z0-9-]{2,40}$/);
-  const COSMETIC_KINDS = ["frame", "name_color", "name_glow", "banner", "title", "smoke_color", "grenade_trail"] as const;
+  const COSMETIC_KINDS = ["frame", "name_color", "name_glow", "banner", "title", "smoke_color", "grenade_trail", "grenade_light"] as const;
   type CosmeticKind = (typeof COSMETIC_KINDS)[number];
   // Bought cosmetics are rented: a share of the item's price (its 30-day price) buys 1 day, 7 days, 30 days or forever.
   const COSMETIC_DURATIONS = [
@@ -1893,6 +1893,7 @@ export function createLegacyXRouter() {
       equippedTitle: wearing.get("title") ?? null,
       equippedSmokeColor: wearing.get("smoke_color") ?? null,
       equippedGrenadeTrail: wearing.get("grenade_trail") ?? null,
+      equippedGrenadeLight: wearing.get("grenade_light") ?? null,
       frames: ofKind("frame"),
       nameColors: ofKind("name_color"),
       nameGlows: ofKind("name_glow"),
@@ -1901,6 +1902,8 @@ export function createLegacyXRouter() {
       smokeColors: ofKind("smoke_color"),
       /** The colour of the line your own grenades draw in the air (game server). */
       grenadeTrails: ofKind("grenade_trail"),
+      /** A coloured light that flies with your own grenades (game server). */
+      grenadeLights: ofKind("grenade_light"),
     });
   }));
   router.post("/cosmetics/:itemId/buy", userRoute(async (req, res, user) => {
@@ -1911,7 +1914,7 @@ export function createLegacyXRouter() {
     if (textValue(item.unlock) !== "coin") apiError(409, "This item is not for sale", "cosmetic_not_for_sale");
     const length = COSMETIC_DURATIONS.find((entry) => entry.key === input.duration)!;
     const price = Number(cosmeticPrices(numberValue(item.price))[length.key]);
-    const label = item.kind === "frame" ? "Frame" : item.kind === "name_color" ? "Name colour" : item.kind === "banner" ? "Banner" : item.kind === "title" ? "Title" : item.kind === "smoke_color" ? "Smoke colour" : item.kind === "grenade_trail" ? "Grenade trail" : "Name glow";
+    const label = item.kind === "frame" ? "Frame" : item.kind === "name_color" ? "Name colour" : item.kind === "banner" ? "Banner" : item.kind === "title" ? "Title" : item.kind === "smoke_color" ? "Smoke colour" : item.kind === "grenade_trail" ? "Grenade trail" : item.kind === "grenade_light" ? "Grenade light" : "Name glow";
     // Already yours: a rental is added on to the time left, and an item that is yours for good cannot be bought again.
     const { data: current, error: currentError } = await db().from("cosmetic_owned").select("expires_at,source").eq("user_id", user.id).eq("item_id", itemId).maybeSingle();
     legacyXError(currentError, "Unable to check your cosmetics");
@@ -4933,21 +4936,23 @@ export function createLegacyXRouter() {
       const hex2 = textValue((smokeItem as DbRow | null)?.color2);
       smokeColor2 = smokeColor && /^#[0-9a-f]{6}$/i.test(hex2) ? hex2 : null;
     }
-    // The colour of the trail behind the player's own grenades (the worn Grenade trail cosmetic), same rules as the smoke colour.
-    let grenadeTrail: string | null = null;
-    const { data: trailRow } = await db().from("cosmetic_equipped").select("item_id").eq("user_id", data.user_id).eq("kind", "grenade_trail").maybeSingle();
-    if (trailRow) {
-      const trailId = textValue((trailRow as DbRow).item_id);
-      const { data: trailRental } = await db().from("cosmetic_owned").select("expires_at").eq("user_id", data.user_id).eq("item_id", trailId).maybeSingle();
-      if (!trailRental || stillRunning((trailRental as DbRow).expires_at)) {
-        const { data: trailItem } = await db().from("cosmetic_items").select("color").eq("id", trailId).eq("kind", "grenade_trail").eq("enabled", true).maybeSingle();
-        const hex = textValue((trailItem as DbRow | null)?.color);
-        grenadeTrail = /^#[0-9a-f]{6}$/i.test(hex) ? hex : null;
-      }
-    }
+    // The grenade trail (colour and shape) and grenade light the player wears, same rules as the smoke colour (a run-out rental is not applied).
+    const wornGrenadeItem = async (kind: "grenade_trail" | "grenade_light") => {
+      const { data: row } = await db().from("cosmetic_equipped").select("item_id").eq("user_id", data.user_id).eq("kind", kind).maybeSingle();
+      if (!row) return null;
+      const itemId = textValue((row as DbRow).item_id);
+      const { data: rental } = await db().from("cosmetic_owned").select("expires_at").eq("user_id", data.user_id).eq("item_id", itemId).maybeSingle();
+      if (rental && !stillRunning((rental as DbRow).expires_at)) return null;
+      const { data: item } = await db().from("cosmetic_items").select("color,fx").eq("id", itemId).eq("kind", kind).eq("enabled", true).maybeSingle();
+      const hex = textValue((item as DbRow | null)?.color);
+      return /^#[0-9a-f]{6}$/i.test(hex) ? { color: hex, fx: textValue((item as DbRow | null)?.fx) || null } : null;
+    };
+    const [wornTrail, wornLight] = await Promise.all([wornGrenadeItem("grenade_trail"), wornGrenadeItem("grenade_light")]);
     res.json({ profile: {
       ...profile,
-      grenade_trail: grenadeTrail,
+      grenade_trail: wornTrail?.color ?? null,
+      grenade_trail_fx: wornTrail?.fx ?? null,
+      grenade_light: wornLight?.color ?? null,
       smoke_color: smokeColor,
       smoke_color2: smokeColor2,
       position: ladder ? numberValue((ladder as DbRow).position) : null,
