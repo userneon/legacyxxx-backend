@@ -1794,7 +1794,7 @@ export function createLegacyXRouter() {
   const CUSTOM_COSMETICS = new Map<string, "color" | "glow">([["name-custom", "color"], ["glow-custom", "glow"], ["smoke-custom", "color"], ["trail-custom", "color"], ["light-custom", "color"], ["kill-custom", "color"], ["flash-custom", "color"]]);
   /** Custom in-game items whose shape the player picks as well (cosmetic_custom.fx); the game server knows each of these. Rainbow ones stay their own items. */
   const CUSTOM_SHAPES = new Map<string, readonly string[]>([
-    ["trail-custom", ["line", "dash", "double", "helix", "comet", "flare", "sparks", "starfall", "inferno"]],
+    ["trail-custom", ["line", "dash", "double", "helix", "comet", "zigzag", "flare", "sparks", "starfall", "inferno"]],
     ["flash-custom", ["starburst", "nova", "ring"]],
     ["kill-custom", ["ring", "pillar", "burst", "spiral", "lightning", "halo", "crown", "cross", "xmark", "heart", "soul"]],
   ]);
