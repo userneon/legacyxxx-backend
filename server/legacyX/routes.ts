@@ -28,6 +28,8 @@ import { getFaceitProfileSnapshot, getFaceitProfileSnapshotForSteamId, resolveFa
 import { legacyXDb, legacyXError } from "./supabase";
 import { resolveSteamProfileMedia } from "./steamBackground";
 import { coreRoundScore, expRowAsResult, mapExpRecentMatch, mapMatchDetail } from "./matchDetails";
+import { recordClanMatch, WAR_WINDOW_AFTER_MS } from "./clanMatch";
+import { LEVEL_PERKS, clanAchievements, clanStats, levelFor } from "./clanProgress";
 import { fetchSteamAccountCreatedAt, fetchSteamBans, syncSteamUserProfile } from "./steamProfile";
 import { RANK_CALCULATION_VERSION, calculateMatchExp, expLimitUsage, limitWindows } from "./ranking";
 import { buildRankedInput, rankedResultSchema, type MatchParticipant, type PlayerProgression } from "./rankedMatch";
@@ -801,6 +803,9 @@ async function applyRankedMatchResult(pluginId: string, eventId: string, matchId
     const coinLog = (message: string, error: unknown) => console.error(`[legacy-x-api] ${message}`, error);
     await awardMatchCoins(legacyXDb(), matchId, outcome.players, coinLog);
     await awardMatchBonuses(legacyXDb(), matchId, finishedAt, outcome.players, coinLog);
+    // Clan XP and a Clan War result follow the match; they never hold up or undo the ranked result.
+    const finishedCore = await legacyXDb().from("core_matches").select("result").eq("id", matchId).maybeSingle();
+    await recordClanMatch(legacyXDb(), matchId, outcome.players, finishedAt, coreRoundScore(finishedCore.data?.result)).catch((error) => coinLog("clan match record failed", error));
     return { ...recordValue(applied.data), ...summary };
   }
   return { status: "not_ranked", reasons: ["exp_changed_concurrently"] };
@@ -984,7 +989,8 @@ export function createLegacyXRouter() {
     const members = ((membersResult.data ?? []) as DbRow[]).map((member) => ({ ...mapClanMember(member), ...lookOf(worn, textValue(member.user_id)) }));
     const viewerRole = viewerId ? members.find((member) => member.id === viewerId)?.role ?? null : null;
     const recruiting = await clanRecruitmentFor([clanId]);
-    return { ...mapClanCard(clan), look: (await clanLooksFor(db(), [clanId])).get(clanId) ?? null, recruit: recruiting.has(clanId) ? { questions: recruiting.get(clanId) ?? [] } : null, ...(viewerRole === "leader" ? { recruitment: await recruitmentOf(clanId) } : {}), description: clan.description ?? undefined, members, viewer: { role: viewerRole, canModerate: viewerId ? await canModerateClans(viewerId) : false } };
+    const progress = await db().from("clan_progress").select("xp").eq("clan_id", clanId).maybeSingle();
+    return { ...mapClanCard(clan), level: levelFor(numberValue(progress.data?.xp)).level, look: (await clanLooksFor(db(), [clanId])).get(clanId) ?? null, recruit: recruiting.has(clanId) ? { questions: recruiting.get(clanId) ?? [] } : null, ...(viewerRole === "leader" ? { recruitment: await recruitmentOf(clanId) } : {}), description: clan.description ?? undefined, members, viewer: { role: viewerRole, canModerate: viewerId ? await canModerateClans(viewerId) : false } };
   };
   // Public website reads deliberately bypass AdminPlus. CS2 plugins/admin tools
   // write to Supabase; the website reads these safe projections through root API.
@@ -2520,7 +2526,9 @@ export function createLegacyXRouter() {
     legacyXError(error, "Unable to load clans");
     const looks = await clanLooksFor(db(), ((data ?? []) as DbRow[]).map((row) => textValue(row.id)));
     const recruiting = await clanRecruitmentFor(((data ?? []) as DbRow[]).map((row) => textValue(row.id)));
-    res.json(((data ?? []) as DbRow[]).map((row) => ({ ...mapClanCard(row), look: looks.get(textValue(row.id)) ?? null, recruit: recruiting.has(textValue(row.id)) ? { questions: recruiting.get(textValue(row.id)) ?? [] } : null })));
+    const levels = await db().from("clan_progress").select("clan_id,xp").in("clan_id", ((data ?? []) as DbRow[]).map((row) => textValue(row.id)));
+    const levelOf = new Map(((levels.data ?? []) as DbRow[]).map((row) => [textValue(row.clan_id), levelFor(numberValue(row.xp)).level]));
+    res.json(((data ?? []) as DbRow[]).map((row) => ({ ...mapClanCard(row), level: levelOf.get(textValue(row.id)) ?? 1, look: looks.get(textValue(row.id)) ?? null, recruit: recruiting.has(textValue(row.id)) ? { questions: recruiting.get(textValue(row.id)) ?? [] } : null })));
   }));
   // Ranking: the total EXP of a clan's members, counted from real ranked results.
   router.get("/clans/leaderboard", optionalUserRoute(async (_req, res) => {
@@ -2615,6 +2623,205 @@ export function createLegacyXRouter() {
     }));
   }
 
+  // Clan level, war record and bank balance (owner request 2026-10-25): what a clan has earned, all from stored records.
+  const clanProgressFor = async (clanIds: string[]) => {
+    const found = new Map<string, { xp: number; warRating: number; warWins: number; warLosses: number; warDraws: number }>();
+    if (!clanIds.length) return found;
+    const { data, error } = await db().from("clan_progress").select("clan_id,xp,war_rating,war_wins,war_losses,war_draws").in("clan_id", clanIds);
+    if (error) { console.warn("[legacy-x-api] clan progress unavailable", error.message); return found; }
+    for (const row of (data ?? []) as DbRow[]) found.set(textValue(row.clan_id), { xp: numberValue(row.xp), warRating: numberValue(row.war_rating) || 1000, warWins: numberValue(row.war_wins), warLosses: numberValue(row.war_losses), warDraws: numberValue(row.war_draws) });
+    return found;
+  };
+  const progressView = (entry: { xp: number; warRating: number; warWins: number; warLosses: number; warDraws: number } | undefined) => {
+    const level = levelFor(entry?.xp ?? 0);
+    return { ...level, perks: LEVEL_PERKS.map((perk) => ({ ...perk, unlocked: level.level >= perk.level })), war: { rating: entry?.warRating ?? 1000, wins: entry?.warWins ?? 0, losses: entry?.warLosses ?? 0, draws: entry?.warDraws ?? 0 } };
+  };
+  const requireClanMember = async (clanId: string, userId: string) => {
+    const clan = await loadClanBasics(clanId);
+    const role = await roleInClan(clanId, userId);
+    if (!role) apiError(403, "Only members of the clan can see this", "clan_forbidden");
+    return { clan, role };
+  };
+
+  router.get("/clans/war-ladder", optionalUserRoute(async (_req, res) => {
+    const cached = await publicCached("clan-war-ladder", 20_000, async () => {
+      const { data, error } = await db().from("clan_progress").select("clan_id,xp,war_rating,war_wins,war_losses,war_draws,clans(*,clan_members(count))").order("war_rating", { ascending: false }).limit(200);
+      legacyXError(error, "Unable to load the Clan War ladder");
+      const rows = ((data ?? []) as DbRow[]).filter((row) => numberValue(row.war_wins) + numberValue(row.war_losses) + numberValue(row.war_draws) > 0 && firstRow(row.clans));
+      const looks = await clanLooksFor(db(), rows.map((row) => textValue(row.clan_id)));
+      return { clans: rows.slice(0, 50).map((row, index) => ({ ...mapClanCard(firstRow(row.clans) as DbRow), look: looks.get(textValue(row.clan_id)) ?? null, rank: index + 1, level: levelFor(numberValue(row.xp)).level, war: { rating: numberValue(row.war_rating), wins: numberValue(row.war_wins), losses: numberValue(row.war_losses), draws: numberValue(row.war_draws) } })) };
+    });
+    res.set("Cache-Control", "public, max-age=10");
+    res.json(cached);
+  }));
+
+  // Stats and achievements: the members' own ranked matches from the day each joined; nothing is estimated.
+  router.get("/clans/:clanId/stats", optionalUserRoute(async (req, res) => {
+    const clanId = await clanIdOf(req.params.clanId);
+    const clan = await loadClanBasics(clanId);
+    const { data: memberRows, error } = await db().from("clan_members").select("user_id,created_at,users(id,steam_id,username,avatar)").eq("clan_id", clanId);
+    legacyXError(error, "Unable to load clan stats");
+    const members = (memberRows ?? []) as DbRow[];
+    const joined = new Map(members.map((row) => [textValue(row.user_id), Date.parse(textValue(row.created_at))]));
+    const earliest = members.length ? new Date(Math.min(...members.map((row) => Date.parse(textValue(row.created_at))))).toISOString() : new Date().toISOString();
+    const rows = members.length ? await db().from("competitive_match_exp").select("user_id,match_id,outcome,exp_delta,exp_breakdown,stats,created_at").in("user_id", Array.from(joined.keys())).eq("counts_as_ranked", true).gte("created_at", earliest).order("created_at", { ascending: false }).limit(5000) : { data: [] as DbRow[], error: null };
+    legacyXError(rows.error, "Unable to load clan stats");
+    const mine = ((rows.data ?? []) as DbRow[])
+      .filter((row) => Date.parse(textValue(row.created_at)) >= (joined.get(textValue(row.user_id)) ?? Infinity))
+      .map((row) => ({ user_id: textValue(row.user_id), match_id: textValue(row.match_id), outcome: textValue(row.outcome), exp_delta: numberValue(row.exp_delta), created_at: textValue(row.created_at), leaver: recordValue(row.exp_breakdown).rule === "leaver", stats: recordValue(row.stats) }));
+    const stats = clanStats(mine);
+    const progress = (await clanProgressFor([clanId])).get(clanId);
+    const level = levelFor(progress?.xp ?? 0).level;
+    const person = (line: { userId: string } | null, value: number | null) => {
+      if (!line) return null;
+      const user = firstRow(members.find((row) => textValue(row.user_id) === line.userId)?.users);
+      return { id: line.userId, steamId: textValue(user?.steam_id), name: textValue(user?.username) || "Player", avatar: textValue(user?.avatar), value };
+    };
+    res.json({
+      totals: stats.totals,
+      leaders: {
+        kills: person(stats.leaders.kills, stats.leaders.kills?.kills ?? null),
+        kd: person(stats.leaders.kd, stats.leaders.kd ? Math.round((stats.leaders.kd.kills / Math.max(1, stats.leaders.kd.deaths)) * 100) / 100 : null),
+        wins: person(stats.leaders.wins, stats.leaders.wins?.wins ?? null),
+        weekMvp: person(stats.leaders.weekMvp, stats.leaders.weekMvp?.weekExp ?? null),
+      },
+      achievements: clanAchievements({ wins: stats.totals.wins, matches: stats.totals.matches, aces: stats.totals.aces, clutches: stats.totals.clutches, warsWon: progress?.warWins ?? 0, level, members: memberCount(clan) }),
+      progress: progressView(progress),
+    });
+  }));
+
+  // The clan bank: any member gives LX from their wallet; the leader spends it on the clan. Members see the balance and who gave.
+  router.get("/clans/:clanId/bank", userRoute(async (req, res, user) => {
+    const clanId = await clanIdOf(req.params.clanId);
+    await requireClanMember(clanId, user.id);
+    const [bank, log] = await Promise.all([
+      db().from("clan_bank").select("balance").eq("clan_id", clanId).maybeSingle(),
+      db().from("clan_bank_log").select("user_id,amount,reason,created_at,users(id,steam_id,username,avatar)").eq("clan_id", clanId).order("created_at", { ascending: false }).limit(500),
+    ]);
+    legacyXError(bank.error || log.error, "Unable to load the clan bank");
+    const entries = (log.data ?? []) as DbRow[];
+    const donors = new Map<string, { id: string; steamId: string; name: string; avatar: string; total: number }>();
+    for (const row of entries.filter((entry) => numberValue(entry.amount) > 0)) {
+      const who = firstRow(row.users);
+      const id = textValue(row.user_id);
+      if (!id) continue;
+      const line = donors.get(id) ?? { id, steamId: textValue(who?.steam_id), name: textValue(who?.username) || "Player", avatar: textValue(who?.avatar), total: 0 };
+      line.total += numberValue(row.amount);
+      donors.set(id, line);
+    }
+    res.json({
+      balance: numberValue(bank.data?.balance),
+      donors: Array.from(donors.values()).sort((a, b) => b.total - a.total).slice(0, 10),
+      log: entries.slice(0, 30).map((row) => ({ amount: numberValue(row.amount), reason: textValue(row.reason), at: timestampValue(row.created_at), name: textValue(firstRow(row.users)?.username) || null })),
+      slotPrice: COIN_RULES.clanSlotPrice,
+    });
+  }));
+  router.post("/clans/:clanId/bank/donate", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
+    const clanId = await clanIdOf(req.params.clanId);
+    const { clan } = await requireClanMember(clanId, user.id);
+    const input = z.object({ amount: z.number().int().min(10).max(100_000) }).strict().parse(req.body);
+    // One ref for the wallet and the bank, per player and ten seconds: a double click gives once.
+    const ref = `clan-donate:${clanId}:${user.id}:${Math.floor(Date.now() / 10_000)}`;
+    try {
+      await applyWalletChange(legacyXDb(), { userId: user.id, amount: -input.amount, kind: "spend", reason: `Gift to clan ${textValue(clan.name)}`, ref, actor: user.id });
+    } catch (error) {
+      if (error instanceof NotEnoughCoinsError) apiError(402, "You do not have that much LX", "clan_no_coins");
+      throw error;
+    }
+    const banked = await db().rpc("clan_bank_apply", { p_clan_id: clanId, p_user_id: user.id, p_amount: input.amount, p_reason: "gift", p_ref: ref });
+    if (banked.error) {
+      await applyWalletChange(legacyXDb(), { userId: user.id, amount: input.amount, kind: "refund", reason: "Clan gift failed", ref: `${ref}:refund`, actor: user.id }).catch((refundError) => console.error("[legacy-x-api] clan gift refund failed", refundError));
+      legacyXError(banked.error, "Unable to add it to the clan bank");
+    }
+    await logClan(clan, user.id, "bank", null, `gave ${input.amount} LX`);
+    res.status(201).json({ balance: numberValue(banked.data) });
+  }));
+
+  // Clan War: a leader or co-leader challenges another clan for a time and map; the other clan's leader or co-leader answers.
+  // The result is never typed in: it comes from the ranked match the two clans play around that time (clanMatch.ts).
+  const WAR_STATUSES_OPEN = ["pending", "accepted"];
+  const expireWars = async (clanId: string) => {
+    const now = Date.now();
+    await db().from("clan_wars").update({ status: "expired", updated_at: new Date().toISOString() }).eq("status", "pending").lt("scheduled_at", new Date(now).toISOString()).or(`challenger_id.eq.${clanId},opponent_id.eq.${clanId}`);
+    await db().from("clan_wars").update({ status: "expired", updated_at: new Date().toISOString() }).eq("status", "accepted").lt("scheduled_at", new Date(now - WAR_WINDOW_AFTER_MS).toISOString()).or(`challenger_id.eq.${clanId},opponent_id.eq.${clanId}`);
+  };
+  const warView = (row: DbRow, clanId: string, cards: Map<string, DbRow>) => {
+    const challenger = textValue(row.challenger_id) === clanId;
+    const otherId = challenger ? textValue(row.opponent_id) : textValue(row.challenger_id);
+    const other = cards.get(otherId);
+    return {
+      id: textValue(row.id),
+      status: textValue(row.status),
+      side: challenger ? "challenger" : "opponent",
+      map: textValue(row.map_name),
+      scheduledAt: timestampValue(row.scheduled_at),
+      note: row.note ? textValue(row.note) : null,
+      opponent: other ? mapClanCard(other) : null,
+      result: textValue(row.status) === "finished" ? (row.winner_id ? (textValue(row.winner_id) === clanId ? "win" : "loss") : "draw") : null,
+      score: row.score_challenger === null || row.score_challenger === undefined ? null : challenger ? { us: numberValue(row.score_challenger), them: numberValue(row.score_opponent) } : { us: numberValue(row.score_opponent), them: numberValue(row.score_challenger) },
+      ratingChange: row.rating_change === null || row.rating_change === undefined ? null : (challenger ? 1 : -1) * numberValue(row.rating_change),
+      matchId: row.match_id ? textValue(row.match_id) : null,
+    };
+  };
+  router.get("/clans/:clanId/wars", optionalUserRoute(async (req, res) => {
+    const clanId = await clanIdOf(req.params.clanId);
+    await loadClanBasics(clanId);
+    await expireWars(clanId);
+    const { data, error } = await db().from("clan_wars").select("*").or(`challenger_id.eq.${clanId},opponent_id.eq.${clanId}`).order("scheduled_at", { ascending: false }).limit(60);
+    legacyXError(error, "Unable to load Clan Wars");
+    const rows = (data ?? []) as DbRow[];
+    const otherIds = Array.from(new Set(rows.map((row) => (textValue(row.challenger_id) === clanId ? textValue(row.opponent_id) : textValue(row.challenger_id)))));
+    const others = otherIds.length ? await db().from("clans").select("*,clan_members(count)").in("id", otherIds) : { data: [] as DbRow[], error: null };
+    legacyXError(others.error, "Unable to load Clan Wars");
+    const cards = new Map(((others.data ?? []) as DbRow[]).map((row) => [textValue(row.id), row]));
+    const progress = (await clanProgressFor([clanId])).get(clanId);
+    res.json({ wars: rows.map((row) => warView(row, clanId, cards)), war: progressView(progress).war });
+  }));
+  router.post("/clans/:clanId/wars", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
+    const clanId = await clanIdOf(req.params.clanId);
+    const { clan } = await requireClanManager(clanId, user.id);
+    const input = z.object({ opponent: z.string().trim().min(1).max(64), map: z.string().regex(/^[a-z0-9_]{3,40}$/), scheduledAt: z.string().datetime({ offset: true }), note: z.string().trim().max(140).optional() }).strict().parse(req.body);
+    const opponentId = await clanIdOf(input.opponent);
+    if (opponentId === clanId) apiError(400, "A clan cannot challenge itself", "clan_war_self");
+    const opponent = await loadClanBasics(opponentId);
+    const when = Date.parse(input.scheduledAt);
+    if (!Number.isFinite(when) || when < Date.now() + 10 * 60_000 || when > Date.now() + 14 * 86_400_000) apiError(400, "Pick a time from 10 minutes to 14 days from now", "clan_war_time");
+    await expireWars(clanId);
+    const open = await db().from("clan_wars").select("id,challenger_id,opponent_id").in("status", WAR_STATUSES_OPEN).or(`challenger_id.eq.${clanId},opponent_id.eq.${clanId}`);
+    legacyXError(open.error, "Unable to check Clan Wars");
+    const openRows = (open.data ?? []) as DbRow[];
+    if (openRows.some((row) => [textValue(row.challenger_id), textValue(row.opponent_id)].includes(opponentId))) apiError(409, "There is already an open war with this clan", "clan_war_open");
+    if (openRows.filter((row) => textValue(row.challenger_id) === clanId).length >= 3) apiError(409, "A clan can have three open challenges at a time", "clan_war_limit");
+    const { data, error } = await db().from("clan_wars").insert({ challenger_id: clanId, opponent_id: opponentId, map_name: input.map, scheduled_at: new Date(when).toISOString(), note: input.note || null, created_by: user.id }).select("id").single();
+    legacyXError(error, "Unable to send the challenge");
+    await logClan(clan, user.id, "war", null, `challenged ${textValue(opponent.name)} on ${input.map}`);
+    for (const managerId of await clanManagerIds(opponentId)) await tellPlayer(managerId, "Clan War challenge", `${textValue(clan.name)} [${textValue(clan.tag)}] challenged your clan to a war on ${input.map}. Answer in the clan's Wars tab.`, { kind: "clan_war", warId: textValue(data?.id) });
+    res.status(201).json({ id: textValue(data?.id) });
+  }));
+  router.post("/clans/:clanId/wars/:warId/:action", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
+    const clanId = await clanIdOf(req.params.clanId);
+    const warId = userIdSchema.parse(req.params.warId);
+    const action = z.enum(["accept", "decline", "cancel"]).parse(req.params.action);
+    const { clan } = await requireClanManager(clanId, user.id);
+    await expireWars(clanId);
+    const { data: war, error } = await db().from("clan_wars").select("*").eq("id", warId).maybeSingle();
+    legacyXError(error, "Unable to load the war");
+    if (!war || ![textValue(war.challenger_id), textValue(war.opponent_id)].includes(clanId)) apiError(404, "War not found");
+    const status = textValue(war.status);
+    const isOpponent = textValue(war.opponent_id) === clanId;
+    if (action !== "cancel" && (!isOpponent || status !== "pending")) apiError(409, "This challenge cannot be answered now", "clan_war_state");
+    if (action === "cancel" && (!WAR_STATUSES_OPEN.includes(status) || Date.parse(textValue(war.scheduled_at)) <= Date.now())) apiError(409, "This war can no longer be called off", "clan_war_state");
+    const next = action === "accept" ? "accepted" : action === "decline" ? "declined" : "cancelled";
+    const saved = await db().from("clan_wars").update({ status: next, answered_by: user.id, updated_at: new Date().toISOString() }).eq("id", warId).eq("status", status).select("id");
+    legacyXError(saved.error, "Unable to save");
+    if (!(saved.data ?? []).length) apiError(409, "Someone else answered first", "clan_war_state");
+    const otherId = isOpponent ? textValue(war.challenger_id) : textValue(war.opponent_id);
+    await logClan(clan, user.id, "war", null, `${next} a war on ${textValue(war.map_name)}`);
+    const verb = next === "accepted" ? "accepted" : next === "declined" ? "declined" : "called off";
+    for (const managerId of await clanManagerIds(otherId)) await tellPlayer(managerId, `Clan War ${verb}`, `${textValue(clan.name)} [${textValue(clan.tag)}] ${verb} the war on ${textValue(war.map_name)}.`, { kind: "clan_war", warId });
+    res.json({ status: next });
+  }));
+
   router.get("/clans/:clanId", optionalUserRoute(async (req, res, user) => {
     res.json(await loadClanDetail(await clanIdOf(req.params.clanId), user?.id));
   }));
@@ -2682,10 +2889,25 @@ export function createLegacyXRouter() {
   router.post("/clans/:clanId/slots", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
     const clanId = await clanIdOf(req.params.clanId);
     const clan = await requireClanLeader(clanId, user.id);
+    // Paid from the leader's wallet, or from the clan bank the members filled.
+    const { from } = z.object({ from: z.enum(["wallet", "bank"]).default("wallet") }).strict().parse(req.body ?? {});
     const current = Number(clan.max_players);
     if (current >= COIN_RULES.clanSlotCap) apiError(409, "The clan is already at the largest size", "clan_slots_cap");
     const next = Math.min(COIN_RULES.clanSlotCap, current + COIN_RULES.clanSlotStep);
     const ref = `clan-slots:${clanId}:${next}`;
+    if (from === "bank") {
+      const paid = await db().rpc("clan_bank_apply", { p_clan_id: clanId, p_user_id: user.id, p_amount: -COIN_RULES.clanSlotPrice, p_reason: `member slots ${current} to ${next}`, p_ref: ref });
+      if (paid.error && /insufficient bank/i.test(String(paid.error.message))) apiError(402, `More member slots cost ${COIN_RULES.clanSlotPrice} LX from the bank`, "clan_bank_low");
+      legacyXError(paid.error, "Unable to pay from the clan bank");
+      const { error } = await db().from("clans").update({ max_players: next }).eq("id", clanId).eq("max_players", current);
+      if (error) {
+        await db().rpc("clan_bank_apply", { p_clan_id: clanId, p_user_id: user.id, p_amount: COIN_RULES.clanSlotPrice, p_reason: "member slots refund", p_ref: `${ref}:refund` });
+        legacyXError(error, "Unable to add member slots");
+      }
+      await logClan(clan, user.id, "settings", null, `max: ${next} (from the bank)`);
+      res.json(await loadClanDetail(clanId, user.id));
+      return;
+    }
     try {
       await applyWalletChange(legacyXDb(), { userId: user.id, amount: -COIN_RULES.clanSlotPrice, kind: "spend", reason: `Clan size ${current} to ${next}`, ref, actor: user.id });
     } catch (error) {
