@@ -1778,7 +1778,7 @@ export function createLegacyXRouter() {
   });
   router.use("/cosmetics", cosmeticRateLimit);
   const cosmeticIdSchema = z.string().regex(/^[a-z0-9-]{2,40}$/);
-  const COSMETIC_KINDS = ["frame", "name_color", "name_glow", "banner", "title", "smoke_color", "grenade_trail", "grenade_light", "kill_effect"] as const;
+  const COSMETIC_KINDS = ["frame", "name_color", "name_glow", "banner", "title", "smoke_color", "grenade_trail", "grenade_light", "kill_effect", "flash_effect"] as const;
   type CosmeticKind = (typeof COSMETIC_KINDS)[number];
   // Bought cosmetics are rented: a share of the item's price (its 30-day price) buys 1 day, 7 days, 30 days or forever.
   const COSMETIC_DURATIONS = [
@@ -1791,10 +1791,11 @@ export function createLegacyXRouter() {
   const cosmeticPrices = (basePrice: number) => Object.fromEntries(COSMETIC_DURATIONS.map((duration) => [duration.key, Math.max(1, Math.round((basePrice * duration.percent) / 100))]));
   const stillRunning = (expiresAt: unknown, now = Date.now()) => !expiresAt || Date.parse(textValue(expiresAt)) > now;
   /** Items whose colour the player picks (cosmetic_custom): the catalog colour is only the starting one. */
-  const CUSTOM_COSMETICS = new Map<string, "color" | "glow">([["name-custom", "color"], ["glow-custom", "glow"], ["smoke-custom", "color"], ["trail-custom", "color"], ["light-custom", "color"], ["kill-custom", "color"]]);
+  const CUSTOM_COSMETICS = new Map<string, "color" | "glow">([["name-custom", "color"], ["glow-custom", "glow"], ["smoke-custom", "color"], ["trail-custom", "color"], ["light-custom", "color"], ["kill-custom", "color"], ["flash-custom", "color"]]);
   /** Custom in-game items whose shape the player picks as well (cosmetic_custom.fx); the game server knows each of these. Rainbow ones stay their own items. */
   const CUSTOM_SHAPES = new Map<string, readonly string[]>([
     ["trail-custom", ["line", "dash", "double", "helix", "comet", "flare", "sparks", "starfall", "inferno"]],
+    ["flash-custom", ["starburst", "nova", "ring"]],
     ["kill-custom", ["ring", "pillar", "burst", "spiral", "lightning", "halo", "crown", "cross", "xmark", "heart", "soul"]],
   ]);
   const loadCosmeticCatalog = async () => {
@@ -1905,6 +1906,7 @@ export function createLegacyXRouter() {
       equippedGrenadeTrail: wearing.get("grenade_trail") ?? null,
       equippedGrenadeLight: wearing.get("grenade_light") ?? null,
       equippedKillEffect: wearing.get("kill_effect") ?? null,
+      equippedFlashEffect: wearing.get("flash_effect") ?? null,
       frames: ofKind("frame"),
       nameColors: ofKind("name_color"),
       nameGlows: ofKind("name_glow"),
@@ -1916,6 +1918,8 @@ export function createLegacyXRouter() {
       /** A coloured light that flies with your own grenades (game server). */
       grenadeLights: ofKind("grenade_light"),
       killEffects: ofKind("kill_effect"),
+      /** What plays where your own flashbangs burst (game server). */
+      flashEffects: ofKind("flash_effect"),
     });
   }));
   router.post("/cosmetics/:itemId/buy", userRoute(async (req, res, user) => {
@@ -1926,7 +1930,7 @@ export function createLegacyXRouter() {
     if (textValue(item.unlock) !== "coin") apiError(409, "This item is not for sale", "cosmetic_not_for_sale");
     const length = COSMETIC_DURATIONS.find((entry) => entry.key === input.duration)!;
     const price = Number(cosmeticPrices(numberValue(item.price))[length.key]);
-    const label = item.kind === "frame" ? "Frame" : item.kind === "name_color" ? "Name colour" : item.kind === "banner" ? "Banner" : item.kind === "title" ? "Title" : item.kind === "smoke_color" ? "Smoke colour" : item.kind === "grenade_trail" ? "Grenade trail" : item.kind === "grenade_light" ? "Grenade light" : item.kind === "kill_effect" ? "Kill effect" : "Name glow";
+    const label = item.kind === "frame" ? "Frame" : item.kind === "name_color" ? "Name colour" : item.kind === "banner" ? "Banner" : item.kind === "title" ? "Title" : item.kind === "smoke_color" ? "Smoke colour" : item.kind === "grenade_trail" ? "Grenade trail" : item.kind === "grenade_light" ? "Grenade light" : item.kind === "kill_effect" ? "Kill effect" : item.kind === "flash_effect" ? "Flash effect" : "Name glow";
     // Already yours: a rental is added on to the time left, and an item that is yours for good cannot be bought again.
     const { data: current, error: currentError } = await db().from("cosmetic_owned").select("expires_at,source").eq("user_id", user.id).eq("item_id", itemId).maybeSingle();
     legacyXError(currentError, "Unable to check your cosmetics");
@@ -4958,7 +4962,7 @@ export function createLegacyXRouter() {
       return row ? { color: textValue((row as DbRow).color), fx: textValue((row as DbRow).fx) || null } : null;
     }
     // The grenade trail (colour and shape), grenade light and kill effect (colour and shape) the player wears, same rules as the smoke colour (a run-out rental is not applied).
-    const wornGrenadeItem = async (kind: "grenade_trail" | "grenade_light" | "kill_effect") => {
+    const wornGrenadeItem = async (kind: "grenade_trail" | "grenade_light" | "kill_effect" | "flash_effect") => {
       const { data: row } = await db().from("cosmetic_equipped").select("item_id").eq("user_id", data.user_id).eq("kind", kind).maybeSingle();
       if (!row) return null;
       const itemId = textValue((row as DbRow).item_id);
@@ -4969,7 +4973,7 @@ export function createLegacyXRouter() {
       const hex = picked?.color ?? textValue((item as DbRow | null)?.color);
       return /^#[0-9a-f]{6}$/i.test(hex) ? { color: hex, fx: picked?.fx ?? (textValue((item as DbRow | null)?.fx) || null) } : null;
     };
-    const [wornTrail, wornLight, wornKill] = await Promise.all([wornGrenadeItem("grenade_trail"), wornGrenadeItem("grenade_light"), wornGrenadeItem("kill_effect")]);
+    const [wornTrail, wornLight, wornKill, wornFlash] = await Promise.all([wornGrenadeItem("grenade_trail"), wornGrenadeItem("grenade_light"), wornGrenadeItem("kill_effect"), wornGrenadeItem("flash_effect")]);
     res.json({ profile: {
       ...profile,
       grenade_trail: wornTrail?.color ?? null,
@@ -4977,6 +4981,8 @@ export function createLegacyXRouter() {
       grenade_light: wornLight?.color ?? null,
       kill_effect: wornKill?.color ?? null,
       kill_effect_fx: wornKill?.fx ?? null,
+      flash_effect: wornFlash?.color ?? null,
+      flash_effect_fx: wornFlash?.fx ?? null,
       smoke_color: smokeColor,
       smoke_color2: smokeColor2,
       position: ladder ? numberValue((ladder as DbRow).position) : null,
