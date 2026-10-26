@@ -56,7 +56,7 @@ export async function productDeadlines(db: Db, ids: string[]): Promise<Map<strin
 }
 
 /** Gives the buyer of a paid Genesis order their number and cosmetics. Returns the number. Safe to call twice. */
-export async function claimFounder(db: Db, userId: string, orderId: string, limit: number): Promise<number> {
+export async function claimFounder(db: Db, userId: string, orderId: string | null, limit: number): Promise<number> {
   const { data, error } = await db.rpc("founder_claim", { p_user: userId, p_order: orderId, p_limit: limit });
   if (error) {
     if (String(error.message).includes("founder_sold_out")) apiError(409, "All Genesis packs are taken", "founder_sold_out");

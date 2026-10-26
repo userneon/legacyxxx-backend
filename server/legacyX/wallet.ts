@@ -139,6 +139,8 @@ export const COIN_RULES = {
   /** Ranked matches on 3 days in a row, then every 7th day of the run (3, 7, 10, 14 ...). */
   streakThree: 30,
   streakSeven: 100,
+  /** The Genesis pack in LX (owner request 2026-10-26): its 30,000 MNT at the clan fee's rate (3,000 LX = 20,000 MNT, 1 LX about 6.67 MNT). */
+  founderPrice: 4_500,
 } as const;
 
 /** The earning rules as the website shows them (one source: COIN_RULES). */

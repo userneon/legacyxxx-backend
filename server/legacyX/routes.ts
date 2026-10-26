@@ -1888,7 +1888,7 @@ export function createLegacyXRouter() {
   // Visitors see the whole catalogue too (audit 2026-10-11: a shop behind a sign-in wall sells nothing); owning and wearing need an account.
   router.get("/cosmetics", optionalUserRoute(async (_req, res, user) => {
     const none = { data: [] as DbRow[], error: null };
-    const [catalog, owned, worn, equippedRows, everyOwned, players, slotRows] = await Promise.all([
+    const [enabledCatalog, owned, worn, equippedRows, everyOwned, players, slotRows] = await Promise.all([
       loadCosmeticCatalog(),
       user ? db().from("cosmetic_owned").select("item_id,expires_at").eq("user_id", user.id) : Promise.resolve(none),
       user ? equippedCosmeticsFor([user.id]) : Promise.resolve(new Map()),
@@ -1903,13 +1903,18 @@ export function createLegacyXRouter() {
     if (!everyOwned.error) for (const row of ((everyOwned.data ?? []) as DbRow[]).filter((entry) => stillRunning(entry.expires_at))) owners.set(textValue(row.item_id), (owners.get(textValue(row.item_id)) ?? 0) + 1);
     const runningRows = ((owned.data ?? []) as DbRow[]).filter((row) => stillRunning(row.expires_at));
     const ownedIds = new Set(runningRows.map((row) => textValue(row.item_id)));
+    // Something staff switched off after the player bought it is still theirs: it stays in their list (marked retired, not for sale) so they can keep wearing it.
+    const missing = Array.from(ownedIds).filter((id) => !enabledCatalog.some((item) => textValue(item.id) === id));
+    const retiredRows = missing.length === 0 ? [] : (await db().from("cosmetic_items").select("id,kind,name_en,name_mn,unlock,price,requirement,sort,color,color2,glow,fx,rarity,featured").eq("enabled", false).in("kind", [...COSMETIC_KINDS]).in("id", missing)).data ?? [];
+    const retiredIds = new Set((retiredRows as DbRow[]).map((item) => textValue(item.id)));
+    const catalog = [...enabledCatalog, ...(retiredRows as DbRow[])];
     const endsAt = new Map<string, string | null>(runningRows.map((row) => [textValue(row.item_id), row.expires_at ? timestampValue(row.expires_at) : null]));
     const wearing = new Map(((equippedRows.data ?? []) as DbRow[]).filter((row) => textValue(catalog.find((item) => textValue(item.id) === textValue(row.item_id))?.unlock) !== "coin" || ownedIds.has(textValue(row.item_id))).map((row) => [textValue(row.kind), textValue(row.item_id)]));
     const mine = user ? await db().from("cosmetic_custom").select("item_id,color,color2").eq("user_id", user.id) : { data: [] as DbRow[], error: null };
     const mineRows = new Map<string, DbRow>(((mine.error ? [] : mine.data ?? []) as DbRow[]).map((row) => [textValue(row.item_id), row]));
     // A design shows the colours this player picked for it, or neutral grey until they pick (a visitor sees grey).
     const ofKind = (kind: CosmeticKind) => catalog.filter((item) => item.kind === kind).map((item) => {
-      const view = cosmeticView(item, ownedIds, owners, endsAt) as Record<string, unknown>;
+      const view: Record<string, unknown> = { ...(cosmeticView(item, ownedIds, owners, endsAt) as Record<string, unknown>), ...(retiredIds.has(textValue(item.id)) ? { retired: true } : {}) };
       if (!isColourable(item)) return view;
       const colours = itemColours(item, mineRows.get(textValue(item.id)));
       const { color: _color, color2: _color2, glow: _glow, ...rest } = view;
@@ -2004,7 +2009,8 @@ export function createLegacyXRouter() {
       res.json({ kind: input.kind, item: null, equippedFrame: input.kind === "frame" ? null : undefined });
       return;
     }
-    const item = (await loadCosmeticCatalog()).find((entry) => textValue(entry.id) === input.item);
+    // An item staff switched off can still be worn by whoever bought it (the owned check below).
+    const item = (await loadCosmeticCatalog()).find((entry) => textValue(entry.id) === input.item) ?? ((await db().from("cosmetic_items").select("id,kind,unlock").eq("id", input.item).maybeSingle()).data as DbRow | null);
     if (!item || item.kind !== input.kind) apiError(404, "Item not found");
     if (textValue(item.unlock) !== "free") {
       const { data, error: ownedError } = await db().from("cosmetic_owned").select("item_id,expires_at").eq("user_id", user.id).eq("item_id", input.item).maybeSingle();
@@ -3561,7 +3567,7 @@ export function createLegacyXRouter() {
   // contacts them, takes the payment and moves the order along. Products and orders live in supabase/legacy_x_shop_goods.sql.
   const SHOP_ORDER_STATUSES = ["new", "contacted", "paid", "shipped", "done", "cancelled"] as const;
   const MAX_OPEN_SHOP_ORDERS = 5;
-  const shopProductView = (row: DbRow, founder?: { limit: number; taken: number; remaining: number; endsAt: string | null; open: boolean }) => ({
+  const shopProductView = (row: DbRow, founder?: { limit: number; taken: number; remaining: number; endsAt: string | null; open: boolean; priceLx: number }) => ({
     id: textValue(row.id),
     slug: textValue(row.slug),
     name: textValue(row.name),
@@ -3577,14 +3583,14 @@ export function createLegacyXRouter() {
   /** The Genesis pack's numbers: how many packs there are, how many are taken, when it stops selling. Empty for every other product. */
   const founderInfoFor = async (rows: DbRow[]) => {
     const packs = rows.filter((row) => textValue(row.kind) === FOUNDER_PRODUCT_KIND);
-    const info = new Map<string, { limit: number; taken: number; remaining: number; endsAt: string | null; open: boolean }>();
+    const info = new Map<string, { limit: number; taken: number; remaining: number; endsAt: string | null; open: boolean; priceLx: number }>();
     if (packs.length === 0) return info;
     const [taken, deadlines] = await Promise.all([founderCount(db()), productDeadlines(db(), packs.map((row) => textValue(row.id)))]);
     for (const row of packs) {
       const limit = numberValue(row.stock);
       const endsAt = deadlines.get(textValue(row.id)) ?? null;
       const remaining = Math.max(0, limit - (taken ?? 0));
-      info.set(textValue(row.id), { limit, taken: taken ?? 0, remaining, endsAt, open: remaining > 0 && founderSalesOpen(endsAt) });
+      info.set(textValue(row.id), { limit, taken: taken ?? 0, remaining, endsAt, open: remaining > 0 && founderSalesOpen(endsAt), priceLx: COIN_RULES.founderPrice });
     }
     return info;
   };
@@ -3636,6 +3642,39 @@ export function createLegacyXRouter() {
     if (!order) apiError(500, "The order was not saved");
     await db().from("audit_logs").insert({ actor_type: "user", actor_id: user.id, action: "shop.order.create", target_type: "shop_orders", target_id: textValue(order.id), metadata: { productId: input.productId, quantity: input.quantity } });
     res.status(201).json(shopOrderView(order as DbRow, product as DbRow));
+  }));
+  // The Genesis pack for LX (owner request 2026-10-26): paid from the wallet, the number and the cosmetics are given at once; no order, no call.
+  router.post("/shop/founder/buy", userRoute(async (req, res, user) => {
+    z.object({}).strict().parse(req.body ?? {});
+    const { data: product, error: productError } = await db().from("shop_products").select("id,name,kind,price_mnt,stock,enabled").eq("kind", FOUNDER_PRODUCT_KIND).eq("enabled", true).order("sort").limit(1).maybeSingle();
+    legacyXError(productError, "Unable to read the product");
+    if (!product) apiError(404, "The Genesis pack is not on sale");
+    const productId = textValue(product.id);
+    const info = (await founderInfoFor([product as DbRow])).get(productId);
+    if (!info?.open) apiError(409, "The Genesis pack is no longer on sale", "founder_closed");
+    if (await founderNumberOf(db(), user.id)) apiError(409, "You are already in Genesis", "founder_owned");
+    const { count: earlier, error: earlierError } = await db().from("shop_orders").select("id", { count: "exact", head: true }).eq("user_id", user.id).eq("product_id", productId).neq("status", "cancelled");
+    legacyXError(earlierError, "Unable to check your orders");
+    if ((earlier ?? 0) > 0) apiError(409, "You already ordered the Genesis pack", "founder_ordered");
+    const price = COIN_RULES.founderPrice;
+    const ref = `founder:${user.id}:${Math.floor(Date.now() / 10_000)}`;
+    try {
+      await applyWalletChange(legacyXDb(), { userId: user.id, amount: -price, kind: "spend", reason: "LEGACY-X Genesis pack", ref, actor: user.id });
+    } catch (error) {
+      if (error instanceof NotEnoughCoinsError) apiError(402, `This costs ${price.toLocaleString("en-US")} LX`, "founder_no_coins");
+      throw error;
+    }
+    let number: number;
+    try {
+      number = await claimFounder(db(), user.id, null, info.limit);
+    } catch (error) {
+      await applyWalletChange(legacyXDb(), { userId: user.id, amount: price, kind: "refund", reason: "Genesis pack could not be given", ref: `${ref}:refund`, actor: user.id }).catch((refundError) => console.error("[legacy-x-api] genesis refund failed", refundError));
+      throw error;
+    }
+    const { error: tellError } = await db().from("notifications").insert({ user_id: user.id, kind: "system", title: `You are Genesis ${founderLabel(number)}`, body: "The Genesis frame, Gold Foil banner and Genesis title are yours. Wear them in Profile → Appearance.", metadata: { kind: "founder" } });
+    if (tellError) console.warn("[legacy-x-api] founder notification not saved", tellError.message);
+    await db().from("audit_logs").insert({ actor_type: "user", actor_id: user.id, action: "shop.founder.buy", target_type: "shop_products", target_id: productId, metadata: { number, price } });
+    res.status(201).json({ number, label: founderLabel(number) });
   }));
   router.get("/shop/orders/me", userRoute(async (_req, res, user) => {
     const { data, error } = await db().from("shop_orders").select("id,product_id,quantity,unit_price_mnt,status,created_at").eq("user_id", user.id).order("created_at", { ascending: false }).limit(50);
