@@ -29,6 +29,7 @@ import { legacyXDb, legacyXError } from "./supabase";
 import { resolveSteamProfileMedia } from "./steamBackground";
 import { coreRoundScore, expRowAsResult, mapExpRecentMatch, mapMatchDetail } from "./matchDetails";
 import { recordClanMatch, WAR_WINDOW_AFTER_MS } from "./clanMatch";
+import { headToHead } from "./compare";
 import { LEVEL_PERKS, clanAchievements, clanStats, levelFor } from "./clanProgress";
 import { fetchSteamAccountCreatedAt, fetchSteamBans, syncSteamUserProfile } from "./steamProfile";
 import { RANK_CALCULATION_VERSION, calculateMatchExp, expLimitUsage, limitWindows } from "./ranking";
@@ -1327,6 +1328,26 @@ export function createLegacyXRouter() {
     if (error) throw new Error(error.message);
     return buildBenchmark((data ?? []) as DbRow[]);
   }).catch((error) => { console.warn("[legacy-x-api] stat benchmark unavailable", error?.message); return null; });
+  // Compare → head to head: the ranked matches both players were in, against each other and together (compare.ts). A player who hid
+  // their matches on the profile stays hidden here too, unless the viewer is that player or staff.
+  router.get("/compare/head-to-head", optionalUserRoute(async (req, res, viewer) => {
+    const input = z.object({ a: z.string().trim().min(1).max(64), b: z.string().trim().min(1).max(64) }).parse(req.query);
+    const caller = viewer ?? ({ id: "" } as LegacyUser);
+    const [aId, bId] = await Promise.all([resolveUserId(input.a, caller), resolveUserId(input.b, caller)]);
+    if (aId === bId) apiError(400, "Pick two different players");
+    const [users, staffRow] = await Promise.all([
+      db().from("users").select("id,hidden_profile_sections").in("id", [aId, bId]),
+      viewer ? db().from("staff").select("id").eq("user_id", viewer.id).eq("status", "active").maybeSingle() : Promise.resolve({ data: null, error: null }),
+    ]);
+    legacyXError(users.error || staffRow.error, "Unable to load the players");
+    const hides = (userId: string) => hiddenForViewer(normalizeHiddenSections(((users.data ?? []) as DbRow[]).find((row) => textValue(row.id) === userId)?.hidden_profile_sections), { isOwner: viewer?.id === userId, isStaff: Boolean(staffRow.data) }).includes("matches");
+    if (hides(aId) || hides(bId)) { res.json({ hidden: true }); return; }
+    const rowsOf = (userId: string) => db().from("competitive_match_exp").select("match_id,team_key,outcome,created_at,stats,core_matches(map_name)").eq("user_id", userId).order("created_at", { ascending: false }).limit(1000);
+    const [aRows, bRows] = await Promise.all([rowsOf(aId), rowsOf(bId)]);
+    legacyXError(aRows.error || bRows.error, "Unable to load the matches");
+    const shape = (rows: DbRow[]) => rows.map((row) => ({ match_id: textValue(row.match_id), team_key: textValue(row.team_key), outcome: textValue(row.outcome), created_at: textValue(row.created_at), map_name: textValue(firstRow(row.core_matches)?.map_name) || null, stats: recordValue(row.stats) }));
+    res.json({ hidden: false, ...headToHead(shape((aRows.data ?? []) as DbRow[]), shape((bRows.data ?? []) as DbRow[])) });
+  }));
   router.get("/profile/:userId/overview", optionalUserRoute(async (req, res, viewer) => {
     const raw = String(req.params.userId ?? "");
     if (raw === "me" && !viewer) apiError(401, "Sign in to view your profile");
