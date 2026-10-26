@@ -27,6 +27,11 @@ describe("owner profile lists", () => {
     ]);
     expect(team.map((member) => member.role)).toEqual(["Manager", "Admin", "Designer"]);
   });
+  it("lists the whole team, the Owner first, for the Staff page", () => {
+    const user = (name: string) => ({ steam_id: `7656${name}`, username: name, avatar: "" });
+    const team = ownerTeam([{ role: "ADMIN", users: user("a") }, { role: "OWNER", users: user("o") }], true);
+    expect(team.map((member) => member.role)).toEqual(["Owner", "Admin"]);
+  });
   it("maps updates and spots a missing table", () => {
     expect(ownerUpdates([{ id: 4, title: "CS2 update", created_at: "2026-10-04T00:00:00Z" }, { id: 5, title: "", created_at: "x" }])).toEqual([{ id: "4", title: "CS2 update", at: "2026-10-04T00:00:00Z" }]);
     expect(isMissingTableError({ code: "42P01" })).toBe(true);

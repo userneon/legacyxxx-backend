@@ -34,13 +34,13 @@ export function ownerLinks(value: unknown): { url: string; label?: string }[] {
   return links;
 }
 
-/** Staff shown as the team: active members except the Owner, in rank order. */
-const TEAM_ORDER = ["MANAGER", "ADMIN", "DEVELOPER", "DESIGNER"];
-const TEAM_LABEL: Record<string, string> = { MANAGER: "Manager", ADMIN: "Admin", DEVELOPER: "Developer", DESIGNER: "Designer" };
+/** Staff shown as the team in rank order: the Owner's profile lists everyone but the Owner, the Staff page everyone. */
+const TEAM_ORDER = ["OWNER", "MANAGER", "ADMIN", "DEVELOPER", "DESIGNER"];
+const TEAM_LABEL: Record<string, string> = { OWNER: "Owner", MANAGER: "Manager", ADMIN: "Admin", DEVELOPER: "Developer", DESIGNER: "Designer" };
 
-export function ownerTeam(rows: Row[]) {
+export function ownerTeam(rows: Row[], withOwner = false) {
   return rows
-    .filter((row) => TEAM_ORDER.includes(String(row.role)))
+    .filter((row) => TEAM_ORDER.includes(String(row.role)) && (withOwner || String(row.role) !== "OWNER"))
     .map((row) => {
       const user = (Array.isArray(row.users) ? row.users[0] : row.users) ?? {};
       const order = TEAM_ORDER.indexOf(String(row.role));

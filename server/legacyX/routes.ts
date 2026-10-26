@@ -4206,6 +4206,12 @@ export function createLegacyXRouter() {
     res.json({ clans: ((data ?? []) as DbRow[]).map(mapClanCard) });
   }));
   // The Creators page: every content creator with their account, rank and channel links, main creators first.
+  // The team, for the website's Staff page (owner request 2026-10-26): who is on it and their role, the same list the Owner's profile shows.
+  router.get("/public/staff", asyncRoute(async (_req, res) => {
+    const { data, error } = await db().from("staff").select("role,users(steam_id,username,avatar)").eq("status", "active").limit(100);
+    legacyXError(error, "Unable to load the team");
+    res.set("Cache-Control", "public, max-age=60").json({ team: ownerTeam((data ?? []) as DbRow[], true) });
+  }));
   router.get("/public/creators", asyncRoute(async (_req, res) => {
     const { data, error } = await db().from("content_creators").select("user_id,tier,bio,links,sort,created_at,users!content_creators_user_id_fkey!inner(id,steam_id,username,avatar)").limit(200);
     legacyXError(error, "Unable to load creators");
