@@ -129,6 +129,20 @@ export const checkReportSchema = z
       })
       .strict()
       .optional(),
+    /** Whether the kernel anti-cheats FACEIT AC and Riot Vanguard are on the PC: installed, how they load, running now. Optional. */
+    antiCheats: z
+      .array(
+        z
+          .object({
+            name: z.enum(["FACEIT AC", "Riot Vanguard"]),
+            installed: z.boolean(),
+            load: z.enum(["boot", "automatic", "manual", "disabled"]).optional(),
+            running: z.boolean(),
+          })
+          .strict(),
+      )
+      .max(4)
+      .optional(),
     /**
      * Facts about programs, not verdicts: which of the listed functions and words a program holds. The server judges them (checkerJudge.ts), so the
      * rule that decides never has to be inside the program. Not stored; only the findings made from them are.

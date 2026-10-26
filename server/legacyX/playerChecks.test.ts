@@ -51,6 +51,11 @@ describe("check report", () => {
     expect(checkReportSchema.safeParse({ ...report, hwid: { version: 1, parts: [{ kind: "mac", hash }] } }).success).toBe(false);
     expect(checkReportSchema.safeParse({ ...report, hwid: { version: 2, parts: [{ kind: "id", hash }] } }).success).toBe(false);
   });
+  it("accepts the anti-cheat status of FACEIT and Vanguard and nothing else", () => {
+    expect(checkReportSchema.safeParse({ ...report, antiCheats: [{ name: "FACEIT AC", installed: true, load: "automatic", running: true }, { name: "Riot Vanguard", installed: false, running: false }] }).success).toBe(true);
+    expect(checkReportSchema.safeParse({ ...report, antiCheats: [{ name: "Something Else", installed: true, running: true }] }).success).toBe(false);
+    expect(checkReportSchema.safeParse({ ...report, antiCheats: [{ name: "FACEIT AC", installed: true, running: true, path: "C:\\x" }] }).success).toBe(false);
+  });
   it("takes what Steam's files say about each account, and nothing it does not know", () => {
     const withSteam = { ...report, steamAccounts: [{ steamId: STEAM, accountName: "login", personaName: "Nick", lastLogin: "2026-10-01T10:00:00Z", mostRecent: true, cs2LastPlayed: "2026-10-08T20:00:00Z", cs2Hours: 812.5, launchOptions: "-novid -insecure" }], cs2: { installed: true, lastUpdated: "2026-10-05T00:00:00Z" } };
     expect(checkReportSchema.safeParse(withSteam).success).toBe(true);
