@@ -4,7 +4,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
  * Clan appearance. Purely visual. The leader buys with LX, the clan owns it, and every member's clan shows it.
  * Colours are #rrggbb and effect keys are ones the website knows; anything else is never sent.
  */
-export type ClanPageEffect = "slats" | "waves" | "dots" | "aurora" | "threads" | "particles" | "lightning" | "rays" | "lines" | "plasma";
+export type ClanPageEffect = "slats" | "waves" | "dots" | "aurora" | "threads" | "particles" | "lightning" | "rays" | "lines" | "plasma" | "starfield" | "matrix" | "orbs" | "grid" | "embers" | "vortex" | "hex";
 export type ClanLookKind = "tag_color" | "tag_glow" | "backdrop" | "page";
 export const CLAN_LOOK_KINDS = ["tag_color", "tag_glow", "backdrop", "page"] as const;
 
@@ -70,7 +70,6 @@ export const CLAN_LOOK_ITEMS: ClanLookItem[] = [
   { id: "tag-custom", kind: "tag_color", name: "Custom colour", price: 225, rarity: 3, color: "#c4b5fd", custom: true },
   { id: "clan-glow-custom", kind: "tag_glow", name: "Custom glow", price: 375, rarity: 3, glow: "#8b5cf6", fx: "neon", custom: true },
   { id: "back-custom", kind: "backdrop", name: "Custom gradient", price: 450, rarity: 3, from: "#4c1d95", to: "#0a0a0a", custom: true },
-  { id: "page-custom-plain", kind: "page", name: "Custom gradient", price: 1500, rarity: 3, from: "#7c3aed", to: "#0a0a0a", custom: true },
   { id: "page-custom-slats", kind: "page", name: "Custom Micro Slats", price: 2250, rarity: 4, from: "#cbd5e1", to: "#0a0a0a", effect: "slats", custom: true },
   { id: "page-custom-waves", kind: "page", name: "Custom Pattern Waves", price: 2250, rarity: 4, from: "#e5e5e5", to: "#0a0a0a", effect: "waves", custom: true },
   { id: "page-custom-dots", kind: "page", name: "Custom Dot Field", price: 1950, rarity: 4, from: "#d4d4d4", to: "#0a0a0a", effect: "dots", custom: true },
@@ -81,18 +80,13 @@ export const CLAN_LOOK_ITEMS: ClanLookItem[] = [
   { id: "page-custom-rays", kind: "page", name: "Custom Light Rays", price: 2100, rarity: 4, from: "#e5e5e5", to: "#0a0a0a", effect: "rays", custom: true },
   { id: "page-custom-lines", kind: "page", name: "Custom Wave Lines", price: 1650, rarity: 4, from: "#fb7185", to: "#0a0a0a", effect: "lines", custom: true },
   { id: "page-custom-plasma", kind: "page", name: "Custom Plasma", price: 2250, rarity: 4, from: "#fb923c", to: "#0a0a0a", effect: "plasma", custom: true },
-  { id: "page-ember", kind: "page", name: "Ember Glow", price: 1000, rarity: 2, from: "#7c2d12", to: "#0a0a0a" },
-  { id: "page-ocean", kind: "page", name: "Deep Sea", price: 1000, rarity: 2, from: "#0c4a6e", to: "#0a0a0a" },
-  { id: "page-forest", kind: "page", name: "Pine Forest", price: 1000, rarity: 2, from: "#14532d", to: "#0a0a0a" },
-  { id: "page-violet", kind: "page", name: "Violet Haze", price: 1000, rarity: 2, from: "#4c1d95", to: "#0a0a0a" },
-  { id: "page-crimson", kind: "page", name: "Crimson Dawn", price: 1000, rarity: 2, from: "#881337", to: "#0a0a0a" },
-  { id: "page-steel", kind: "page", name: "Steel Fog", price: 1000, rarity: 2, from: "#475569", to: "#0a0a0a" },
-  { id: "page-dusk", kind: "page", name: "Dusk Sky", price: 1200, rarity: 3, from: "#6d28d9", to: "#9d174d" },
-  { id: "page-sunset", kind: "page", name: "Sunset", price: 1200, rarity: 3, from: "#c2410c", to: "#86198f" },
-  { id: "page-aurora", kind: "page", name: "Aurora", price: 1200, rarity: 3, from: "#0f766e", to: "#4338ca" },
-  { id: "page-inferno", kind: "page", name: "Inferno", price: 1300, rarity: 4, from: "#dc2626", to: "#f59e0b" },
-  { id: "page-nebula", kind: "page", name: "Nebula", price: 1300, rarity: 4, from: "#be185d", to: "#0e7490" },
-  { id: "page-royal", kind: "page", name: "Royal Court", price: 1300, rarity: 4, from: "#7c3aed", to: "#b45309" },
+  { id: "page-custom-starfield", kind: "page", name: "Custom Warp Speed", price: 2250, rarity: 4, from: "#7dd3fc", to: "#0a0a0a", effect: "starfield", custom: true },
+  { id: "page-custom-matrix", kind: "page", name: "Custom Code Rain", price: 2100, rarity: 4, from: "#4ade80", to: "#0a0a0a", effect: "matrix", custom: true },
+  { id: "page-custom-orbs", kind: "page", name: "Custom Lava Lamp", price: 1950, rarity: 4, from: "#8b5cf6", to: "#0a0a0a", effect: "orbs", custom: true },
+  { id: "page-custom-grid", kind: "page", name: "Custom Retro Grid", price: 2250, rarity: 4, from: "#f472b6", to: "#0a0a0a", effect: "grid", custom: true },
+  { id: "page-custom-embers", kind: "page", name: "Custom Embers", price: 2100, rarity: 4, from: "#fb923c", to: "#0a0a0a", effect: "embers", custom: true },
+  { id: "page-custom-vortex", kind: "page", name: "Custom Galaxy", price: 2400, rarity: 4, from: "#c084fc", to: "#0a0a0a", effect: "vortex", custom: true },
+  { id: "page-custom-hex", kind: "page", name: "Custom Honeycomb", price: 1950, rarity: 4, from: "#6ee7b7", to: "#0a0a0a", effect: "hex", custom: true },
   { id: "page-slats-silver", kind: "page", name: "Micro Slats Silver", price: 1500, rarity: 4, from: "#cbd5e1", to: "#0a0a0a", effect: "slats" },
   { id: "page-slats-rose", kind: "page", name: "Micro Slats Rose", price: 1500, rarity: 4, from: "#fb7185", to: "#0a0a0a", effect: "slats" },
   { id: "page-slats-ocean", kind: "page", name: "Micro Slats Ocean", price: 1500, rarity: 4, from: "#38bdf8", to: "#0a0a0a", effect: "slats" },
@@ -116,6 +110,21 @@ export const CLAN_LOOK_ITEMS: ClanLookItem[] = [
   { id: "page-lines-mint", kind: "page", name: "Wave Lines Mint", price: 1100, rarity: 4, from: "#6ee7b7", to: "#0a0a0a", effect: "lines" },
   { id: "page-plasma-ember", kind: "page", name: "Plasma Ember", price: 1500, rarity: 4, from: "#fb923c", to: "#0a0a0a", effect: "plasma" },
   { id: "page-plasma-rose", kind: "page", name: "Plasma Rose", price: 1500, rarity: 4, from: "#fb7185", to: "#0a0a0a", effect: "plasma" },
+  // More animated backgrounds (owner request 2026-10-26); the plain gradients were taken out the same day, every page background now moves.
+  { id: "page-starfield-ice", kind: "page", name: "Warp Speed Ice", price: 1500, rarity: 4, from: "#7dd3fc", to: "#0a0a0a", effect: "starfield" },
+  { id: "page-starfield-violet", kind: "page", name: "Warp Speed Violet", price: 1500, rarity: 4, from: "#a78bfa", to: "#0a0a0a", effect: "starfield" },
+  { id: "page-matrix-green", kind: "page", name: "Code Rain", price: 1400, rarity: 4, from: "#4ade80", to: "#0a0a0a", effect: "matrix" },
+  { id: "page-matrix-red", kind: "page", name: "Code Rain Red", price: 1400, rarity: 4, from: "#f87171", to: "#0a0a0a", effect: "matrix" },
+  { id: "page-orbs-violet", kind: "page", name: "Lava Lamp Violet", price: 1300, rarity: 4, from: "#8b5cf6", to: "#0a0a0a", effect: "orbs" },
+  { id: "page-orbs-sunset", kind: "page", name: "Lava Lamp Sunset", price: 1300, rarity: 4, from: "#fb923c", to: "#0a0a0a", effect: "orbs" },
+  { id: "page-grid-pink", kind: "page", name: "Retro Grid Pink", price: 1500, rarity: 4, from: "#f472b6", to: "#0a0a0a", effect: "grid" },
+  { id: "page-grid-cyan", kind: "page", name: "Retro Grid Cyan", price: 1500, rarity: 4, from: "#22d3ee", to: "#0a0a0a", effect: "grid" },
+  { id: "page-embers-fire", kind: "page", name: "Embers", price: 1400, rarity: 4, from: "#fb923c", to: "#0a0a0a", effect: "embers" },
+  { id: "page-embers-gold", kind: "page", name: "Embers Gold", price: 1400, rarity: 4, from: "#fcd34d", to: "#0a0a0a", effect: "embers" },
+  { id: "page-vortex-violet", kind: "page", name: "Galaxy Violet", price: 1600, rarity: 4, from: "#c084fc", to: "#0a0a0a", effect: "vortex" },
+  { id: "page-vortex-ice", kind: "page", name: "Galaxy Ice", price: 1600, rarity: 4, from: "#7dd3fc", to: "#0a0a0a", effect: "vortex" },
+  { id: "page-hex-mint", kind: "page", name: "Honeycomb Mint", price: 1300, rarity: 4, from: "#6ee7b7", to: "#0a0a0a", effect: "hex" },
+  { id: "page-hex-gold", kind: "page", name: "Honeycomb Gold", price: 1300, rarity: 4, from: "#fcd34d", to: "#0a0a0a", effect: "hex" },
 ];
 
 const ITEM_BY_ID = new Map(CLAN_LOOK_ITEMS.map((item) => [item.id, item]));
