@@ -35,6 +35,7 @@ const skinchangerEndpoints: Endpoint[] = [
   { method: "GET", path: "/staff/shop/orders" },
   { method: "POST", path: "/cosmetics/frost-ring/buy" },
   { method: "PUT", path: "/cosmetics/equip" },
+  { method: "PUT", path: "/cosmetics/nade-slot" },
   { method: "GET", path: "/skinchanger/collections" },
   { method: "POST", path: "/skinchanger/collections" },
   { method: "GET", path: "/skinchanger/collections/00000000-0000-4000-8000-000000000009" },

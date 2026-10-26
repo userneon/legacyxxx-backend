@@ -31,6 +31,7 @@ import { coreRoundScore, expRowAsResult, mapExpRecentMatch, mapMatchDetail } fro
 import { recordClanMatch, WAR_WINDOW_AFTER_MS } from "./clanMatch";
 import { headToHead } from "./compare";
 import { PICK_DEFAULT_2, isColourable, isTwoColour, itemColours } from "./cosmeticColours";
+import { NADES, NADE_KINDS, itemsByNade, slotOverrides, type NadeKind } from "./cosmeticNades";
 import { LEVEL_PERKS, clanAchievements, clanStats, levelFor } from "./clanProgress";
 import { fetchSteamAccountCreatedAt, fetchSteamBans, syncSteamUserProfile } from "./steamProfile";
 import { RANK_CALCULATION_VERSION, calculateMatchExp, expLimitUsage, limitWindows } from "./ranking";
@@ -1887,13 +1888,14 @@ export function createLegacyXRouter() {
   // Visitors see the whole catalogue too (audit 2026-10-11: a shop behind a sign-in wall sells nothing); owning and wearing need an account.
   router.get("/cosmetics", optionalUserRoute(async (_req, res, user) => {
     const none = { data: [] as DbRow[], error: null };
-    const [catalog, owned, worn, equippedRows, everyOwned, players] = await Promise.all([
+    const [catalog, owned, worn, equippedRows, everyOwned, players, slotRows] = await Promise.all([
       loadCosmeticCatalog(),
       user ? db().from("cosmetic_owned").select("item_id,expires_at").eq("user_id", user.id) : Promise.resolve(none),
       user ? equippedCosmeticsFor([user.id]) : Promise.resolve(new Map()),
       user ? db().from("cosmetic_equipped").select("kind,item_id").eq("user_id", user.id) : Promise.resolve(none),
       db().from("cosmetic_owned").select("item_id,expires_at").limit(100000),
       db().from("users").select("id", { count: "exact", head: true }),
+      user ? db().from("cosmetic_nade_slot").select("nade,kind,item_id").eq("user_id", user.id) : Promise.resolve(none),
     ]);
     legacyXError(owned.error || equippedRows.error, "Unable to load your cosmetics");
     // Counts are cosmetic extras: if they cannot be read the shop still works, just without them.
@@ -1924,6 +1926,8 @@ export function createLegacyXRouter() {
       equippedGrenadeTrail: wearing.get("grenade_trail") ?? null,
       equippedGrenadeLight: wearing.get("grenade_light") ?? null,
       equippedFlashEffect: wearing.get("flash_effect") ?? null,
+      /** Grenades that wear something other than the default (owner request 2026-10-26): { he: { grenade_trail: "trail-comet" }, flash: { grenade_trail: null } }, null meaning nothing on it. */
+      nadeSlots: slotRows.error ? {} : slotOverrides((slotRows.data ?? []) as Array<{ nade: string; kind: string; item_id: string | null }>),
       frames: ofKind("frame"),
       nameColors: ofKind("name_color"),
       nameGlows: ofKind("name_glow"),
@@ -2010,6 +2014,33 @@ export function createLegacyXRouter() {
     const { error } = await db().from("cosmetic_equipped").upsert({ user_id: user.id, kind: input.kind, item_id: input.item, updated_at: new Date().toISOString() }, { onConflict: "user_id,kind" });
     legacyXError(error, "Unable to wear it");
     res.json({ kind: input.kind, item: input.item, equippedFrame: input.kind === "frame" ? input.item : undefined });
+  }));
+
+  // A trail or light for one kind of grenade only (owner request 2026-10-26); the default from /cosmetics/equip covers the rest.
+  router.put("/cosmetics/nade-slot", userRoute(async (req, res, user) => {
+    const base = { nade: z.enum(NADES), kind: z.enum(NADE_KINDS) };
+    const input = z.union([
+      z.object({ ...base, item: cosmeticIdSchema.nullable() }).strict().transform((value) => ({ ...value, inherit: false as const })),
+      z.object({ ...base, inherit: z.literal(true) }).strict().transform((value) => ({ ...value, item: null as string | null })),
+    ]).parse(req.body);
+    if (input.inherit) {
+      const { error } = await db().from("cosmetic_nade_slot").delete().eq("user_id", user.id).eq("nade", input.nade).eq("kind", input.kind);
+      legacyXError(error, "Unable to follow the default again");
+      res.json({ nade: input.nade, kind: input.kind, item: undefined, inherit: true });
+      return;
+    }
+    if (input.item !== null) {
+      const item = (await loadCosmeticCatalog()).find((entry) => textValue(entry.id) === input.item);
+      if (!item || item.kind !== input.kind) apiError(404, "Item not found");
+      if (textValue(item.unlock) !== "free") {
+        const { data, error: ownedError } = await db().from("cosmetic_owned").select("item_id,expires_at").eq("user_id", user.id).eq("item_id", input.item).maybeSingle();
+        legacyXError(ownedError, "Unable to check your cosmetics");
+        if (!data || !stillRunning((data as DbRow).expires_at)) apiError(403, "You do not own this yet", "cosmetic_not_owned");
+      }
+    }
+    const { error } = await db().from("cosmetic_nade_slot").upsert({ user_id: user.id, nade: input.nade, kind: input.kind, item_id: input.item, updated_at: new Date().toISOString() }, { onConflict: "user_id,nade,kind" });
+    legacyXError(error, "Unable to wear it on this grenade");
+    res.json({ nade: input.nade, kind: input.kind, item: input.item, inherit: false });
   }));
 
   // Community collections: a snapshot of someone's loadout that anyone can apply. Free; likes and applies count once per account.
@@ -5204,24 +5235,44 @@ export function createLegacyXRouter() {
       const { data: row } = await db().from("cosmetic_custom").select("color,color2").eq("user_id", data!.user_id).eq("item_id", itemId).maybeSingle();
       return row ? { color: textValue((row as DbRow).color), color2: textValue((row as DbRow).color2) || null } : null;
     }
-    // The grenade trail (colour and shape), grenade light and kill effect (colour and shape) the player wears, same rules as the smoke colour (a run-out rental is not applied).
+    // The grenade trail (colour and shape), grenade light and flash effect the player wears, same rules as the smoke colour (a run-out rental is not applied).
+    // Resolved once per item: a trail can be worn on several grenades.
+    const looks = new Map<string, Promise<{ color: string; fx: string | null } | null>>();
+    const grenadeLook = (itemId: string, kind: "grenade_trail" | "grenade_light" | "flash_effect") => {
+      const key = `${kind}:${itemId}`;
+      if (!looks.has(key)) looks.set(key, (async () => {
+        const { data: rental } = await db().from("cosmetic_owned").select("expires_at").eq("user_id", data.user_id).eq("item_id", itemId).maybeSingle();
+        if (rental && !stillRunning((rental as DbRow).expires_at)) return null;
+        const { data: item } = await db().from("cosmetic_items").select("kind,unlock,color,fx").eq("id", itemId).eq("kind", kind).eq("enabled", true).maybeSingle();
+        if (!item) return null;
+        const hex = itemColours(item as DbRow, await customPick(itemId)).color;
+        return hex ? { color: hex, fx: textValue((item as DbRow).fx) || null } : null;
+      })());
+      return looks.get(key)!;
+    };
     const wornGrenadeItem = async (kind: "grenade_trail" | "grenade_light" | "flash_effect") => {
       const { data: row } = await db().from("cosmetic_equipped").select("item_id").eq("user_id", data.user_id).eq("kind", kind).maybeSingle();
-      if (!row) return null;
-      const itemId = textValue((row as DbRow).item_id);
-      const { data: rental } = await db().from("cosmetic_owned").select("expires_at").eq("user_id", data.user_id).eq("item_id", itemId).maybeSingle();
-      if (rental && !stillRunning((rental as DbRow).expires_at)) return null;
-      const { data: item } = await db().from("cosmetic_items").select("kind,unlock,color,fx").eq("id", itemId).eq("kind", kind).eq("enabled", true).maybeSingle();
-      if (!item) return null;
-      const hex = itemColours(item as DbRow, await customPick(itemId)).color;
-      return hex ? { color: hex, fx: textValue((item as DbRow).fx) || null } : null;
+      return row ? grenadeLook(textValue((row as DbRow).item_id), kind) : null;
     };
     const [wornTrail, wornLight, wornFlash] = await Promise.all([wornGrenadeItem("grenade_trail"), wornGrenadeItem("grenade_light"), wornGrenadeItem("flash_effect")]);
+    // What each kind of grenade wears (owner request 2026-10-26): its own slot, else the default above. A game server that does not know slots uses the default fields.
+    const { data: slotData, error: slotError } = await db().from("cosmetic_nade_slot").select("nade,kind,item_id").eq("user_id", data.user_id);
+    const slotRows = (slotError ? [] : slotData ?? []) as Array<{ nade: string; kind: string; item_id: string | null }>;
+    const defaultItem = async (kind: NadeKind) => { const { data: row } = await db().from("cosmetic_equipped").select("item_id").eq("user_id", data.user_id).eq("kind", kind).maybeSingle(); return row ? textValue((row as DbRow).item_id) : null; };
+    const [defaultTrail, defaultLight] = await Promise.all([defaultItem("grenade_trail"), defaultItem("grenade_light")]);
+    const trailBy = itemsByNade("grenade_trail", defaultTrail, slotRows);
+    const lightBy = itemsByNade("grenade_light", defaultLight, slotRows);
+    const grenadeSlots = Object.fromEntries(await Promise.all(NADES.map(async (nade) => {
+      const trail = trailBy[nade] ? await grenadeLook(trailBy[nade]!, "grenade_trail") : null;
+      const light = lightBy[nade] ? await grenadeLook(lightBy[nade]!, "grenade_light") : null;
+      return [nade, { trail: trail?.color ?? null, trail_fx: trail?.fx ?? null, light: light?.color ?? null }];
+    })));
     res.json({ profile: {
       ...profile,
       grenade_trail: wornTrail?.color ?? null,
       grenade_trail_fx: wornTrail?.fx ?? null,
       grenade_light: wornLight?.color ?? null,
+      grenade_slots: grenadeSlots,
       flash_effect: wornFlash?.color ?? null,
       flash_effect_fx: wornFlash?.fx ?? null,
       smoke_color: smokeColor,
