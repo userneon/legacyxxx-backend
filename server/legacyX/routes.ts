@@ -30,6 +30,7 @@ import { resolveSteamProfileMedia } from "./steamBackground";
 import { coreRoundScore, expRowAsResult, mapExpRecentMatch, mapMatchDetail } from "./matchDetails";
 import { recordClanMatch, WAR_WINDOW_AFTER_MS } from "./clanMatch";
 import { headToHead } from "./compare";
+import { PICK_DEFAULT_2, isColourable, isTwoColour, itemColours } from "./cosmeticColours";
 import { LEVEL_PERKS, clanAchievements, clanStats, levelFor } from "./clanProgress";
 import { fetchSteamAccountCreatedAt, fetchSteamBans, syncSteamUserProfile } from "./steamProfile";
 import { RANK_CALCULATION_VERSION, calculateMatchExp, expLimitUsage, limitWindows } from "./ranking";
@@ -1817,13 +1818,6 @@ export function createLegacyXRouter() {
   const cosmeticDurationSchema = z.enum(["1d", "7d", "30d", "forever"]);
   const cosmeticPrices = (basePrice: number) => Object.fromEntries(COSMETIC_DURATIONS.map((duration) => [duration.key, Math.max(1, Math.round((basePrice * duration.percent) / 100))]));
   const stillRunning = (expiresAt: unknown, now = Date.now()) => !expiresAt || Date.parse(textValue(expiresAt)) > now;
-  /** Items whose colour the player picks (cosmetic_custom): the catalog colour is only the starting one. */
-  const CUSTOM_COSMETICS = new Map<string, "color" | "glow">([["name-custom", "color"], ["glow-custom", "glow"], ["smoke-custom", "color"], ["trail-custom", "color"], ["light-custom", "color"], ["flash-custom", "color"]]);
-  /** Custom in-game items whose shape the player picks as well (cosmetic_custom.fx); the game server knows each of these. Rainbow ones stay their own items. */
-  const CUSTOM_SHAPES = new Map<string, readonly string[]>([
-    ["trail-custom", ["line", "dash", "double", "helix", "comet", "zigzag", "flare", "sparks", "starfall", "inferno"]],
-    ["flash-custom", ["starburst", "nova", "ring"]],
-  ]);
   const loadCosmeticCatalog = async () => {
     const { data, error } = await db().from("cosmetic_items").select("id,kind,name_en,name_mn,unlock,price,requirement,sort,color,color2,glow,fx,rarity,featured").eq("enabled", true).in("kind", [...COSMETIC_KINDS]).order("sort");
     legacyXError(error, "Unable to load cosmetics");
@@ -1834,8 +1828,9 @@ export function createLegacyXRouter() {
     const ids = Array.from(new Set(userIds.filter(Boolean)));
     const worn = new Map<string, { frame: string | null; banner: string | null; title: string | null; nameStyle: { color: string | null; glow: string | null; colorFx: string | null; glowFx: string | null } | null }>();
     if (!ids.length) return worn;
-    const customRows = await db().from("cosmetic_custom").select("user_id,item_id,color").in("user_id", ids).in("item_id", Array.from(CUSTOM_COSMETICS.keys()));
-    const picked = new Map<string, string>(((customRows.error ? [] : customRows.data ?? []) as DbRow[]).map((row) => [`${textValue(row.user_id)}:${textValue(row.item_id)}`, textValue(row.color)]));
+    // The colour each player picked for each design (name colours and glows are coloured by their wearer).
+    const customRows = await db().from("cosmetic_custom").select("user_id,item_id,color,color2").in("user_id", ids);
+    const picked = new Map<string, DbRow>(((customRows.error ? [] : customRows.data ?? []) as DbRow[]).map((row) => [`${textValue(row.user_id)}:${textValue(row.item_id)}`, row]));
     const [equipped, catalog] = await Promise.all([db().from("cosmetic_equipped").select("user_id,kind,item_id").in("user_id", ids), loadCosmeticCatalog().catch((error) => { console.error("[legacy-x-api] unable to load cosmetics", error?.message); return [] as DbRow[]; })]);
     if (equipped.error) { console.error("[legacy-x-api] unable to load equipped cosmetics", equipped.error.message); return worn; }
     const items = new Map(catalog.map((item) => [textValue(item.id), item]));
@@ -1854,8 +1849,9 @@ export function createLegacyXRouter() {
       else if (row.kind === "name_color" || row.kind === "name_glow") {
         const style = entry.nameStyle ?? { color: null, glow: null, colorFx: null, glowFx: null };
         const chosen = picked.get(`${userId}:${textValue(item.id)}`);
-        if (row.kind === "name_color") { style.color = (CUSTOM_COSMETICS.get(textValue(item.id)) === "color" && chosen) || textValue(item.color) || null; style.colorFx = textValue(item.fx) || null; }
-        if (row.kind === "name_glow") { style.glow = (CUSTOM_COSMETICS.get(textValue(item.id)) === "glow" && chosen) || textValue(item.glow) || null; style.glowFx = textValue(item.fx) || null; }
+        const colours = itemColours(item, chosen);
+        if (row.kind === "name_color") { style.color = colours.color; style.colorFx = textValue(item.fx) || null; }
+        if (row.kind === "name_glow") { style.glow = colours.glow; style.glowFx = textValue(item.fx) || null; }
         entry.nameStyle = style;
       }
       worn.set(userId, entry);
@@ -1881,10 +1877,8 @@ export function createLegacyXRouter() {
     /** How many players own it (null for free items, which everyone has). */
     owners: textValue(item.unlock) === "free" ? null : owners.get(textValue(item.id)) ?? 0,
     ...(item.color ? { color: textValue(item.color) } : {}),
-    /** The player picks the colour of this one (PUT /cosmetics/custom). */
-    ...(CUSTOM_COSMETICS.has(textValue(item.id)) ? { custom: true } : {}),
-    /** The shapes the player can pick for it (with the colour). */
-    ...(CUSTOM_SHAPES.has(textValue(item.id)) ? { shapes: [...CUSTOM_SHAPES.get(textValue(item.id))!] } : {}),
+    /** A design the player colours (PUT /cosmetics/custom); `twoColours` when it takes a second one. */
+    ...(isColourable(item) ? { custom: true, ...(isTwoColour(item) ? { twoColours: true } : {}) } : {}),
     /** The second colour of a two-colour (gradient) item. */
     ...(item.color2 ? { color2: textValue(item.color2) } : {}),
     ...(item.glow ? { glow: textValue(item.glow) } : {}),
@@ -1909,17 +1903,15 @@ export function createLegacyXRouter() {
     const ownedIds = new Set(runningRows.map((row) => textValue(row.item_id)));
     const endsAt = new Map<string, string | null>(runningRows.map((row) => [textValue(row.item_id), row.expires_at ? timestampValue(row.expires_at) : null]));
     const wearing = new Map(((equippedRows.data ?? []) as DbRow[]).filter((row) => textValue(catalog.find((item) => textValue(item.id) === textValue(row.item_id))?.unlock) !== "coin" || ownedIds.has(textValue(row.item_id))).map((row) => [textValue(row.kind), textValue(row.item_id)]));
-    const mine = user ? await db().from("cosmetic_custom").select("item_id,color,fx").eq("user_id", user.id) : { data: [] as DbRow[], error: null };
-    const mineRows = (mine.error ? [] : mine.data ?? []) as DbRow[];
-    const mineColours = new Map<string, string>(mineRows.map((row) => [textValue(row.item_id), textValue(row.color)]));
-    const mineShapes = new Map<string, string>(mineRows.filter((row) => textValue(row.fx)).map((row) => [textValue(row.item_id), textValue(row.fx)]));
-    // The colour a player picked replaces the item's starting colour in their own shop view.
+    const mine = user ? await db().from("cosmetic_custom").select("item_id,color,color2").eq("user_id", user.id) : { data: [] as DbRow[], error: null };
+    const mineRows = new Map<string, DbRow>(((mine.error ? [] : mine.data ?? []) as DbRow[]).map((row) => [textValue(row.item_id), row]));
+    // A design shows the colours this player picked for it, or neutral grey until they pick (a visitor sees grey).
     const ofKind = (kind: CosmeticKind) => catalog.filter((item) => item.kind === kind).map((item) => {
       const view = cosmeticView(item, ownedIds, owners, endsAt) as Record<string, unknown>;
-      const chosen = mineColours.get(textValue(item.id));
-      const field = CUSTOM_COSMETICS.get(textValue(item.id));
-      const shape = mineShapes.get(textValue(item.id));
-      return chosen && field ? { ...view, [field]: chosen, ...(shape ? { fx: shape } : {}) } : view;
+      if (!isColourable(item)) return view;
+      const colours = itemColours(item, mineRows.get(textValue(item.id)));
+      const { color: _color, color2: _color2, glow: _glow, ...rest } = view;
+      return { ...rest, ...(colours.color ? { color: colours.color } : {}), ...(colours.color2 ? { color2: colours.color2 } : {}), ...(colours.glow ? { glow: colours.glow } : {}) };
     });
     res.json({
       players: players.error ? null : players.count ?? 0,
@@ -1982,22 +1974,20 @@ export function createLegacyXRouter() {
   // Wear one, or take it off with item: null. The older { frame } body still works.
   // Pick the colour of a custom item you own (a player buys it like any other cosmetic first); saving wears it.
   router.put("/cosmetics/custom", userRoute(async (req, res, user) => {
-    const input = z.object({ item: cosmeticIdSchema, color: z.string().regex(/^#[0-9a-fA-F]{6}$/).transform((value) => value.toLowerCase()), fx: z.string().max(16).nullish() }).strict().parse(req.body);
-    if (!CUSTOM_COSMETICS.has(input.item)) apiError(404, "Item not found");
-    const shapes = CUSTOM_SHAPES.get(input.item);
-    // A shaped item keeps a shape it knows (the first one when none is sent); the others have none.
-    const fx = shapes ? (input.fx && shapes.includes(input.fx) ? input.fx : input.fx ? apiError(400, "Unknown shape") : shapes[0]) : null;
+    const hex = z.string().regex(/^#[0-9a-fA-F]{6}$/).transform((value) => value.toLowerCase());
+    const input = z.object({ item: cosmeticIdSchema, color: hex, color2: hex.nullish() }).strict().parse(req.body);
     const item = (await loadCosmeticCatalog()).find((entry) => textValue(entry.id) === input.item);
-    if (!item) apiError(404, "Item not found");
+    if (!item || !isColourable(item)) apiError(404, "Item not found");
+    const color2 = isTwoColour(item) ? input.color2 ?? PICK_DEFAULT_2 : null;
     const { data, error: ownedError } = await db().from("cosmetic_owned").select("item_id,expires_at").eq("user_id", user.id).eq("item_id", input.item).maybeSingle();
     legacyXError(ownedError, "Unable to check your cosmetics");
     if (!data || !stillRunning((data as DbRow).expires_at)) apiError(403, "You do not own this yet", "cosmetic_not_owned");
     const now = new Date().toISOString();
-    const saved = await db().from("cosmetic_custom").upsert({ user_id: user.id, item_id: input.item, color: input.color, fx, updated_at: now }, { onConflict: "user_id,item_id" });
+    const saved = await db().from("cosmetic_custom").upsert({ user_id: user.id, item_id: input.item, color: input.color, color2, fx: null, updated_at: now }, { onConflict: "user_id,item_id" });
     legacyXError(saved.error, "Unable to save the colour");
     const worn = await db().from("cosmetic_equipped").upsert({ user_id: user.id, kind: textValue(item.kind), item_id: input.item, updated_at: now }, { onConflict: "user_id,kind" });
     legacyXError(worn.error, "Unable to wear it");
-    res.json({ kind: textValue(item.kind), item: input.item, color: input.color, fx });
+    res.json({ kind: textValue(item.kind), item: input.item, color: input.color, color2 });
   }));
   router.put("/cosmetics/equip", userRoute(async (req, res, user) => {
     const input = z.union([
@@ -5189,17 +5179,17 @@ export function createLegacyXRouter() {
     // A rented colour that has run out is not applied.
     const { data: smokeRental } = smokeRow ? await db().from("cosmetic_owned").select("expires_at").eq("user_id", data.user_id).eq("item_id", textValue((smokeRow as DbRow).item_id)).maybeSingle() : { data: null };
     if (smokeRow && (!smokeRental || stillRunning((smokeRental as DbRow).expires_at))) {
-      const { data: smokeItem } = await db().from("cosmetic_items").select("color,color2").eq("id", textValue((smokeRow as DbRow).item_id)).eq("kind", "smoke_color").eq("enabled", true).maybeSingle();
-      const picked = smokeItem && CUSTOM_COSMETICS.has(textValue((smokeRow as DbRow).item_id)) ? await customPick(textValue((smokeRow as DbRow).item_id)) : null;
-      const hex = picked?.color ?? textValue((smokeItem as DbRow | null)?.color);
-      smokeColor = /^#[0-9a-f]{6}$/i.test(hex) ? hex : null;
-      const hex2 = textValue((smokeItem as DbRow | null)?.color2);
-      smokeColor2 = smokeColor && /^#[0-9a-f]{6}$/i.test(hex2) ? hex2 : null;
+      const { data: smokeItem } = await db().from("cosmetic_items").select("kind,unlock,color,color2,fx").eq("id", textValue((smokeRow as DbRow).item_id)).eq("kind", "smoke_color").eq("enabled", true).maybeSingle();
+      if (smokeItem) {
+        const colours = itemColours(smokeItem as DbRow, await customPick(textValue((smokeRow as DbRow).item_id)));
+        smokeColor = colours.color;
+        smokeColor2 = smokeColor ? colours.color2 : null;
+      }
     }
     // A colour (and shape) the player picked for a custom item, null while they picked none.
     async function customPick(itemId: string) {
-      const { data: row } = await db().from("cosmetic_custom").select("color,fx").eq("user_id", data!.user_id).eq("item_id", itemId).maybeSingle();
-      return row ? { color: textValue((row as DbRow).color), fx: textValue((row as DbRow).fx) || null } : null;
+      const { data: row } = await db().from("cosmetic_custom").select("color,color2").eq("user_id", data!.user_id).eq("item_id", itemId).maybeSingle();
+      return row ? { color: textValue((row as DbRow).color), color2: textValue((row as DbRow).color2) || null } : null;
     }
     // The grenade trail (colour and shape), grenade light and kill effect (colour and shape) the player wears, same rules as the smoke colour (a run-out rental is not applied).
     const wornGrenadeItem = async (kind: "grenade_trail" | "grenade_light" | "flash_effect") => {
@@ -5208,10 +5198,10 @@ export function createLegacyXRouter() {
       const itemId = textValue((row as DbRow).item_id);
       const { data: rental } = await db().from("cosmetic_owned").select("expires_at").eq("user_id", data.user_id).eq("item_id", itemId).maybeSingle();
       if (rental && !stillRunning((rental as DbRow).expires_at)) return null;
-      const { data: item } = await db().from("cosmetic_items").select("color,fx").eq("id", itemId).eq("kind", kind).eq("enabled", true).maybeSingle();
-      const picked = item && CUSTOM_COSMETICS.has(itemId) ? await customPick(itemId) : null;
-      const hex = picked?.color ?? textValue((item as DbRow | null)?.color);
-      return /^#[0-9a-f]{6}$/i.test(hex) ? { color: hex, fx: picked?.fx ?? (textValue((item as DbRow | null)?.fx) || null) } : null;
+      const { data: item } = await db().from("cosmetic_items").select("kind,unlock,color,fx").eq("id", itemId).eq("kind", kind).eq("enabled", true).maybeSingle();
+      if (!item) return null;
+      const hex = itemColours(item as DbRow, await customPick(itemId)).color;
+      return hex ? { color: hex, fx: textValue((item as DbRow).fx) || null } : null;
     };
     const [wornTrail, wornLight, wornFlash] = await Promise.all([wornGrenadeItem("grenade_trail"), wornGrenadeItem("grenade_light"), wornGrenadeItem("flash_effect")]);
     res.json({ profile: {
