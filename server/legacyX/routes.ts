@@ -2893,37 +2893,22 @@ export function createLegacyXRouter() {
   router.post("/clans/:clanId/slots", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
     const clanId = await clanIdOf(req.params.clanId);
     const clan = await requireClanLeader(clanId, user.id);
-    // Paid from the leader's wallet, or from the clan bank the members filled.
+    // Paid only from the clan bank the members filled: member slots are no longer sold in the Shop (owner request 2026-10-26).
     const { from } = z.object({ from: z.enum(["wallet", "bank"]).default("wallet") }).strict().parse(req.body ?? {});
+    if (from !== "bank") apiError(410, "Member slots are no longer sold in the Shop. Add them from the clan bank or by levelling the clan", "clan_slots_not_sold");
     const current = Number(clan.max_players);
     if (current >= COIN_RULES.clanSlotCap) apiError(409, "The clan is already at the largest size", "clan_slots_cap");
     const next = Math.min(COIN_RULES.clanSlotCap, current + COIN_RULES.clanSlotStep);
     const ref = `clan-slots:${clanId}:${next}`;
-    if (from === "bank") {
-      const paid = await db().rpc("clan_bank_apply", { p_clan_id: clanId, p_user_id: user.id, p_amount: -COIN_RULES.clanSlotPrice, p_reason: `member slots ${current} to ${next}`, p_ref: ref });
-      if (paid.error && /insufficient bank/i.test(String(paid.error.message))) apiError(402, `More member slots cost ${COIN_RULES.clanSlotPrice} LX from the bank`, "clan_bank_low");
-      legacyXError(paid.error, "Unable to pay from the clan bank");
-      const { error } = await db().from("clans").update({ max_players: next }).eq("id", clanId).eq("max_players", current);
-      if (error) {
-        await db().rpc("clan_bank_apply", { p_clan_id: clanId, p_user_id: user.id, p_amount: COIN_RULES.clanSlotPrice, p_reason: "member slots refund", p_ref: `${ref}:refund` });
-        legacyXError(error, "Unable to add member slots");
-      }
-      await logClan(clan, user.id, "settings", null, `max: ${next} (from the bank)`);
-      res.json(await loadClanDetail(clanId, user.id));
-      return;
-    }
-    try {
-      await applyWalletChange(legacyXDb(), { userId: user.id, amount: -COIN_RULES.clanSlotPrice, kind: "spend", reason: `Clan size ${current} to ${next}`, ref, actor: user.id });
-    } catch (error) {
-      if (error instanceof NotEnoughCoinsError) apiError(402, `More member slots cost ${COIN_RULES.clanSlotPrice} LX`, "clan_no_coins");
-      throw error;
-    }
+    const paid = await db().rpc("clan_bank_apply", { p_clan_id: clanId, p_user_id: user.id, p_amount: -COIN_RULES.clanSlotPrice, p_reason: `member slots ${current} to ${next}`, p_ref: ref });
+    if (paid.error && /insufficient bank/i.test(String(paid.error.message))) apiError(402, `More member slots cost ${COIN_RULES.clanSlotPrice} LX from the bank`, "clan_bank_low");
+    legacyXError(paid.error, "Unable to pay from the clan bank");
     const { error } = await db().from("clans").update({ max_players: next }).eq("id", clanId).eq("max_players", current);
     if (error) {
-      await applyWalletChange(legacyXDb(), { userId: user.id, amount: COIN_RULES.clanSlotPrice, kind: "refund", reason: "Clan size change failed", ref: `${ref}:refund`, actor: user.id }).catch((refundError) => console.error("[legacy-x-api] clan slots refund failed", refundError));
+      await db().rpc("clan_bank_apply", { p_clan_id: clanId, p_user_id: user.id, p_amount: COIN_RULES.clanSlotPrice, p_reason: "member slots refund", p_ref: `${ref}:refund` });
       legacyXError(error, "Unable to add member slots");
     }
-    await logClan(clan, user.id, "settings", null, `max: ${next} (bought)`);
+    await logClan(clan, user.id, "settings", null, `max: ${next} (from the bank)`);
     res.json(await loadClanDetail(clanId, user.id));
   }));
 
