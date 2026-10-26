@@ -4208,9 +4208,31 @@ export function createLegacyXRouter() {
   // The Creators page: every content creator with their account, rank and channel links, main creators first.
   // The team, for the website's Staff page (owner request 2026-10-26): who is on it and their role, the same list the Owner's profile shows.
   router.get("/public/staff", asyncRoute(async (_req, res) => {
-    const { data, error } = await db().from("staff").select("role,users(steam_id,username,avatar)").eq("status", "active").limit(100);
+    const { data, error } = await db().from("staff").select("user_id,role,created_at,users(steam_id,username,avatar)").eq("status", "active").limit(100);
     legacyXError(error, "Unable to load the team");
-    res.set("Cache-Control", "public, max-age=60").json({ team: ownerTeam((data ?? []) as DbRow[], true) });
+    const rows = (data ?? []) as DbRow[];
+    // What each card shows besides the name: since when they are on the team, their rank and ranked numbers, their clan tag. All real rows; a part with no data is left out.
+    const bySteam = new Map(rows.map((row) => [textValue(firstRow(row.users)?.steam_id), row]));
+    const ids = rows.map((row) => textValue(row.user_id));
+    const [profiles, tags] = await Promise.all([
+      ids.length ? db().from("competitive_player_profiles").select("user_id,rank_id,rank_name,rank_image_key,matches_completed,wins,kills,deaths").in("user_id", ids) : Promise.resolve({ data: [], error: null }),
+      clanTagsFor(ids),
+    ]);
+    const profileOf = new Map(((profiles.error ? [] : profiles.data) ?? []).map((row: DbRow) => [textValue(row.user_id), row]));
+    const team = ownerTeam(rows, true).map((member) => {
+      const row = bySteam.get(member.steamId);
+      const userId = textValue(row?.user_id);
+      const profile = profileOf.get(userId);
+      const matches = profile ? numberValue(profile.matches_completed) : 0;
+      return {
+        ...member,
+        since: textValue(row?.created_at) || null,
+        clanTag: tags.get(userId)?.tag ?? null,
+        rank: profile && numberValue(profile.rank_id) ? { id: numberValue(profile.rank_id), name: textValue(profile.rank_name), imageKey: textValue(profile.rank_image_key) || null } : null,
+        stats: profile && matches > 0 ? { matches, wins: numberValue(profile.wins), kills: numberValue(profile.kills), deaths: numberValue(profile.deaths) } : null,
+      };
+    });
+    res.set("Cache-Control", "public, max-age=60").json({ team });
   }));
   router.get("/public/creators", asyncRoute(async (_req, res) => {
     const { data, error } = await db().from("content_creators").select("user_id,tier,bio,links,sort,created_at,users!content_creators_user_id_fkey!inner(id,steam_id,username,avatar)").limit(200);
