@@ -291,9 +291,12 @@ export async function awardMatchBonuses(
   return paid;
 }
 
-/** The one-time coins for linking Discord. */
-export async function awardDiscordLink(db: Db, userId: string, log: (message: string, error: unknown) => void = () => undefined): Promise<boolean> {
+/** The one-time coins for linking Discord: once per player and once per Discord account, so moving one Discord between Steam accounts pays nothing more. */
+export async function awardDiscordLink(db: Db, userId: string, discordId: string, log: (message: string, error: unknown) => void = () => undefined): Promise<boolean> {
   try {
+    const claim = await db.rpc("discord_link_bonus_claim", { p_discord_id: discordId, p_user_id: userId });
+    if (claim.error) throw claim.error;
+    if (!claim.data) return false;
     return (await applyWalletChange(db, { userId, amount: COIN_RULES.discordLink, kind: "grant", reason: "Discord linked", ref: `bonus:discord-link:${userId}` })).applied;
   } catch (error) {
     log(`Unable to pay the Discord link bonus to ${userId}`, error);

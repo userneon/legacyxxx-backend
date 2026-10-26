@@ -152,11 +152,15 @@ describe("coin bonuses", () => {
     expect(await awardMatchBonuses(db, "m2", at, [{ ...win[0]!, rankBefore: { id: 5 }, rankAfter: { id: 5 } }])).toBe(0);
   });
 
-  it("pays the Discord link once, and lists the rules from the same numbers", async () => {
+  it("pays the Discord link once per player and once per Discord account, and lists the rules from the same numbers", async () => {
     const seen = new Set<string>();
-    const db = { rpc: async (name: string, args: Record<string, unknown>) => (name === "wallet_ensure" ? { data: 50, error: null } : { data: [{ new_balance: 100, applied: !seen.has(String(args.p_ref)) && !!seen.add(String(args.p_ref)) }], error: null }) } as any;
-    expect(await awardDiscordLink(db, USER)).toBe(true);
-    expect(await awardDiscordLink(db, USER)).toBe(false);
+    const claimed = new Set<string>();
+    const db = { rpc: async (name: string, args: Record<string, unknown>) => (name === "wallet_ensure" ? { data: 50, error: null } : name === "discord_link_bonus_claim" ? { data: !claimed.has(String(args.p_discord_id)) && !!claimed.add(String(args.p_discord_id)), error: null } : { data: [{ new_balance: 100, applied: !seen.has(`${args.p_user_id}:${args.p_ref}`) && !!seen.add(`${args.p_user_id}:${args.p_ref}`) }], error: null }) } as any;
+    expect(await awardDiscordLink(db, USER, "111111111111")).toBe(true);
+    // The same player again, even with another Discord: nothing.
+    expect(await awardDiscordLink(db, USER, "222222222222")).toBe(false);
+    // The same Discord moved to another Steam account: nothing.
+    expect(await awardDiscordLink(db, "00000000-0000-4000-8000-000000000009", "111111111111")).toBe(false);
     expect(earnRules().find((rule) => rule.id === "discord")?.coins).toBe(COIN_RULES.discordLink);
   });
 });

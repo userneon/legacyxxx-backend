@@ -5027,7 +5027,7 @@ export function createLegacyXRouter() {
     try {
       const identity = await fetchDiscordIdentity(config, code);
       await linkDiscordAccount(db(), userId, identity);
-      await awardDiscordLink(db(), userId, (message, error) => console.error(`[legacy-x-api] ${message}`, error));
+      await awardDiscordLink(db(), userId, identity.id, (message, error) => console.error(`[legacy-x-api] ${message}`, error));
     } catch (failure) {
       console.warn("[legacy-x-api] Discord link failed", failure instanceof Error ? failure.message : failure);
       return back("failed");
