@@ -46,6 +46,7 @@ import { ADMIN_CALL_COOLDOWN_SECONDS, ADMIN_CALL_MAX_AGE_HOURS, ADMIN_CALL_PAGE,
 import { COIN_RULES, NotEnoughCoinsError, applyWalletChange, awardDiscordLink, awardMatchBonuses, awardMatchCoins, clanPrices, earnRules, loadWallet, loadWalletSummary, penalizeWallet, walletGrantSchema, walletPenaltySchema } from "./wallet";
 import { isMissingTableError, ownerLinks, ownerProfileSchema, ownerTeam, ownerUpdates } from "./ownerProfile";
 import { liftInfo } from "./penaltyLift";
+import { cleanPlayerConfig, playerConfigSchema } from "./playerConfig";
 import { PROFILE_NAME_MAX, PROFILE_SECTIONS, bestNameMatch, escapeLike, hiddenForViewer, loadoutShowcase, mapWinRates, normalizeHiddenSections, profileStats, buildBenchmark, BENCHMARK_MIN_MATCHES, staffCard, type ProfileSection } from "./profileOverview";
 import { activeBans, bannedPlayer, checkBansSchema, issueBan, issueBanSchema, issueIpBan, issueIpBanSchema, listActiveBans, revokeAllBans, revokeAllBansSchema, revokeBans, revokeBanSchema, revokeIpBans, revokeIpBanSchema } from "./bans";
 import { authorizationRequestSchema, resolveAuthorizations } from "./adminAuthorization";
@@ -1645,6 +1646,25 @@ export function createLegacyXRouter() {
       .eq("user_id", userId).order("created_at", { ascending: false }).limit(30);
     legacyXError(ranked.error, "Unable to load match history");
     res.json(((ranked.data ?? []) as DbRow[]).map(mapExpRecentMatch));
+  }));
+  // The Configs tab: what the player typed about their crosshair, mouse, keyboard, monitor and viewmodel. Public, like the rest of the profile.
+  router.get("/profile/:userId/config", optionalUserRoute(async (req, res, viewer) => {
+    const userId = viewer ? await resolveUserId(String(req.params.userId ?? ""), viewer) : await resolveUserId(String(req.params.userId ?? ""), { id: "" } as LegacyUser);
+    const { data, error } = await db().from("player_configs").select("data,updated_at").eq("user_id", userId).maybeSingle();
+    legacyXError(error, "Unable to load the player's configs");
+    res.json({ config: data ? cleanPlayerConfig(data.data) : null, updatedAt: data ? textValue(data.updated_at) : null });
+  }));
+  router.put("/profile/me/config", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
+    const config = cleanPlayerConfig(playerConfigSchema.parse(req.body));
+    if (!config) {
+      const removed = await db().from("player_configs").delete().eq("user_id", user.id);
+      legacyXError(removed.error, "Unable to clear your configs");
+      res.json({ config: null });
+      return;
+    }
+    const { error } = await db().from("player_configs").upsert({ user_id: user.id, data: config, updated_at: new Date().toISOString() });
+    legacyXError(error, "Unable to save your configs");
+    res.json({ config });
   }));
   router.put("/profile/me/links", userRoute(async (req, res, user) => {
     const input = z.object({ links: z.array(z.object({ url: z.string().url().max(2048) })).max(20) }).parse(req.body);
