@@ -4756,7 +4756,7 @@ export function createLegacyXRouter() {
   router.get("/creators/applications/me", userRoute(async (_req, res, user) => {
     const reapplyDays = (await loadSettings(db()))["creators.reapply_days"];
     const [creator, last] = await Promise.all([
-      db().from("content_creators").select("user_id").eq("user_id", user.id).maybeSingle(),
+      db().from("content_creators").select("user_id,bio").eq("user_id", user.id).maybeSingle(),
       db().from("creator_applications").select("status,note,created_at,decided_at").eq("user_id", user.id).order("created_at", { ascending: false }).limit(1).maybeSingle(),
     ]);
     legacyXError(creator.error || last.error, "Unable to load your application");
@@ -4765,10 +4765,21 @@ export function createLegacyXRouter() {
     res.set("Cache-Control", "no-store");
     res.json({
       isCreator: Boolean(creator.data),
+      /** A creator's own line about themselves, to edit (null for everyone else). */
+      about: creator.data ? textValue((creator.data as DbRow).bio) : null,
       application: row ? { status: textValue(row.status), note: textValue(row.note), createdAt: textValue(row.created_at), decidedAt: row.decided_at ? textValue(row.decided_at) : null } : null,
       /** When a declined player may apply again (null: now, or nothing to wait for). */
       canApplyAgainAt: declinedAt !== null && declinedAt + reapplyDays * 86_400_000 > Date.now() ? new Date(declinedAt + reapplyDays * 86_400_000).toISOString() : null,
     });
+  }));
+  // A creator changes their own line about themselves (owner request 2026-10-26); the tier and the links stay with staff.
+  router.put("/creators/me/about", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
+    const input = z.object({ bio: z.string().trim().min(1, "Write a line about your content").max(200) }).strict().parse(req.body);
+    const { data, error } = await db().from("content_creators").update({ bio: input.bio }).eq("user_id", user.id).select("user_id");
+    legacyXError(error, "Unable to save your line");
+    if (!data || data.length === 0) apiError(403, "Only content creators can change this", "creator_required");
+    await db().from("audit_logs").insert({ actor_type: "user", actor_id: user.id, action: "creator.about", target_type: "content_creators", target_id: user.id, metadata: {} });
+    res.json({ about: input.bio });
   }));
   router.get("/staff/creators/applications", userRoute(async (_req, res, user) => {
     await requireClanModerator(user.id);
