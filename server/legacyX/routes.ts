@@ -2165,6 +2165,22 @@ export function createLegacyXRouter() {
       legacyXError(itemsError, "Unable to load collection items");
       for (const item of (items ?? []) as DbRow[]) catalog.set(textValue(item.id), item);
     }
+    // The stickers and the charm on each item, by name and picture, so the page can show what is on a weapon and not only how many.
+    const accessoryIds = Array.from(new Set(entries.flatMap((entry) => {
+      const options = recordValue(entry.options);
+      const stickerIds = (Array.isArray(options.stickers) ? options.stickers : []).map((sticker: unknown) => textValue(recordValue(sticker).catalogItemId)).filter(Boolean);
+      const charmId = textValue(recordValue(options.charm).catalogItemId);
+      return charmId ? [...stickerIds, charmId] : stickerIds;
+    })));
+    const accessories = new Map<string, DbRow>();
+    if (accessoryIds.length) {
+      const { data: found } = await db().from("skinchanger_catalog_items").select("id,display_name,image_key").in("id", accessoryIds);
+      for (const item of (found ?? []) as DbRow[]) accessories.set(textValue(item.id), item);
+    }
+    const accessoryView = (id: string) => {
+      const found = accessories.get(id);
+      return found ? { name: textValue(found.display_name), imageUrl: staticStorageUrl(req, textValue(found.image_key) || null) } : null;
+    };
     const { data: like, error: likeError } = await db().from("skin_collection_likes").select("user_id").eq("collection_id", collectionId).eq("user_id", user.id).maybeSingle();
     legacyXError(likeError, "Unable to load likes");
     const ownerRow = (owner ?? {}) as DbRow;
@@ -2197,6 +2213,8 @@ export function createLegacyXRouter() {
             statTrak: options.statTrak === true,
             stickers: Array.isArray(options.stickers) ? options.stickers.length : 0,
             hasCharm: Boolean(options.charm),
+            stickerItems: (Array.isArray(options.stickers) ? options.stickers : []).map((sticker: unknown) => accessoryView(textValue(recordValue(sticker).catalogItemId))).filter(Boolean),
+            charm: accessoryView(textValue(recordValue(options.charm).catalogItemId)),
           };
         }).filter(Boolean),
       },
