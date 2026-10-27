@@ -5342,66 +5342,58 @@ export function createLegacyXRouter() {
     const { data, error } = await db().from("competitive_player_profiles").select("user_id,steam_id,username,current_exp,rank_id,rank_name,current_rank_min_exp,next_rank_name,next_rank_min_exp,pro_league_unlocked,matches_completed").eq("steam_id", steamId).maybeSingle();
     legacyXError(error, "Unable to load plugin player rank");
     if (!data) apiError(404, "Player profile not found");
-    const membership = await db().from("clan_members").select("role,clans(name,tag)").eq("user_id", data.user_id).maybeSingle();
+    const uid = data.user_id;
+    const { user_id: _userId, ...profile } = data;
+    // The game server waits for this answer (4 s), so it is read in as few round trips as possible: everything about the player at
+    // once, then the items those rows point to. Looks were once found with a query each, and a slow database link made !rs time out.
+    const [membership, ladderRes, progressionRes, equippedRes, ownedRes, customRes, slotRes] = await Promise.all([
+      db().from("clan_members").select("role,clans(name,tag)").eq("user_id", uid).maybeSingle(),
+      db().from("competitive_leaderboard").select("position").eq("user_id", uid).maybeSingle(),
+      // Kills, deaths and results for the in-game !me card (K/D and win rate); absent for a player with no ranked match yet.
+      db().from("competitive_player_progression").select("kills,deaths,wins,losses,draws").eq("user_id", uid).maybeSingle(),
+      db().from("cosmetic_equipped").select("kind,item_id").eq("user_id", uid),
+      db().from("cosmetic_owned").select("item_id,expires_at").eq("user_id", uid),
+      db().from("cosmetic_custom").select("item_id,color,color2").eq("user_id", uid),
+      db().from("cosmetic_nade_slot").select("nade,kind,item_id").eq("user_id", uid),
+    ]);
     if (membership.error) console.warn("[legacy-x-api] clan lookup unavailable", membership.error.message);
     const clan = recordValue(recordValue(membership.data).clans);
-    const { user_id: _userId, ...profile } = data;
-    const { data: ladder } = await db().from("competitive_leaderboard").select("position").eq("user_id", data.user_id).maybeSingle();
-    // Kills, deaths and results for the in-game !me card (K/D and win rate); absent for a player with no ranked match yet.
-    const { data: progression } = await db().from("competitive_player_progression").select("kills,deaths,wins,losses,draws").eq("user_id", data.user_id).maybeSingle();
+    const ladder = ladderRes.data;
+    const progression = progressionRes.data;
     const counts = recordValue(progression);
     const countOrNull = (key: string) => (progression ? numberValue(counts[key]) ?? 0 : null);
-    // The colour of the player's own smoke grenades (the worn Smoke colour cosmetic), for the game server to apply.
-    const { data: smokeRow } = await db().from("cosmetic_equipped").select("item_id").eq("user_id", data.user_id).eq("kind", "smoke_color").maybeSingle();
-    let smokeColor: string | null = null;
-    let smokeColor2: string | null = null;
-    // A rented colour that has run out is not applied.
-    const { data: smokeRental } = smokeRow ? await db().from("cosmetic_owned").select("expires_at").eq("user_id", data.user_id).eq("item_id", textValue((smokeRow as DbRow).item_id)).maybeSingle() : { data: null };
-    if (smokeRow && (!smokeRental || stillRunning((smokeRental as DbRow).expires_at))) {
-      const { data: smokeItem } = await db().from("cosmetic_items").select("kind,unlock,color,color2,fx").eq("id", textValue((smokeRow as DbRow).item_id)).eq("kind", "smoke_color").eq("enabled", true).maybeSingle();
-      if (smokeItem) {
-        const colours = itemColours(smokeItem as DbRow, await customPick(textValue((smokeRow as DbRow).item_id)));
-        smokeColor = colours.color;
-        smokeColor2 = smokeColor ? colours.color2 : null;
-      }
-    }
-    // A colour (and shape) the player picked for a custom item, null while they picked none.
-    async function customPick(itemId: string) {
-      const { data: row } = await db().from("cosmetic_custom").select("color,color2").eq("user_id", data!.user_id).eq("item_id", itemId).maybeSingle();
-      return row ? { color: textValue((row as DbRow).color), color2: textValue((row as DbRow).color2) || null } : null;
-    }
-    // The grenade trail (colour and shape), grenade light and flash effect the player wears, same rules as the smoke colour (a run-out rental is not applied).
-    // Resolved once per item: a trail can be worn on several grenades.
-    const looks = new Map<string, Promise<{ color: string; fx: string | null } | null>>();
-    const grenadeLook = (itemId: string, kind: "grenade_trail" | "grenade_light" | "flash_effect") => {
-      const key = `${kind}:${itemId}`;
-      if (!looks.has(key)) looks.set(key, (async () => {
-        const { data: rental } = await db().from("cosmetic_owned").select("expires_at").eq("user_id", data.user_id).eq("item_id", itemId).maybeSingle();
-        if (rental && !stillRunning((rental as DbRow).expires_at)) return null;
-        const { data: item } = await db().from("cosmetic_items").select("kind,unlock,color,fx").eq("id", itemId).eq("kind", kind).eq("enabled", true).maybeSingle();
-        if (!item) return null;
-        const hex = itemColours(item as DbRow, await customPick(itemId)).color;
-        return hex ? { color: hex, fx: textValue((item as DbRow).fx) || null } : null;
-      })());
-      return looks.get(key)!;
+    const wornBy = new Map(((equippedRes.data ?? []) as DbRow[]).map((row) => [textValue(row.kind), textValue(row.item_id)]));
+    const rentals = new Map(((ownedRes.data ?? []) as DbRow[]).map((row) => [textValue(row.item_id), row.expires_at]));
+    const picks = new Map(((customRes.data ?? []) as DbRow[]).map((row) => [textValue(row.item_id), { color: textValue(row.color), color2: textValue(row.color2) || null }]));
+    // What each kind of grenade wears (owner request 2026-10-26): its own slot, else the default. A game server that does not know slots uses the default fields.
+    const slotRows = (slotRes.error ? [] : slotRes.data ?? []) as Array<{ nade: string; kind: string; item_id: string | null }>;
+    const trailBy = itemsByNade("grenade_trail", wornBy.get("grenade_trail") ?? null, slotRows);
+    const lightBy = itemsByNade("grenade_light", wornBy.get("grenade_light") ?? null, slotRows);
+    const wanted = new Set<string>([wornBy.get("smoke_color"), wornBy.get("flash_effect"), ...Object.values(trailBy), ...Object.values(lightBy), wornBy.get("grenade_trail"), wornBy.get("grenade_light")].filter((id): id is string => Boolean(id)));
+    const { data: itemRows } = wanted.size ? await db().from("cosmetic_items").select("id,kind,unlock,color,color2,fx").in("id", Array.from(wanted)).eq("enabled", true) : { data: [] as DbRow[] };
+    const itemById = new Map(((itemRows ?? []) as DbRow[]).map((row) => [textValue(row.id), row]));
+    // A rented item that has run out is not applied; a colour the player picked for a custom item is used, else the neutral default.
+    const look = (itemId: string | null | undefined, kind: string) => {
+      if (!itemId) return null;
+      const item = itemById.get(itemId);
+      if (!item || textValue(item.kind) !== kind || !stillRunning(rentals.get(itemId))) return null;
+      return { colours: itemColours(item, picks.get(itemId) ?? null), fx: textValue(item.fx) || null };
     };
-    const wornGrenadeItem = async (kind: "grenade_trail" | "grenade_light" | "flash_effect") => {
-      const { data: row } = await db().from("cosmetic_equipped").select("item_id").eq("user_id", data.user_id).eq("kind", kind).maybeSingle();
-      return row ? grenadeLook(textValue((row as DbRow).item_id), kind) : null;
+    const smokeLook = look(wornBy.get("smoke_color"), "smoke_color");
+    const smokeColor: string | null = smokeLook?.colours.color ?? null;
+    const smokeColor2: string | null = smokeColor ? smokeLook?.colours.color2 ?? null : null;
+    const grenadeLook = (itemId: string | null | undefined, kind: "grenade_trail" | "grenade_light" | "flash_effect") => {
+      const found = look(itemId, kind);
+      return found?.colours.color ? { color: found.colours.color, fx: found.fx } : null;
     };
-    const [wornTrail, wornLight, wornFlash] = await Promise.all([wornGrenadeItem("grenade_trail"), wornGrenadeItem("grenade_light"), wornGrenadeItem("flash_effect")]);
-    // What each kind of grenade wears (owner request 2026-10-26): its own slot, else the default above. A game server that does not know slots uses the default fields.
-    const { data: slotData, error: slotError } = await db().from("cosmetic_nade_slot").select("nade,kind,item_id").eq("user_id", data.user_id);
-    const slotRows = (slotError ? [] : slotData ?? []) as Array<{ nade: string; kind: string; item_id: string | null }>;
-    const defaultItem = async (kind: NadeKind) => { const { data: row } = await db().from("cosmetic_equipped").select("item_id").eq("user_id", data.user_id).eq("kind", kind).maybeSingle(); return row ? textValue((row as DbRow).item_id) : null; };
-    const [defaultTrail, defaultLight] = await Promise.all([defaultItem("grenade_trail"), defaultItem("grenade_light")]);
-    const trailBy = itemsByNade("grenade_trail", defaultTrail, slotRows);
-    const lightBy = itemsByNade("grenade_light", defaultLight, slotRows);
-    const grenadeSlots = Object.fromEntries(await Promise.all(NADES.map(async (nade) => {
-      const trail = trailBy[nade] ? await grenadeLook(trailBy[nade]!, "grenade_trail") : null;
-      const light = lightBy[nade] ? await grenadeLook(lightBy[nade]!, "grenade_light") : null;
+    const wornTrail = grenadeLook(wornBy.get("grenade_trail"), "grenade_trail");
+    const wornLight = grenadeLook(wornBy.get("grenade_light"), "grenade_light");
+    const wornFlash = grenadeLook(wornBy.get("flash_effect"), "flash_effect");
+    const grenadeSlots = Object.fromEntries(NADES.map((nade) => {
+      const trail = grenadeLook(trailBy[nade], "grenade_trail");
+      const light = grenadeLook(lightBy[nade], "grenade_light");
       return [nade, { trail: trail?.color ?? null, trail_fx: trail?.fx ?? null, light: light?.color ?? null }];
-    })));
+    }));
     res.json({ profile: {
       ...profile,
       grenade_trail: wornTrail?.color ?? null,
