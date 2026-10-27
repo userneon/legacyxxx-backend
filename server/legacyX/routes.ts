@@ -46,6 +46,7 @@ import { ADMIN_CALL_COOLDOWN_SECONDS, ADMIN_CALL_MAX_AGE_HOURS, ADMIN_CALL_PAGE,
 import { COIN_RULES, NotEnoughCoinsError, applyWalletChange, awardDiscordLink, awardMatchBonuses, awardMatchCoins, clanPrices, earnRules, loadWallet, loadWalletSummary, penalizeWallet, walletGrantSchema, walletPenaltySchema } from "./wallet";
 import { isMissingTableError, ownerLinks, ownerProfileSchema, ownerTeam, ownerUpdates } from "./ownerProfile";
 import { liftInfo } from "./penaltyLift";
+import { CARD_SELL_SHARE, cardPrice, cardSellPrice } from "./cards";
 import { cleanPlayerConfig, playerConfigSchema } from "./playerConfig";
 import { PROFILE_NAME_MAX, PROFILE_SECTIONS, bestNameMatch, escapeLike, hiddenForViewer, loadoutShowcase, mapWinRates, normalizeHiddenSections, profileStats, buildBenchmark, BENCHMARK_MIN_MATCHES, staffCard, type ProfileSection } from "./profileOverview";
 import { activeBans, bannedPlayer, checkBansSchema, issueBan, issueBanSchema, issueIpBan, issueIpBanSchema, listActiveBans, revokeAllBans, revokeAllBansSchema, revokeBans, revokeBanSchema, revokeIpBans, revokeIpBanSchema } from "./bans";
@@ -1665,6 +1666,51 @@ export function createLegacyXRouter() {
     const { error } = await db().from("player_configs").upsert({ user_id: user.id, data: config, updated_at: new Date().toISOString() });
     legacyXError(error, "Unable to save your configs");
     res.json({ config });
+  }));
+  // Collectible cards (owner request 2026-10-27): the catalogue with today's prices, buying and selling, and what a player holds.
+  const cardRows = async () => {
+    const { data, error } = await db().from("cards").select("id,name,map_key,rarity,base_price,held,enabled,sort").order("sort", { ascending: true });
+    legacyXError(error, "Unable to load the cards");
+    return (data ?? []) as DbRow[];
+  };
+  const cardView = (row: DbRow, qty: number) => {
+    const base = Number(row.base_price), held = Number(row.held);
+    return { id: textValue(row.id), name: textValue(row.name), mapKey: textValue(row.map_key), rarity: textValue(row.rarity), enabled: Boolean(row.enabled), held, price: cardPrice(base, held), sellPrice: cardSellPrice(base, held), qty };
+  };
+  router.get("/cards", optionalUserRoute(async (_req, res, viewer) => {
+    const [rows, owned] = await Promise.all([
+      cardRows(),
+      viewer ? db().from("card_owned").select("card_id,qty").eq("user_id", viewer.id) : Promise.resolve({ data: [] as DbRow[], error: null }),
+    ]);
+    legacyXError(owned.error, "Unable to load your cards");
+    const qty = new Map(((owned.data ?? []) as DbRow[]).map((row) => [textValue(row.card_id), Number(row.qty)]));
+    res.set("Cache-Control", "no-store");
+    res.json({ cards: rows.filter((row) => row.enabled || qty.has(textValue(row.id))).map((row) => cardView(row, qty.get(textValue(row.id)) ?? 0)), sellShare: CARD_SELL_SHARE });
+  }));
+  const tradeCard = (side: "buy" | "sell") => userRoute(async (req, res, user) => {
+    const input = z.object({ limit: z.number().int().min(0).max(10_000_000) }).strict().parse(req.body);
+    const { data, error } = await db().rpc("card_trade", { p_user: user.id, p_card: String(req.params.id ?? ""), p_side: side, p_limit: input.limit });
+    if (error) {
+      const message = String(error.message);
+      if (/insufficient coins/i.test(message)) apiError(402, "You do not have enough LX", "cards_no_coins");
+      if (/price_changed/.test(message)) apiError(409, "The price just changed. Look at the new price and try again.", "cards_price_changed");
+      if (/card_missing/.test(message)) apiError(404, "This card does not exist");
+      if (/card_off/.test(message)) apiError(409, "This card is not on sale", "cards_off");
+      if (/card_not_held/.test(message)) apiError(409, "You do not hold this card", "cards_not_held");
+      legacyXError(error, "Unable to complete the trade");
+    }
+    const row = (Array.isArray(data) ? data[0] : data) as DbRow;
+    res.json({ price: Number(row.price), held: Number(row.held), qty: Number(row.qty), balance: Number(row.balance) });
+  });
+  router.post("/cards/:id/buy", sensitiveMutationRateLimit, tradeCard("buy"));
+  router.post("/cards/:id/sell", sensitiveMutationRateLimit, tradeCard("sell"));
+  // What a player holds, for the Cards tab on their profile; public like the rest of the profile.
+  router.get("/profile/:userId/cards", optionalUserRoute(async (req, res, viewer) => {
+    const userId = await resolveUserId(String(req.params.userId ?? ""), viewer ?? ({ id: "" } as LegacyUser));
+    const [rows, owned] = await Promise.all([cardRows(), db().from("card_owned").select("card_id,qty").eq("user_id", userId)]);
+    legacyXError(owned.error, "Unable to load the player's cards");
+    const qty = new Map(((owned.data ?? []) as DbRow[]).map((row) => [textValue(row.card_id), Number(row.qty)]));
+    res.json({ cards: rows.filter((row) => qty.has(textValue(row.id))).map((row) => cardView(row, qty.get(textValue(row.id)) ?? 0)) });
   }));
   router.put("/profile/me/links", userRoute(async (req, res, user) => {
     const input = z.object({ links: z.array(z.object({ url: z.string().url().max(2048) })).max(20) }).parse(req.body);
