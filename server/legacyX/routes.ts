@@ -51,6 +51,7 @@ import { activeBans, bannedPlayer, checkBansSchema, issueBan, issueBanSchema, is
 import { authorizationRequestSchema, resolveAuthorizations } from "./adminAuthorization";
 import { CREATOR_TIER_LABEL, cleanCreatorLinks, creatorApplicationSchema, creatorDecisionSchema, creatorTier, sortCreators, upsertCreatorSchema } from "./creators";
 import { boosterPlaceOf, endBoosterFrames, grantBoosterFrames, isBoostingNow, syncBoosterPodium } from "./boosterRewards";
+import { cleanClanLinks, clanLinksSchema } from "./clanLinks";
 import { claimFounder, founderCount, founderLabel, founderNumberOf, founderSalesOpen, FOUNDER_PRODUCT_KIND, productDeadlines } from "./founder";
 import { cachedFor as publicCached, forgetCached } from "./responseCache";
 import { communityInputSchema, loadCommunity, recordCommunity } from "./discordCommunity";
@@ -993,7 +994,7 @@ export function createLegacyXRouter() {
     const viewerRole = viewerId ? members.find((member) => member.id === viewerId)?.role ?? null : null;
     const recruiting = await clanRecruitmentFor([clanId]);
     const progress = await db().from("clan_progress").select("xp").eq("clan_id", clanId).maybeSingle();
-    return { ...mapClanCard(clan), level: levelFor(numberValue(progress.data?.xp)).level, look: (await clanLooksFor(db(), [clanId])).get(clanId) ?? null, recruit: recruiting.has(clanId) ? { questions: recruiting.get(clanId) ?? [] } : null, ...(viewerRole === "leader" ? { recruitment: await recruitmentOf(clanId) } : {}), description: clan.description ?? undefined, members, viewer: { role: viewerRole, canModerate: viewerId ? await canModerateClans(viewerId) : false } };
+    return { ...mapClanCard(clan), level: levelFor(numberValue(progress.data?.xp)).level, look: (await clanLooksFor(db(), [clanId])).get(clanId) ?? null, recruit: recruiting.has(clanId) ? { questions: recruiting.get(clanId) ?? [] } : null, ...(viewerRole === "leader" ? { recruitment: await recruitmentOf(clanId) } : {}), description: clan.description ?? undefined, links: cleanClanLinks(clan.links), members, viewer: { role: viewerRole, canModerate: viewerId ? await canModerateClans(viewerId) : false } };
   };
   // Public website reads deliberately bypass AdminPlus. CS2 plugins/admin tools
   // write to Supabase; the website reads these safe projections through root API.
@@ -2878,15 +2879,15 @@ export function createLegacyXRouter() {
   // Settings: description, who can join, player limit (the leader only).
   router.put("/clans/:clanId", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
     const clanId = await clanIdOf(req.params.clanId);
-    const input = z.object({ description: z.string().trim().max(200), joinMode: z.enum(["open", "request"]), maxPlayers: z.number().int().min(2).max(50) }).partial().strict().refine((value) => Object.keys(value).length > 0, "At least one clan field is required").parse(req.body);
+    const input = z.object({ description: z.string().trim().max(200), joinMode: z.enum(["open", "request"]), maxPlayers: z.number().int().min(2).max(50), links: clanLinksSchema }).partial().strict().refine((value) => Object.keys(value).length > 0, "At least one clan field is required").parse(req.body);
     const clan = await requireClanLeader(clanId, user.id);
     if (input.maxPlayers !== undefined && input.maxPlayers < memberCount(clan)) apiError(409, "The clan already has more members than that", "clan_too_many_members");
-    const { description, joinMode, maxPlayers } = input;
-    const { error } = await db().from("clans").update({ ...(description !== undefined ? { description } : {}), ...(joinMode ? { join_mode: joinMode } : {}), ...(maxPlayers !== undefined ? { max_players: maxPlayers } : {}) }).eq("id", clanId);
+    const { description, joinMode, maxPlayers, links } = input;
+    const { error } = await db().from("clans").update({ ...(links !== undefined ? { links } : {}), ...(description !== undefined ? { description } : {}), ...(joinMode ? { join_mode: joinMode } : {}), ...(maxPlayers !== undefined ? { max_players: maxPlayers } : {}) }).eq("id", clanId);
     legacyXError(error, "Unable to update clan");
     // Open joining and recruitment questions do not go together: opening the clan switches recruitment off.
     if (joinMode === "open") await db().from("clan_recruitment").update({ enabled: false }).eq("clan_id", clanId);
-    await logClan(clan, user.id, "settings", null, [joinMode ? `join: ${joinMode}` : "", maxPlayers !== undefined ? `max: ${maxPlayers}` : "", description !== undefined ? "description" : ""].filter(Boolean).join(", "));
+    await logClan(clan, user.id, "settings", null, [joinMode ? `join: ${joinMode}` : "", maxPlayers !== undefined ? `max: ${maxPlayers}` : "", description !== undefined ? "description" : "", links !== undefined ? "links" : ""].filter(Boolean).join(", "));
     res.json(await loadClanDetail(clanId, user.id));
   }));
   // Recruitment: the leader switches it on and asks up to three short questions; asking to join then needs an answer to each. Switching it on means requests (not open joining).
