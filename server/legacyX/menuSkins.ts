@@ -35,6 +35,21 @@ export const menuSkinEquipBody = z.object({
   team: z.enum(["t", "ct"]).optional(),
 }).strict();
 
+export const menuSkinUnequipBody = z.object({
+  steam_id: steamId,
+  /** The equipped skin to take off. */
+  catalog_item_id: z.string().uuid(),
+  /** The team tab the menu is on: a pick saved for both teams stays on the other team. */
+  team: z.enum(["t", "ct"]),
+}).strict();
+
+/** Taking a skin off: its entries for this team go; an entry saved for both teams stays on the other team. */
+export function entriesRemovedByUnequip(rows: LoadoutRow[], catalogItemId: string, team: "t" | "ct"): { remove: LoadoutRow[]; keepFor: { row: LoadoutRow; teamScope: "t" | "ct" } | null } {
+  const remove = rows.filter((row) => row.catalog_item_id === catalogItemId && (row.team_scope === team || row.team_scope === "all"));
+  const shared = remove.find((row) => row.team_scope === "all");
+  return { remove, keepFor: shared ? { row: shared, teamScope: team === "t" ? "ct" : "t" } : null };
+}
+
 /** "★ Karambit | Fade (Factory New)" -> "Fade"; a plain "★ Karambit" is the vanilla knife. */
 export function menuSkinName(displayName: string): string {
   const [, skin] = displayName.split("|");

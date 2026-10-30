@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { entriesReplacedByEquip, sharedGunEntryMovedTo, gunIsForTeam, menuRarity, menuTiles, menuAgentName, menuGunModel, menuSkinEquipBody, menuSkinItemsQuery, menuSkinName, menuSkinTypesQuery, menuSlotKey } from "./menuSkins";
+import { entriesReplacedByEquip, entriesRemovedByUnequip, menuSkinUnequipBody, sharedGunEntryMovedTo, gunIsForTeam, menuRarity, menuTiles, menuAgentName, menuGunModel, menuSkinEquipBody, menuSkinItemsQuery, menuSkinName, menuSkinTypesQuery, menuSlotKey } from "./menuSkins";
 
 describe("menuSkinName", () => {
   it("drops the knife name and the wear", () => {
@@ -129,5 +129,24 @@ describe("the loadout overview", () => {
     expect(menuRarity("Master")).toBe("covert");
     expect(menuRarity("Distinguished")).toBe("milspec");
     expect(menuRarity(null)).toBeNull();
+  });
+});
+
+describe("taking a skin off", () => {
+  const id = "11111111-1111-4111-8111-111111111111";
+  const row = (team_scope: string, catalog_item_id = id) => ({ slot: "knife", slot_key: "knife:507", team_scope, catalog_item_id });
+  it("removes the entry of the team and leaves another skin alone", () => {
+    const out = entriesRemovedByUnequip([row("t"), row("ct"), row("t", "22222222-2222-4222-8222-222222222222")], id, "t");
+    expect(out.remove).toEqual([row("t")]);
+    expect(out.keepFor).toBeNull();
+  });
+  it("keeps a skin saved for both teams on the other team", () => {
+    const out = entriesRemovedByUnequip([row("all")], id, "ct");
+    expect(out.remove).toEqual([row("all")]);
+    expect(out.keepFor).toEqual({ row: row("all"), teamScope: "t" });
+  });
+  it("needs a real item id and a team", () => {
+    expect(menuSkinUnequipBody.safeParse({ steam_id: "76561198000000000", catalog_item_id: id, team: "t" }).success).toBe(true);
+    expect(menuSkinUnequipBody.safeParse({ steam_id: "76561198000000000", catalog_item_id: id }).success).toBe(false);
   });
 });

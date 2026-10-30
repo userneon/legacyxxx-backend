@@ -48,7 +48,7 @@ import { isMissingTableError, ownerLinks, ownerProfileSchema, ownerTeam, ownerUp
 import { liftInfo } from "./penaltyLift";
 import { CARD_SELL_SHARE, cardPrice, cardSellPrice } from "./cards";
 import { cleanPlayerConfig, playerConfigSchema } from "./playerConfig";
-import { menuLoadoutQuery, menuRarity, menuTiles, MENU_AGENT_TEAMS, MENU_SKIN_PAGE, MENU_SLOT_CATEGORY, entriesReplacedByEquip, menuAgentName, menuGunModel, menuSkinEquipBody, menuSkinItemsQuery, menuSkinName, menuSkinSlotSchema, menuSkinTypesQuery, menuSlotKey, sharedGunEntryMovedTo, type LoadoutRow, type MenuSkinSlot } from "./menuSkins";
+import { menuLoadoutQuery, menuRarity, menuTiles, MENU_AGENT_TEAMS, MENU_SKIN_PAGE, MENU_SLOT_CATEGORY, entriesReplacedByEquip, menuAgentName, menuGunModel, menuSkinEquipBody, menuSkinUnequipBody, entriesRemovedByUnequip, menuSkinItemsQuery, menuSkinName, menuSkinSlotSchema, menuSkinTypesQuery, menuSlotKey, sharedGunEntryMovedTo, type LoadoutRow, type MenuSkinSlot } from "./menuSkins";
 import { PROFILE_NAME_MAX, PROFILE_SECTIONS, bestNameMatch, escapeLike, hiddenForViewer, loadoutShowcase, mapWinRates, normalizeHiddenSections, profileStats, buildBenchmark, BENCHMARK_MIN_MATCHES, staffCard, type ProfileSection } from "./profileOverview";
 import { activeBans, bannedPlayer, checkBansSchema, issueBan, issueBanSchema, issueIpBan, issueIpBanSchema, listActiveBans, revokeAllBans, revokeAllBansSchema, revokeBans, revokeBanSchema, revokeIpBans, revokeIpBanSchema } from "./bans";
 import { authorizationRequestSchema, resolveAuthorizations } from "./adminAuthorization";
@@ -5725,6 +5725,44 @@ export function createLegacyXRouter() {
       weaponClass: textValue(itemRow.weapon_class),
       label: pickedSlot === "agent" ? skin : `${textValue(itemRow.weapon_class)} | ${skin}`,
     });
+  }));
+
+  router.post("/plugin/menu/skins/unequip", menuSkinsRateLimit, pluginRoute("skinchanger:write", async (req, res, plugin) => {
+    const input = menuSkinUnequipBody.parse(req.body);
+    const { data: user, error: userError } = await db().from("users").select("id").eq("steam_id", input.steam_id).maybeSingle();
+    legacyXError(userError, "Unable to resolve player");
+    if (!user) apiError(404, "No saved skins for this player");
+    const userId = textValue((user as DbRow).id);
+    const { data: loadout, error: loadoutError } = await db().from("skinchanger_loadouts").select("version").eq("user_id", userId).maybeSingle();
+    legacyXError(loadoutError, "Unable to load the loadout");
+    let version = loadout ? numberValue((loadout as DbRow).version) : 0;
+    const { data: rows, error: rowsError } = await db().from("skinchanger_loadout_entries")
+      .select("slot,slot_key,team_scope,catalog_item_id,options")
+      .eq("user_id", userId)
+      .eq("catalog_item_id", input.catalog_item_id);
+    legacyXError(rowsError, "Unable to load the loadout entries");
+    const { remove, keepFor } = entriesRemovedByUnequip((rows ?? []) as LoadoutRow[], input.catalog_item_id, input.team);
+    for (const row of remove) {
+      const { data: removed, error: removeError } = await db().rpc("delete_skinchanger_loadout_entry", {
+        p_user_id: userId,
+        p_expected_version: version,
+        p_slot_key: row.slot_key,
+        p_team_scope: row.team_scope,
+      });
+      legacyXError(removeError, "Unable to take the skin off");
+      version = numberValue(recordValue(removed).version);
+    }
+    if (keepFor) {
+      const { data: kept, error: keepError } = await db().rpc("upsert_skinchanger_loadout_entry", {
+        p_user_id: userId,
+        p_expected_version: version,
+        p_entry: { slot: keepFor.row.slot, slot_key: keepFor.row.slot_key, team_scope: keepFor.teamScope, catalog_item_id: keepFor.row.catalog_item_id, options: recordValue(keepFor.row.options) },
+      });
+      legacyXError(keepError, "Unable to keep the other team's skin");
+      version = numberValue(recordValue(kept).version);
+    }
+    await writePluginAudit(plugin, "skinchanger.menu.unequip", "skinchanger_loadouts", userId, { version, catalogItemId: input.catalog_item_id, team: input.team, removed: remove.length });
+    res.json({ version, removed: remove.length });
   }));
 
   router.post("/plugin/live-match/snapshots", pluginRoute("servers:write", async (req, res, plugin) => {
