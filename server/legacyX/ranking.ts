@@ -136,6 +136,11 @@ export interface RankedMatchInput {
   /** Rounds each team played a player short because of a leaver. */
   shortHandedRounds?: Partial<Record<TeamKey, number>>;
   players: RankedPlayerInput[];
+  /**
+   * A look at the match while it is still being played (the half time card): the minimum rounds, the 50 % presence rule and a normal finish
+   * are not asked for, and the leader of the score is taken as the winner for now. Nothing is stored from it.
+   */
+  preview?: boolean;
 }
 
 export interface ExpBreakdown {
@@ -261,14 +266,14 @@ export function calculateMatchExp(input: RankedMatchInput): MatchExpResult {
 
   const invalidReasons: string[] = [];
   const appliesExp = input.mode !== "fun";
-  if (!input.finishedNormally) invalidReasons.push("not_finished_normally");
+  if (!input.finishedNormally && !input.preview) invalidReasons.push("not_finished_normally");
   // Each team needs at least MIN_PLAYERS_PER_TEAM humans who played, counting the ones who left early: when the other side walks out, the
   // team that stayed still wins its EXP (the leavers take their −10). Only a match that was never 2v2 or more is not ranked.
   const played = (team: TeamKey) => humans.filter((player) => player.team === team && player.roundsPlayed > 0).length;
   if (played("team1") < MIN_PLAYERS_PER_TEAM || played("team2") < MIN_PLAYERS_PER_TEAM) {
     invalidReasons.push("too_few_human_players");
   }
-  if (totalRounds < MIN_ROUNDS) invalidReasons.push("too_few_rounds");
+  if (totalRounds < MIN_ROUNDS && !input.preview) invalidReasons.push("too_few_rounds");
   const valid = appliesExp && invalidReasons.length === 0;
 
   // The lobby is every human who played at least one round; bots never count.
@@ -302,11 +307,18 @@ export function calculateMatchExp(input: RankedMatchInput): MatchExpResult {
     };
 
     if (!appliesExp) return settle(0, { ...base, rule: "fun_mode" }, false);
-    // A leaver who never came back loses a fixed 10 and it counts as a loss — even in an invalid match. The rest of the match is not touched
-    // by it: the players who stayed are paid as usual (owner decision 2026-10-30, it was 25 plus the Performance term).
-    if (player.leftEarly) return settle(LEAVER_DELTA, { ...base, rule: "leaver" }, true, "loss");
+    // A leaver who never came back loses a fixed 10 and it counts as a loss — even in an invalid match. What they showed before leaving
+    // counts too (owner decision 2026-10-30): their stats give the usual per-round impact against the lobby (±8) on top of the −10.
+    // In a match that does not count (or if they never played a round) there is no lobby to compare with: the −10 stands alone.
+    // The players who stayed are paid as usual either way.
+    if (player.leftEarly) {
+      if (!valid || player.roundsPlayed <= 0) return settle(LEAVER_DELTA, { ...base, rule: "leaver" }, true, "loss");
+      const score = scores.get(player.userId) ?? 0;
+      const { z, performance } = performanceTerm(score, lobbyMean, lobbyStd);
+      return settle(LEAVER_DELTA + performance, { ...base, performance, score: round2(score), z: round2(z), rule: "leaver" }, true, "loss");
+    }
     if (!valid) return settle(0, { ...base, rule: "invalid_match" }, false);
-    if (totalRounds > 0 && player.roundsPlayed / totalRounds < MIN_PARTICIPATION) {
+    if (!input.preview && totalRounds > 0 && player.roundsPlayed / totalRounds < MIN_PARTICIPATION) {
       return settle(0, { ...base, rule: "low_participation" }, false);
     }
 

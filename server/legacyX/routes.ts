@@ -818,6 +818,50 @@ async function applyRankedMatchResult(pluginId: string, eventId: string, matchId
   return { status: "not_ranked", reasons: ["exp_changed_concurrently"] };
 }
 
+/**
+ * What the EXP of a match in progress would be right now (the half time card): the same roster, EXP and limits as the real result, the same
+ * formula, but with the rounds so far and with the "finished" rules off (calculateMatchExp's preview). Nothing is stored or paid.
+ */
+async function previewRankedMatch(matchId: string, rawResult: unknown) {
+  const parsed = rankedResultSchema.safeParse(rawResult ?? {});
+  if (!parsed.success) return { status: "not_available", reasons: ["invalid_result_payload"] };
+  const [matchRow, participantRows] = await Promise.all([
+    legacyXDb().from("core_matches").select("id,state").eq("id", matchId).maybeSingle(),
+    legacyXDb().from("core_match_participants").select("user_id,steam_id,team_key,connected,disconnected_at,returned_at,reconnect_deadline").eq("match_id", matchId),
+  ]);
+  legacyXError(matchRow.error || participantRows.error, "Unable to load the match");
+  if (!matchRow.data || !["LIVE", "PAUSED"].includes(String(matchRow.data.state))) return { status: "not_available", reasons: ["match_not_live"] };
+  const participants = (participantRows.data ?? []) as MatchParticipant[];
+  const progressionRows = await legacyXDb().from("competitive_player_progression").select("user_id,current_exp,matches_completed,pro_league_unlocked").in("user_id", participants.map((participant) => participant.user_id));
+  legacyXError(progressionRows.error, "Unable to load player EXP");
+  const windows = limitWindows();
+  const recentGains = await legacyXDb().from("competitive_match_exp").select("user_id,exp_delta,created_at").in("user_id", participants.map((participant) => participant.user_id)).gt("exp_delta", 0).gte("created_at", new Date(windows.weekStart).toISOString());
+  legacyXError(recentGains.error, "Unable to load recent EXP gains");
+  const gainedToday = new Map<string, number>();
+  const gainedThisWeek = new Map<string, number>();
+  for (const row of recentGains.data ?? []) {
+    gainedThisWeek.set(row.user_id, (gainedThisWeek.get(row.user_id) ?? 0) + Number(row.exp_delta));
+    if (new Date(row.created_at).getTime() >= windows.dayStart) gainedToday.set(row.user_id, (gainedToday.get(row.user_id) ?? 0) + Number(row.exp_delta));
+  }
+  const progression = ((progressionRows.data ?? []) as PlayerProgression[]).map((row) => ({ ...row, exp_gained_today: gainedToday.get(row.user_id) ?? 0, exp_gained_week: gainedThisWeek.get(row.user_id) ?? 0 }));
+  const built = buildRankedInput(parsed.data, participants, progression, new Date());
+  const outcome = calculateMatchExp({ ...built.input, preview: true });
+  if (!outcome.appliesExp) return { status: "not_available", reasons: ["fun_mode"] };
+  return {
+    status: "preview",
+    totalRounds: outcome.totalRounds,
+    players: outcome.players.map((player) => ({
+      steam_id: player.steamId,
+      team_key: player.team,
+      outcome: player.outcome,
+      exp_before: player.expBefore,
+      exp_delta: player.expDelta,
+      exp_after: player.expAfter,
+      breakdown: player.breakdown,
+    })),
+  };
+}
+
 /** K/D and win-rate rankings only include players with at least this many completed matches. */
 const COMPETITIVE_SORT_MIN_MATCHES = 10;
 
@@ -5037,6 +5081,13 @@ export function createLegacyXRouter() {
         .catch((announceError) => console.error("[legacy-x-api] Unable to announce the finished match", announceError));
     }
     res.status(200).json({ result: input.event_type === "match_created" ? matchCoreResult : data ?? {}, competitive });
+  }));
+  router.post("/plugin/match-core/exp-preview", pluginRoute("matches:write", async (req, res, plugin) => {
+    const input = z.object({ match_id: z.string().uuid(), result: z.unknown() }).parse(req.body);
+    const pluginId = req.header("x-plugin-id")?.trim() || plugin.name;
+    if (pluginId !== "legacyx-match-core") apiError(403, "Match Core plugin identity is required");
+    res.set("Cache-Control", "no-store");
+    res.json({ result: await previewRankedMatch(input.match_id, input.result) });
   }));
   router.post("/plugin/matchzy/events", pluginRoute("stats:write", async (req, res, plugin) => {
     z.object({ event_id: pluginEventIdSchema, event: z.string().min(1).max(64) }).passthrough().parse(req.body);
