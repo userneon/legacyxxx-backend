@@ -9,7 +9,7 @@ export const MENU_SKIN_SLOTS = ["knife", "glove", "weapon", "agent"] as const;
 export type MenuSkinSlot = (typeof MENU_SKIN_SLOTS)[number];
 export const MENU_GUN_GROUPS = ["Rifles", "SMGs", "Heavy", "Pistols"] as const;
 export const MENU_AGENT_TEAMS = ["Terrorist", "Counter-Terrorist"] as const;
-export const MENU_SKIN_PAGE = 24;
+export const MENU_SKIN_PAGE = 100;
 
 /** The catalog category a skin of this slot has (a gun's skins are `weapon_skin`, its plain model is `weapon`). */
 export const MENU_SLOT_CATEGORY: Record<MenuSkinSlot, string> = { knife: "knife", glove: "glove", weapon: "weapon_skin", agent: "agent" };
