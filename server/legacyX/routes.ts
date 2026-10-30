@@ -1047,13 +1047,32 @@ export function createLegacyXRouter() {
   const loadClanDetail = async (clanId: string, viewerId?: string) => {
     const [clanResult, membersResult] = await Promise.all([
       db().from("clans").select("*,clan_members(count)").eq("id", clanId).maybeSingle(),
-      db().from("clan_members").select("role,user_id,users(id,steam_id,username,avatar)").eq("clan_id", clanId).order("created_at"),
+      db().from("clan_members").select("role,user_id,users(id,steam_id,username,avatar,faceit_username,faceit_elo,faceit_level)").eq("clan_id", clanId).order("created_at"),
     ]);
     legacyXError(clanResult.error || membersResult.error, "Unable to load clan");
     if (!clanResult.data) apiError(404, "Clan was not found");
     const clan = clanResult.data as DbRow;
     const worn = await equippedCosmeticsFor(((membersResult.data ?? []) as DbRow[]).map((member) => textValue(member.user_id)));
-    const members = ((membersResult.data ?? []) as DbRow[]).map((member) => ({ ...mapClanMember(member), ...lookOf(worn, textValue(member.user_id)) }));
+    // Each member's real ranked numbers and linked FACEIT, for the roster rows (a member with no ranked profile has none).
+    const memberIds = ((membersResult.data ?? []) as DbRow[]).map((member) => textValue(member.user_id)).filter(Boolean);
+    const ranked = memberIds.length ? await db().from("competitive_player_profiles").select("user_id,rank_id,rank_name,rank_image_key,current_exp,matches_completed,wins,kills,deaths").in("user_id", memberIds) : { data: [] as DbRow[], error: null };
+    if (ranked.error) console.warn("[legacy-x-api] clan member ranks unavailable", ranked.error.message);
+    const rankedBy = new Map(((ranked.data ?? []) as DbRow[]).map((row) => [textValue(row.user_id), row]));
+    const members = ((membersResult.data ?? []) as DbRow[]).map((member) => {
+      const user = firstRow(member.users) ?? {};
+      const profile = rankedBy.get(textValue(member.user_id));
+      const matches = numberValue(profile?.matches_completed);
+      const deaths = numberValue(profile?.deaths);
+      return {
+        ...mapClanMember(member),
+        ...lookOf(worn, textValue(member.user_id)),
+        stats: profile ? {
+          rankId: numberValue(profile.rank_id), rankName: textValue(profile.rank_name), rankImageKey: textValue(profile.rank_image_key), currentExp: numberValue(profile.current_exp),
+          matches, winRate: matches > 0 ? Math.round((numberValue(profile.wins) / matches) * 1000) / 10 : null, kd: deaths > 0 ? Math.round((numberValue(profile.kills) / deaths) * 100) / 100 : null,
+        } : null,
+        faceit: user.faceit_username && user.faceit_elo != null && user.faceit_level != null ? { username: textValue(user.faceit_username), elo: numberValue(user.faceit_elo), level: numberValue(user.faceit_level) } : null,
+      };
+    });
     const viewerRole = viewerId ? members.find((member) => member.id === viewerId)?.role ?? null : null;
     const recruiting = await clanRecruitmentFor([clanId]);
     const progress = await db().from("clan_progress").select("xp").eq("clan_id", clanId).maybeSingle();
