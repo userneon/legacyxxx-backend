@@ -61,8 +61,7 @@ BEGIN
   RETURN NEW;
 END $$;
 REVOKE ALL ON FUNCTION legacy_x.grant_rank_frames() FROM PUBLIC, anon, authenticated;
-DROP TRIGGER IF EXISTS competitive_progression_rank_frames ON legacy_x.competitive_player_progression;
-CREATE TRIGGER competitive_progression_rank_frames AFTER INSERT OR UPDATE OF current_rank_id ON legacy_x.competitive_player_progression
+CREATE OR REPLACE TRIGGER competitive_progression_rank_frames AFTER INSERT OR UPDATE OF current_rank_id ON legacy_x.competitive_player_progression
   FOR EACH ROW EXECUTE FUNCTION legacy_x.grant_rank_frames();
 
 -- Players ranked already: the frame of their rank now.

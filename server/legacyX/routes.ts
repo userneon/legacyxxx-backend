@@ -5020,7 +5020,12 @@ export function createLegacyXRouter() {
     if (pluginId !== "legacyx-match-core") apiError(403, "Match Core plugin identity is required");
     const { data, error } = await db().schema("legacy_x").rpc("ingest_core_match_event", { p_plugin_id: pluginId, p_event_id: input.event_id, p_payload: input });
     legacyXError(error, "Unable to ingest Match Core event");
-    const matchCoreResult = recordValue(data);
+    let matchCoreResult = recordValue(data);
+    // The match's own number (1, 2, 3 ... counted over real matches only) goes back to the game server for its "Match #N" line.
+    if (input.event_type === "match_created" && input.match_id) {
+      const numbered = await db().from("core_matches").select("match_number").eq("id", input.match_id).maybeSingle();
+      if (!numbered.error && numbered.data) matchCoreResult = { ...matchCoreResult, match_number: Number(numbered.data.match_number) };
+    }
     let competitive: unknown = null;
     if (input.event_type === "result_final" && input.match_id && ["processed", "duplicate"].includes(textValue(matchCoreResult.status))) {
       competitive = await applyRankedMatchResult(pluginId, input.event_id, input.match_id, (input as DbRow).result);
@@ -5030,7 +5035,7 @@ export function createLegacyXRouter() {
       await announceFinishedMatch((input as DbRow).result)
         .catch((announceError) => console.error("[legacy-x-api] Unable to announce the finished match", announceError));
     }
-    res.status(200).json({ result: data ?? {}, competitive });
+    res.status(200).json({ result: input.event_type === "match_created" ? matchCoreResult : data ?? {}, competitive });
   }));
   router.post("/plugin/matchzy/events", pluginRoute("stats:write", async (req, res, plugin) => {
     z.object({ event_id: pluginEventIdSchema, event: z.string().min(1).max(64) }).passthrough().parse(req.body);
