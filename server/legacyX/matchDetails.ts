@@ -51,7 +51,7 @@ export function mapMatchPlayer(row: Row) {
     headshotPercent: kills > 0 ? round1((num(row.headshot_kills) / kills) * 100) : 0,
     adr: has("damage") && roundsPlayed > 0 ? round1(num(stats.damage) / roundsPlayed) : null,
     kastPercent: has("kast") && roundsPlayed > 0 ? round1((num(stats.kast) / roundsPlayed) * 100) : null,
-    mvps: has("mvp") ? num(stats.mvp) : null,
+    mvps: has("mvp") ? num(stats.mvp) : has("mvps") ? num(stats.mvps) : null,
     utilityDamage: has("utility_damage") ? num(stats.utility_damage) : null,
     enemiesFlashed: has("enemies_flashed") ? num(stats.enemies_flashed) : null,
     firstKills: has("first_kills_t") || has("first_kills_ct") ? num(stats.first_kills_t) + num(stats.first_kills_ct) : null,
@@ -130,8 +130,9 @@ export function mapRankedRecentMatch(row: Row) {
 export function coreRoundScore(result: unknown): Record<TeamKey, number> | null {
   const data = obj(result);
   const rank = obj(data.rank_result);
-  const team1 = data.team1_rounds ?? obj(rank.team1).rounds;
-  const team2 = data.team2_rounds ?? obj(rank.team2).rounds;
+  const played = obj(data.competitive_result);
+  const team1 = data.team1_rounds ?? obj(rank.team1).rounds ?? obj(played.team1).rounds_won;
+  const team2 = data.team2_rounds ?? obj(rank.team2).rounds ?? obj(played.team2).rounds_won;
   if (team1 === undefined || team2 === undefined) return null;
   return { team1: num(team1), team2: num(team2) };
 }
@@ -179,4 +180,33 @@ export function expRowAsResult(row: Row, score: Record<TeamKey, number> | null, 
     created_at: row.created_at,
     users: row.users,
   };
+}
+
+/** The humans of a finished match's stored result that have no EXP row (substitutes who joined later), as rows mapMatchPlayer can read. */
+export function resultPlayersWithoutExp(result: unknown, covered: Set<string>, users: Row[], score: Record<TeamKey, number> | null, mapName: string): Row[] {
+  const data = obj(result);
+  const played = obj(data.competitive_result);
+  const players = Array.isArray(played.players) ? (played.players as Row[]) : [];
+  const winner = str(data.winner_team);
+  const userBySteam = new Map(users.map((user) => [str(user.steam_id), user]));
+  return players
+    .filter((player) => !player.is_bot && str(player.steam_id) && !covered.has(str(player.steam_id)))
+    .map((player) => {
+      const team: TeamKey = str(player.team) === "team2" ? "team2" : "team1";
+      const outcome = winner === team ? "win" : winner === "team1" || winner === "team2" ? "loss" : "draw";
+      const stats = { ...player, mvp: player.mvps };
+      return {
+        team_key: team,
+        outcome,
+        score_for: score ? score[team] : 0,
+        map_name: mapName,
+        kills: player.kills,
+        deaths: player.deaths,
+        assists: player.assists,
+        headshot_kills: player.headshot_kills,
+        rating_delta: 0,
+        stats,
+        users: userBySteam.get(str(player.steam_id)) ?? { steam_id: str(player.steam_id) },
+      };
+    });
 }

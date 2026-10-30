@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mapMatchDetail, mapMatchRounds, mapRankedRecentMatch, roundOutcome } from "./matchDetails";
+import { mapMatchDetail, mapMatchRounds, mapRankedRecentMatch, roundOutcome, coreRoundScore, resultPlayersWithoutExp, mapMatchPlayer } from "./matchDetails";
 
 const player = (steamId: string, team: string, kills: number, deaths: number, stats: Record<string, unknown> = {}) => ({
   event_id: "matchzy:42:1:map_result",
@@ -57,5 +57,32 @@ describe("match details", () => {
     expect(mapRankedRecentMatch({ match_external_id: "42", map_number: 1, map_name: "de_nuke", outcome: "win", score_for: 13, score_against: 7, kills: 20, deaths: 0, created_at: "2026-09-19T10:00:00Z" }))
       .toEqual({ map: "de_nuke", result: "Win", score: "13:7", kd: "20.00", matchId: "42", mapNumber: 1, playedAt: "2026-09-19T10:00:00Z" });
     expect(roundOutcome(999)).toBe("other");
+  });
+});
+
+describe("match result without EXP rows", () => {
+  const result = {
+    winner_team: "team1",
+    competitive_result: {
+      team1: { rounds_won: 13 },
+      team2: { rounds_won: 5 },
+      players: [
+        { steam_id: "1", team: "team1", kills: 10, deaths: 13, assists: 2, headshot_kills: 5, mvps: 3, rounds_played: 18, is_bot: false },
+        { steam_id: "2", team: "team2", kills: 19, deaths: 14, assists: 4, headshot_kills: 16, mvps: 2, rounds_played: 18, is_bot: false },
+        { steam_id: "3", team: "team2", kills: 1, deaths: 1, assists: 0, headshot_kills: 0, is_bot: true },
+      ],
+    },
+  };
+
+  it("reads the round score from the competitive result", () => {
+    expect(coreRoundScore(result)).toEqual({ team1: 13, team2: 5 });
+  });
+
+  it("lists humans that have no EXP row, with their own stats and outcome", () => {
+    const rows = resultPlayersWithoutExp(result, new Set(["1"]), [{ steam_id: "2", username: "tseF_" }], { team1: 13, team2: 5 }, "de_mirage");
+    expect(rows).toHaveLength(1);
+    const player = mapMatchPlayer(rows[0]!);
+    expect(player).toMatchObject({ username: "tseF_", kills: 19, deaths: 14, mvps: 2 });
+    expect(rows[0]).toMatchObject({ team_key: "team2", outcome: "loss", score_for: 5 });
   });
 });

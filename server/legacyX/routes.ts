@@ -27,7 +27,7 @@ import { apiAuthRateLimitMax, apiRateLimitMax, apiSensitiveRateLimitMax, apiSess
 import { getFaceitProfileSnapshot, getFaceitProfileSnapshotForSteamId, resolveFaceitNickname } from "./faceit";
 import { legacyXDb, legacyXError } from "./supabase";
 import { resolveSteamProfileMedia } from "./steamBackground";
-import { coreRoundScore, expRowAsResult, mapExpRecentMatch, mapMatchDetail } from "./matchDetails";
+import { coreRoundScore, expRowAsResult, mapExpRecentMatch, mapMatchDetail, resultPlayersWithoutExp } from "./matchDetails";
 import { recordClanMatch, WAR_WINDOW_AFTER_MS } from "./clanMatch";
 import { headToHead } from "./compare";
 import { PICK_DEFAULT_2, isColourable, isTwoColour, itemColours } from "./cosmeticColours";
@@ -1206,12 +1206,21 @@ export function createLegacyXRouter() {
     const mapName = textValue(core.data.map_name);
     // The round timeline is optional (older plugin builds didn't send round_end); never fail the scoreboard over it.
     const rounds = await db().from("match_rounds").select("round_number,winner_side,reason,team1_score,team2_score")
-      .eq("match_external_id", textValue(core.data.matchzy_local_id)).eq("map_number", mapNumber).order("round_number");
+      .eq("match_external_id", textValue(core.data.matchzy_local_id) || matchId).eq("map_number", mapNumber).order("round_number");
     if (rounds.error) console.warn("[legacy-x-api] match rounds unavailable", rounds.error.message);
+    // Players who joined after the start have no EXP row; the final result still holds their stats, so they stay on the scoreboard.
+    const covered = new Set(rows.map((row) => textValue(firstRow(row.users)?.steam_id)).filter(Boolean));
+    const extraIds = (Array.isArray(recordValue(recordValue(core.data.result).competitive_result).players) ? (recordValue(recordValue(core.data.result).competitive_result).players as DbRow[]) : [])
+      .map((player) => textValue(player.steam_id)).filter((id) => id && !covered.has(id)).slice(0, 32);
+    const extraUsers = extraIds.length > 0 ? await db().from("users").select("id,steam_id,username,avatar").in("steam_id", extraIds) : { data: [], error: null };
+    if (extraUsers.error) console.warn("[legacy-x-api] match substitutes unavailable", extraUsers.error.message);
     const detail = mapMatchDetail({
       matchId,
       mapNumber,
-      results: rows.map((row) => expRowAsResult(row, score, mapName)),
+      results: [
+        ...rows.map((row) => expRowAsResult(row, score, mapName)),
+        ...resultPlayersWithoutExp(core.data.result, covered, (extraUsers.data ?? []) as DbRow[], score, mapName),
+      ],
       rounds: rounds.error ? [] : ((rounds.data ?? []) as DbRow[]),
       receiptPayload: recordValue(core.data.result).rank_result,
     });
@@ -5088,6 +5097,35 @@ export function createLegacyXRouter() {
     if (pluginId !== "legacyx-match-core") apiError(403, "Match Core plugin identity is required");
     res.set("Cache-Control", "no-store");
     res.json({ result: await previewRankedMatch(input.match_id, input.result) });
+  }));
+  // One row per finished round, for the round timeline on a match's details. The round winner's side comes from the game; the site derives the winning team from the score.
+  router.post("/plugin/match-core/round", pluginRoute("matches:write", async (req, res, plugin) => {
+    const input = z.object({
+      match_id: z.string().uuid(),
+      map_number: z.number().int().min(0).max(99),
+      round_number: z.number().int().min(1).max(200),
+      winner_side: z.enum(["t", "ct"]).nullable(),
+      reason: z.number().int().min(0).max(100).nullable(),
+      team1_score: z.number().int().min(0).max(200),
+      team2_score: z.number().int().min(0).max(200),
+    }).parse(req.body);
+    const pluginId = req.header("x-plugin-id")?.trim() || plugin.name;
+    if (pluginId !== "legacyx-match-core") apiError(403, "Match Core plugin identity is required");
+    const core = await db().from("core_matches").select("id,matchzy_local_id").eq("id", input.match_id).maybeSingle();
+    legacyXError(core.error, "Unable to load match");
+    if (!core.data) apiError(404, "Match was not found");
+    const saved = await db().from("match_rounds").upsert({
+      match_external_id: textValue(core.data.matchzy_local_id) || input.match_id,
+      map_number: input.map_number,
+      round_number: input.round_number,
+      winner_side: input.winner_side,
+      reason: input.reason,
+      team1_score: input.team1_score,
+      team2_score: input.team2_score,
+    }, { onConflict: "match_external_id,map_number,round_number" });
+    legacyXError(saved.error, "Unable to save the round");
+    res.set("Cache-Control", "no-store");
+    res.status(202).json({ accepted: true });
   }));
   router.post("/plugin/matchzy/events", pluginRoute("stats:write", async (req, res, plugin) => {
     z.object({ event_id: pluginEventIdSchema, event: z.string().min(1).max(64) }).passthrough().parse(req.body);
