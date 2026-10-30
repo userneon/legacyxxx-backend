@@ -701,11 +701,20 @@ async function mapPenaltiesWithProfileIdentities(rows: DbRow[], database: Return
 
 /** What a review is about (owner request 2026-10-30); "general" is where the older whole-star reviews sit. */
 const FEEDBACK_CATEGORIES = ["general", "servers", "matches", "skinchanger", "shop", "website"] as const;
+const feedbackInputSchema = z.object({
+  // One decimal (4.6, 4.7) from the slider; the category says what the review is about.
+  rating: z.number().min(1).max(5).refine((value) => Math.abs(value * 10 - Math.round(value * 10)) < 1e-9, "rating takes one decimal"),
+  category: z.enum(FEEDBACK_CATEGORIES).default("general"),
+  message: z.string().trim().min(1).max(4000),
+});
+const FEEDBACK_COLUMNS = "id,user_id,name,rating,category,message,created_at,edited_at,reply,reply_by,reply_by_name,reply_role,replied_at";
 
 function mapFeedback(feedback: DbRow, reviewerProfiles: Map<string, { steamId: string; avatar: string }> = new Map()) {
   const userId = textValue(feedback.user_id);
   const reviewer = reviewerProfiles.get(userId);
-  return { id: textValue(feedback.id), steamId: reviewer?.steamId || undefined, avatar: reviewer?.avatar || undefined, name: textValue(feedback.name), rating: numberValue(feedback.rating), category: textValue(feedback.category) || "general", message: textValue(feedback.message), date: timestampValue(feedback.created_at) };
+  return { id: textValue(feedback.id), steamId: reviewer?.steamId || undefined, avatar: reviewer?.avatar || undefined, name: textValue(feedback.name), rating: numberValue(feedback.rating), category: textValue(feedback.category) || "general", message: textValue(feedback.message), date: timestampValue(feedback.created_at),
+    editedAt: feedback.edited_at ? timestampValue(feedback.edited_at) : undefined,
+    reply: textValue(feedback.reply) ? { message: textValue(feedback.reply), by: textValue(feedback.reply_by_name) || "Staff", role: textValue(feedback.reply_role) || "ADMIN", date: feedback.replied_at ? timestampValue(feedback.replied_at) : undefined } : undefined };
 }
 
 function noBody(req: Request) {
@@ -878,7 +887,11 @@ export function createLegacyXRouter() {
     legacyXError(error, "Unable to resolve feedback reviewer profiles");
     const reviewerProfiles = new Map(((data ?? []) as DbRow[]).map(user => [textValue(user.id), { steamId: textValue(user.steam_id), avatar: textValue(user.avatar) }]));
     const worn = await equippedCosmeticsFor(userIds);
-    return rows.map(row => ({ ...mapFeedback(row, reviewerProfiles), ...lookOf(worn, textValue(row.user_id)) }));
+    // The reviewer's rank and matches played, from their real ranked profile (a player with none simply shows no rank).
+    const { data: ranked, error: rankedError } = await db().from("competitive_player_profiles").select("user_id,rank_id,rank_name,rank_image_key,current_exp,matches_completed").in("user_id", userIds);
+    if (rankedError) console.warn("[legacy-x-api] reviewer ranks unavailable", rankedError.message);
+    const rankByUser = new Map(((ranked ?? []) as DbRow[]).map(profile => [textValue(profile.user_id), { rankId: numberValue(profile.rank_id), rankName: textValue(profile.rank_name), rankImageKey: textValue(profile.rank_image_key), currentExp: numberValue(profile.current_exp), matches: numberValue(profile.matches_completed) }]));
+    return rows.map(row => ({ ...mapFeedback(row, reviewerProfiles), ...lookOf(worn, textValue(row.user_id)), player: rankByUser.get(textValue(row.user_id)) }));
   };
 
   router.use(rateLimit({
@@ -4355,12 +4368,79 @@ export function createLegacyXRouter() {
     if (error) { if (!isMissingTableError(error)) console.warn("[legacy-x-api] reactions unavailable", error.message); return tallyReactions([], viewerId); }
     return tallyReactions((data ?? []) as DbRow[], viewerId);
   };
+  /** Owner, Manager or Admin with an active grant: who may answer a review. */
+  const feedbackStaffRole = async (userId: string) => {
+    const { data, error } = await db().from("staff").select("role").eq("user_id", userId).eq("status", "active").maybeSingle();
+    if (error) { console.warn("[legacy-x-api] staff role unavailable", error.message); return null; }
+    const role = textValue(data?.role);
+    return role === "OWNER" || role === "MANAGER" || role === "ADMIN" ? role : null;
+  };
+  const loadFeedbackEntry = async (feedbackId: string, viewerId: string) => {
+    const { data, error } = await db().from("feedback").select(FEEDBACK_COLUMNS).eq("id", feedbackId).maybeSingle();
+    legacyXError(error, "Unable to load the review");
+    if (!data) apiError(404, "Review was not found");
+    const [entry] = await mapFeedbackRows([data as DbRow]);
+    const tally = await loadReactions([feedbackId], viewerId);
+    const role = await feedbackStaffRole(viewerId);
+    return { ...entry!, ...tally.summaryFor(feedbackId), mine: textValue((data as DbRow).user_id) === viewerId, canReply: role !== null, canDelete: textValue((data as DbRow).user_id) === viewerId || role === "OWNER" || role === "MANAGER" };
+  };
   router.get("/feedback", optionalUserRoute(async (_req, res, user) => {
-    const { data, error } = await db().from("feedback").select("id,user_id,name,rating,category,message,created_at").order("created_at", { ascending: false });
+    const { data, error } = await db().from("feedback").select(FEEDBACK_COLUMNS).order("created_at", { ascending: false });
     legacyXError(error, "Unable to load feedback");
     const entries = await mapFeedbackRows((data ?? []) as DbRow[]);
     const tally = await loadReactions(entries.map((entry) => entry.id), user?.id ?? null);
-    res.json(entries.map((entry) => ({ ...entry, ...tally.summaryFor(entry.id) })));
+    const viewerRole = user ? await feedbackStaffRole(user.id) : null;
+    const owners = new Map(((data ?? []) as DbRow[]).map((row) => [textValue(row.id), textValue(row.user_id)]));
+    res.json(entries.map((entry) => ({
+      ...entry,
+      ...tally.summaryFor(entry.id),
+      mine: Boolean(user) && owners.get(entry.id) === user!.id,
+      canReply: viewerRole !== null,
+      canDelete: Boolean(user) && (owners.get(entry.id) === user!.id || viewerRole === "OWNER" || viewerRole === "MANAGER"),
+    })));
+  }));
+  // The author edits or removes their own review; an Owner or Manager can remove any.
+  router.put("/feedback/:feedbackId", userRoute(async (req, res, user) => {
+    const feedbackId = userIdSchema.parse(req.params.feedbackId);
+    const input = feedbackInputSchema.parse(req.body);
+    const { data: existing, error: existingError } = await db().from("feedback").select("id,user_id").eq("id", feedbackId).maybeSingle();
+    legacyXError(existingError, "Unable to load the review");
+    if (!existing) apiError(404, "Review was not found");
+    if (textValue(existing.user_id) !== user.id) apiError(403, "Only the author can edit a review");
+    const { error } = await db().from("feedback").update({ rating: Math.round(input.rating * 10) / 10, category: input.category, message: input.message, edited_at: new Date().toISOString() }).eq("id", feedbackId);
+    legacyXError(error, "Unable to edit the review");
+    res.json(await loadFeedbackEntry(feedbackId, user.id));
+  }));
+  router.delete("/feedback/:feedbackId", userRoute(async (req, res, user) => {
+    const feedbackId = userIdSchema.parse(req.params.feedbackId);
+    const { data: existing, error: existingError } = await db().from("feedback").select("id,user_id").eq("id", feedbackId).maybeSingle();
+    legacyXError(existingError, "Unable to load the review");
+    if (!existing) apiError(404, "Review was not found");
+    const role = await feedbackStaffRole(user.id);
+    if (textValue(existing.user_id) !== user.id && role !== "OWNER" && role !== "MANAGER") apiError(403, "You cannot remove this review");
+    const { error } = await db().from("feedback").delete().eq("id", feedbackId);
+    legacyXError(error, "Unable to remove the review");
+    res.status(204).end();
+  }));
+  // The staff reply under a review (Admin and above): one per review, written again to change it.
+  router.put("/feedback/:feedbackId/reply", userRoute(async (req, res, user) => {
+    const feedbackId = userIdSchema.parse(req.params.feedbackId);
+    const input = z.object({ message: z.string().trim().min(1).max(1000) }).strict().parse(req.body);
+    const role = await feedbackStaffRole(user.id);
+    if (!role) apiError(403, "Only staff can reply to a review");
+    const { data: existing, error: existingError } = await db().from("feedback").select("id").eq("id", feedbackId).maybeSingle();
+    legacyXError(existingError, "Unable to load the review");
+    if (!existing) apiError(404, "Review was not found");
+    const { error } = await db().from("feedback").update({ reply: input.message, reply_by: user.id, reply_by_name: user.username, reply_role: role, replied_at: new Date().toISOString() }).eq("id", feedbackId);
+    legacyXError(error, "Unable to save the reply");
+    res.json(await loadFeedbackEntry(feedbackId, user.id));
+  }));
+  router.delete("/feedback/:feedbackId/reply", userRoute(async (req, res, user) => {
+    const feedbackId = userIdSchema.parse(req.params.feedbackId);
+    if (!(await feedbackStaffRole(user.id))) apiError(403, "Only staff can remove a reply");
+    const { error } = await db().from("feedback").update({ reply: null, reply_by: null, reply_by_name: null, reply_role: null, replied_at: null }).eq("id", feedbackId);
+    legacyXError(error, "Unable to remove the reply");
+    res.json(await loadFeedbackEntry(feedbackId, user.id));
   }));
   // One reaction per player per review: send one to set or change it, null to take it back.
   router.put("/feedback/:feedbackId/reaction", userRoute(async (req, res, user) => {
@@ -4379,12 +4459,7 @@ export function createLegacyXRouter() {
     res.json((await loadReactions([feedbackId], user.id)).summaryFor(feedbackId));
   }));
   router.post("/feedback", userRoute(async (req, res, user) => {
-    const input = z.object({
-      // One decimal (4.6, 4.7) from the slider; the category says what the review is about.
-      rating: z.number().min(1).max(5).refine((value) => Math.abs(value * 10 - Math.round(value * 10)) < 1e-9, "rating takes one decimal"),
-      category: z.enum(FEEDBACK_CATEGORIES).default("general"),
-      message: z.string().trim().min(1).max(4000),
-    }).parse(req.body);
+    const input = feedbackInputSchema.parse(req.body);
     // Before the launch the weekly limit is off, so a review is written directly; from then on the database function enforces it.
     if (!cooldownsActive()) {
       const { data: row, error: insertError } = await db().from("feedback").insert({ user_id: user.id, name: user.username, rating: Math.round(input.rating * 10) / 10, category: input.category, message: input.message }).select("id,user_id,name,rating,category,message,created_at").single();
