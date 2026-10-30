@@ -262,8 +262,10 @@ export function calculateMatchExp(input: RankedMatchInput): MatchExpResult {
   const invalidReasons: string[] = [];
   const appliesExp = input.mode !== "fun";
   if (!input.finishedNormally) invalidReasons.push("not_finished_normally");
-  const atEnd = (team: TeamKey) => humans.filter((player) => player.team === team && !player.leftEarly && player.roundsPlayed > 0).length;
-  if (input.humanPlayersAtEnd < 2 * MIN_PLAYERS_PER_TEAM || atEnd("team1") < MIN_PLAYERS_PER_TEAM || atEnd("team2") < MIN_PLAYERS_PER_TEAM) {
+  // Each team needs at least MIN_PLAYERS_PER_TEAM humans who played, counting the ones who left early: when the other side walks out, the
+  // team that stayed still wins its EXP (the leavers take their −25). Only a match that was never 2v2 or more is not ranked.
+  const played = (team: TeamKey) => humans.filter((player) => player.team === team && player.roundsPlayed > 0).length;
+  if (played("team1") < MIN_PLAYERS_PER_TEAM || played("team2") < MIN_PLAYERS_PER_TEAM) {
     invalidReasons.push("too_few_human_players");
   }
   if (totalRounds < MIN_ROUNDS) invalidReasons.push("too_few_rounds");

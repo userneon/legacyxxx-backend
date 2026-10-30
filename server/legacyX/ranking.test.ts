@@ -259,7 +259,6 @@ describe("calculateMatchExp", () => {
     const players = lobby((id) => (id === 2 ? { leftEarly: true, roundsPlayed: 4 } : {}));
     for (const invalid of [
       { finishedNormally: false },
-      { humanPlayersAtEnd: 3 },
       { roundsWon: { team1: 7, team2: 5 } },
     ] satisfies Partial<RankedMatchInput>[]) {
       const result = calculateMatchExp(match({ players, ...invalid }));
@@ -287,7 +286,13 @@ describe("calculateMatchExp", () => {
     expect(duel.invalidReasons).toContain("too_few_human_players");
     expect(find(duel, "u1")).toMatchObject({ expDelta: 0, countsAsRankedMatch: false });
     // One side down to a single human at the end (the rest left for good) is not a match either.
-    const alone = calculateMatchExp(match({ players: [player(1, "team1"), player(2, "team1", { leftEarly: true, roundsPlayed: 4 }), player(3, "team2"), player(4, "team2"), player(5, "team2")], humanPlayersAtEnd: 4 }));
+    // A team that walked out still counts as a team: the other side keeps its EXP, the leavers take their −25.
+    const walkout = calculateMatchExp(match({ players: [player(1, "team1"), player(2, "team1"), player(3, "team2", { leftEarly: true, roundsPlayed: 4 }), player(4, "team2", { leftEarly: true, roundsPlayed: 10 })], humanPlayersAtEnd: 2 }));
+    expect(walkout.valid).toBe(true);
+    expect(find(walkout, "u1").countsAsRankedMatch).toBe(true);
+    expect(find(walkout, "u3").expDelta).toBeLessThan(0);
+    // A team that never had two humans playing is not ranked.
+    const alone = calculateMatchExp(match({ players: [player(1, "team1"), player(3, "team2"), player(4, "team2"), player(5, "team2")], humanPlayersAtEnd: 4 }));
     expect(alone.invalidReasons).toContain("too_few_human_players");
   });
 
