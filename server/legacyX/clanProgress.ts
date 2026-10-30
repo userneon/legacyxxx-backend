@@ -1,15 +1,13 @@
 /**
- * Clan level, stats, achievements and Clan War rating (owner request 2026-10-25, "clan features are limited").
+ * Clan level, stats and achievements (owner request 2026-10-25, "clan features are limited"; Clan Wars were removed 2026-10-30).
  *
- * - Level: a clan earns XP when its members finish ranked matches while in the clan (win 25, draw 15, loss 10, a leaver nothing) and
- *   when it wins (100) or plays (40) a Clan War. Levels unlock extra member slots (`LEVEL_PERKS`), given once per level.
+ * - Level: a clan earns XP when its members finish ranked matches while in the clan (win 25, draw 15, loss 10, a leaver nothing).
+ *   Levels unlock extra member slots (`LEVEL_PERKS`), given once per level.
  * - Stats: summed from the members' own ranked match rows since they joined; nothing is estimated.
  * - Achievements: thresholds over those real totals.
- * - Clan War: an Elo rating (start 1000, K 32) moved only by finished wars.
  */
 
 export const MATCH_XP = { win: 25, draw: 15, loss: 10 } as const;
-export const WAR_XP = { win: 100, played: 40 } as const;
 
 /** XP needed to reach each level (index = level - 1): every level costs 100 more than the one before. */
 export const LEVEL_FLOORS = [0, 250, 600, 1050, 1600, 2250, 3000, 3850, 4800, 5850, 7000, 8250, 9600, 11050, 12600] as const;
@@ -37,12 +35,6 @@ export function levelFor(xp: number) {
 export function matchXp(outcome: string, leaver: boolean) {
   if (leaver) return 0;
   return outcome === "win" ? MATCH_XP.win : outcome === "draw" ? MATCH_XP.draw : MATCH_XP.loss;
-}
-
-/** Elo change for side A after a war (score 1 win, 0.5 draw, 0 loss); side B moves by the opposite. */
-export function warRatingChange(ratingA: number, ratingB: number, scoreA: 0 | 0.5 | 1, k = 32) {
-  const expected = 1 / (1 + 10 ** ((ratingB - ratingA) / 400));
-  return Math.round(k * (scoreA - expected));
 }
 
 export type ClanMatchRow = {
@@ -115,14 +107,13 @@ export function clanStats(rows: ClanMatchRow[], now = Date.now()) {
   };
 }
 
-type AchievementInput = { wins: number; matches: number; aces: number; clutches: number; warsWon: number; level: number; members: number };
+type AchievementInput = { wins: number; matches: number; aces: number; clutches: number; level: number; members: number };
 
 const LADDERS: ReadonlyArray<{ id: string; title: string; key: keyof AchievementInput; goals: number[] }> = [
   { id: "wins", title: "Wins", key: "wins", goals: [10, 50, 100, 500] },
   { id: "matches", title: "Matches played", key: "matches", goals: [50, 250, 1000] },
   { id: "aces", title: "Aces", key: "aces", goals: [1, 10, 50] },
   { id: "clutches", title: "Clutches", key: "clutches", goals: [10, 50, 200] },
-  { id: "wars", title: "Clan Wars won", key: "warsWon", goals: [1, 10, 50] },
   { id: "level", title: "Clan level", key: "level", goals: [5, 10, 15] },
   { id: "members", title: "Members", key: "members", goals: [10, 25] },
 ];
@@ -135,24 +126,4 @@ export function clanAchievements(input: AchievementInput) {
     const goal = ladder.goals[Math.min(tier, ladder.goals.length - 1)];
     return { id: ladder.id, title: ladder.title, tier, tiers: ladder.goals.length, value, goal, complete: tier === ladder.goals.length };
   });
-}
-
-/**
- * Which clan each team of a finished match stands for, when it is a Clan War: at least `min(3, team size)` players of a team from
- * one clan, and the two teams from different clans. Null for any other match.
- */
-export function warSides(players: Array<{ userId: string; team: string }>, clanOf: Map<string, string>) {
-  const teams = new Map<string, string[]>();
-  for (const player of players) teams.set(player.team, [...(teams.get(player.team) ?? []), player.userId]);
-  if (teams.size !== 2) return null;
-  const sides: Array<{ team: string; clanId: string }> = [];
-  for (const [team, ids] of Array.from(teams.entries())) {
-    const counts = new Map<string, number>();
-    for (const id of ids) { const clan = clanOf.get(id); if (clan) counts.set(clan, (counts.get(clan) ?? 0) + 1); }
-    const [clanId, size] = Array.from(counts.entries()).sort((a, b) => b[1] - a[1])[0] ?? [null, 0];
-    if (!clanId || size < Math.min(3, ids.length)) return null;
-    sides.push({ team, clanId });
-  }
-  if (sides[0].clanId === sides[1].clanId) return null;
-  return sides;
 }

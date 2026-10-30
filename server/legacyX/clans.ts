@@ -59,7 +59,6 @@ export function describeClanAction(action: string, detail: string | null) {
     banner: "changed the banner",
     moderated: "was moderated by staff",
     bank: "used the clan bank",
-    war: "Clan War",
   };
   const base = text[action] ?? action;
   return detail ? `${base} (${detail})` : base;

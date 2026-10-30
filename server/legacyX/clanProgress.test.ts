@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { clanAchievements, clanStats, levelFor, matchXp, warRatingChange, warSides } from "./clanProgress";
+import { clanAchievements, clanStats, levelFor, matchXp } from "./clanProgress";
 
 describe("clan level", () => {
   it("starts at level 1 and climbs at each floor", () => {
@@ -14,15 +14,6 @@ describe("clan level", () => {
     expect(matchXp("draw", false)).toBe(15);
     expect(matchXp("loss", false)).toBe(10);
     expect(matchXp("win", true)).toBe(0);
-  });
-});
-
-describe("war rating", () => {
-  it("moves equal ratings by half K and favours the underdog", () => {
-    expect(warRatingChange(1000, 1000, 1)).toBe(16);
-    expect(warRatingChange(1000, 1000, 0)).toBe(-16);
-    expect(warRatingChange(1000, 1000, 0.5)).toBe(0);
-    expect(warRatingChange(900, 1100, 1)).toBeGreaterThan(16);
   });
 });
 
@@ -42,23 +33,8 @@ describe("clan stats", () => {
 
 describe("achievements", () => {
   it("reports the tier reached and the next goal", () => {
-    const list = clanAchievements({ wins: 60, matches: 0, aces: 0, clutches: 0, warsWon: 0, level: 15, members: 3 });
+    const list = clanAchievements({ wins: 60, matches: 0, aces: 0, clutches: 0, level: 15, members: 3 });
     expect(list.find((entry) => entry.id === "wins")).toMatchObject({ tier: 2, goal: 100, value: 60, complete: false });
     expect(list.find((entry) => entry.id === "level")).toMatchObject({ tier: 3, complete: true });
-  });
-});
-
-describe("war sides", () => {
-  const clans = new Map([["a1", "A"], ["a2", "A"], ["a3", "A"], ["b1", "B"], ["b2", "B"], ["b3", "B"], ["x", "C"]]);
-  it("finds two clans with three players each", () => {
-    const players = ["a1", "a2", "a3", "x", "y"].map((userId) => ({ userId, team: "team1" })).concat(["b1", "b2", "b3", "z", "w"].map((userId) => ({ userId, team: "team2" })));
-    expect(warSides(players, clans)).toEqual([{ team: "team1", clanId: "A" }, { team: "team2", clanId: "B" }]);
-  });
-  it("is not a war with too few clan players or the same clan on both sides", () => {
-    expect(warSides([{ userId: "a1", team: "t" }, { userId: "a2", team: "t" }, { userId: "y", team: "t" }, { userId: "b1", team: "c" }, { userId: "b2", team: "c" }, { userId: "b3", team: "c" }], clans)).toBeNull();
-    expect(warSides([{ userId: "a1", team: "t" }, { userId: "a2", team: "c" }], clans)).toBeNull();
-  });
-  it("accepts 2v2 wars made of clan players only", () => {
-    expect(warSides([{ userId: "a1", team: "t" }, { userId: "a2", team: "t" }, { userId: "b1", team: "c" }, { userId: "b2", team: "c" }], clans)).toHaveLength(2);
   });
 });
