@@ -102,9 +102,10 @@ export interface CommunityEntry { position: number; discordId: string; name: str
  *  those with none show 0. Discord members who never linked are not listed. */
 export async function loadCommunity(db: Db, sort: "boosts" | "invites", limit = 1000): Promise<CommunityEntry[]> {
   const column = sort === "boosts" ? "boosts" : "invites";
-  const { data: links, error: linkError } = await db.from("discord_links").select("discord_id,discord_name,users(steam_id,username,avatar)").limit(5000);
+  const { data: links, error: linkError } = await db.from("discord_links").select("discord_id,discord_name,in_guild,users(steam_id,username,avatar)").limit(5000);
   legacyXError(linkError, "Unable to load Discord links");
-  const linked = (links ?? []) as Row[];
+  // Only members who are linked and still on the Discord server (the bot says false once someone leaves; unknown counts as present).
+  const linked = ((links ?? []) as Row[]).filter((link) => link.in_guild !== false);
   if (linked.length === 0) return [];
   const stats = new Map<string, Row>();
   const discordIds = linked.map((link) => text(link.discord_id));
