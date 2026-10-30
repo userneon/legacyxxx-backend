@@ -699,10 +699,13 @@ async function mapPenaltiesWithProfileIdentities(rows: DbRow[], database: Return
   return rows.map(row => mapPenalty(row, adminProfiles, moderationStatuses, lifts));
 }
 
+/** What a review is about (owner request 2026-10-30); "general" is where the older whole-star reviews sit. */
+const FEEDBACK_CATEGORIES = ["general", "servers", "matches", "skinchanger", "shop", "website"] as const;
+
 function mapFeedback(feedback: DbRow, reviewerProfiles: Map<string, { steamId: string; avatar: string }> = new Map()) {
   const userId = textValue(feedback.user_id);
   const reviewer = reviewerProfiles.get(userId);
-  return { id: textValue(feedback.id), steamId: reviewer?.steamId || undefined, avatar: reviewer?.avatar || undefined, name: textValue(feedback.name), rating: numberValue(feedback.rating), message: textValue(feedback.message), date: timestampValue(feedback.created_at) };
+  return { id: textValue(feedback.id), steamId: reviewer?.steamId || undefined, avatar: reviewer?.avatar || undefined, name: textValue(feedback.name), rating: numberValue(feedback.rating), category: textValue(feedback.category) || "general", message: textValue(feedback.message), date: timestampValue(feedback.created_at) };
 }
 
 function noBody(req: Request) {
@@ -4353,7 +4356,7 @@ export function createLegacyXRouter() {
     return tallyReactions((data ?? []) as DbRow[], viewerId);
   };
   router.get("/feedback", optionalUserRoute(async (_req, res, user) => {
-    const { data, error } = await db().from("feedback").select("id,user_id,name,rating,message,created_at").order("created_at", { ascending: false });
+    const { data, error } = await db().from("feedback").select("id,user_id,name,rating,category,message,created_at").order("created_at", { ascending: false });
     legacyXError(error, "Unable to load feedback");
     const entries = await mapFeedbackRows((data ?? []) as DbRow[]);
     const tally = await loadReactions(entries.map((entry) => entry.id), user?.id ?? null);
@@ -4376,10 +4379,15 @@ export function createLegacyXRouter() {
     res.json((await loadReactions([feedbackId], user.id)).summaryFor(feedbackId));
   }));
   router.post("/feedback", userRoute(async (req, res, user) => {
-    const input = z.object({ rating: z.number().int().min(1).max(5), message: z.string().trim().min(1).max(4000) }).parse(req.body);
+    const input = z.object({
+      // One decimal (4.6, 4.7) from the slider; the category says what the review is about.
+      rating: z.number().min(1).max(5).refine((value) => Math.abs(value * 10 - Math.round(value * 10)) < 1e-9, "rating takes one decimal"),
+      category: z.enum(FEEDBACK_CATEGORIES).default("general"),
+      message: z.string().trim().min(1).max(4000),
+    }).parse(req.body);
     // Before the launch the weekly limit is off, so a review is written directly; from then on the database function enforces it.
     if (!cooldownsActive()) {
-      const { data: row, error: insertError } = await db().from("feedback").insert({ user_id: user.id, name: user.username, rating: input.rating, message: input.message }).select("id,user_id,name,rating,message,created_at").single();
+      const { data: row, error: insertError } = await db().from("feedback").insert({ user_id: user.id, name: user.username, rating: Math.round(input.rating * 10) / 10, category: input.category, message: input.message }).select("id,user_id,name,rating,category,message,created_at").single();
       legacyXError(insertError, "Unable to submit feedback");
       res.status(201).json(mapFeedback(row as DbRow, new Map([[user.id, { steamId: user.steamId, avatar: "" }]])));
       return;
@@ -4387,8 +4395,9 @@ export function createLegacyXRouter() {
     const { data, error } = await db().rpc("submit_feedback_weekly", {
       p_user_id: user.id,
       p_name: user.username,
-      p_rating: input.rating,
+      p_rating: Math.round(input.rating * 10) / 10,
       p_message: input.message,
+      p_category: input.category,
     });
     legacyXError(error, "Unable to submit feedback");
     const outcome = (data ?? {}) as { accepted?: boolean; next_eligible_at?: string; feedback?: DbRow };
