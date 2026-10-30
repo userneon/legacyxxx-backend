@@ -73,7 +73,7 @@ describe("buildRankedInput", () => {
     const exp = calculateMatchExp(built.input);
     // The fixed −25 plus what they showed in their 6 rounds (±8); here they played poorly next to the rest of the lobby.
     const delta = exp.players.find((player) => player.userId === left.user_id)!.expDelta;
-    expect(delta).toBeLessThanOrEqual(-17);
+    expect(delta).toBe(-10);
     expect(delta).toBeGreaterThanOrEqual(-33);
   });
 
@@ -124,6 +124,16 @@ describe("competitive_result v2 (current plugins)", () => {
   const v2 = (overrides: Record<string, unknown> = {}, players = Array.from({ length: 10 }, (_, index) => v2Player(index + 1, index < 5 ? "team1" : "team2"))) => rankedResultSchema.parse({
     winner_team: "team1",
     competitive_result: { schema_version: 2, mode: "5v5", finished_normally: true, human_players_at_end: 10, total_rounds: 22, team1: { rounds_won: 13 }, team2: { rounds_won: 9 }, unavailable_fields: [], players, ...overrides },
+  });
+
+  it("keeps the match ranked for everyone when one registered player has no telemetry row (they count as a leaver)", () => {
+    const nine = Array.from({ length: 9 }, (_, index) => v2Player(index + 1, index < 5 ? "team1" : "team2"));
+    const built = buildRankedInput(v2({}, nine), roster, [], finishedAt);
+    expect(built.unrankable).toEqual([]);
+    const missing = built.input.players.find((player) => player.steamId === roster[9].steam_id);
+    expect(missing?.leftEarly).toBe(true);
+    const outcome = calculateMatchExp(built.input);
+    expect(outcome.players.find((player) => player.steamId === roster[9].steam_id)?.expDelta).toBe(-10);
   });
 
   it("maps v2 telemetry onto the rank formula and applies EXP", () => {

@@ -12,7 +12,7 @@ export const RANK_CALCULATION_VERSION = "legacyx-exp-1.1";
 export const STARTING_EXP = 1000;
 export const PRO_LEAGUE_UNLOCK_EXP = 1400;
 export const PRO_LEAGUE_KEEP_EXP = 1350;
-export const LEAVER_DELTA = -25;
+export const LEAVER_DELTA = -10;
 export const CALIBRATION_MATCHES = 10;
 /** A match counts with any team sizes (4v5, 3v3, 2v2, 2v5) as long as each team still has this many humans at the end: a 1v1 never counts. */
 export const MIN_PLAYERS_PER_TEAM = 2;
@@ -263,7 +263,7 @@ export function calculateMatchExp(input: RankedMatchInput): MatchExpResult {
   const appliesExp = input.mode !== "fun";
   if (!input.finishedNormally) invalidReasons.push("not_finished_normally");
   // Each team needs at least MIN_PLAYERS_PER_TEAM humans who played, counting the ones who left early: when the other side walks out, the
-  // team that stayed still wins its EXP (the leavers take their −25). Only a match that was never 2v2 or more is not ranked.
+  // team that stayed still wins its EXP (the leavers take their −10). Only a match that was never 2v2 or more is not ranked.
   const played = (team: TeamKey) => humans.filter((player) => player.team === team && player.roundsPlayed > 0).length;
   if (played("team1") < MIN_PLAYERS_PER_TEAM || played("team2") < MIN_PLAYERS_PER_TEAM) {
     invalidReasons.push("too_few_human_players");
@@ -302,15 +302,9 @@ export function calculateMatchExp(input: RankedMatchInput): MatchExpResult {
     };
 
     if (!appliesExp) return settle(0, { ...base, rule: "fun_mode" }, false);
-    // A leaver who never came back loses a fixed 25 and it counts as a loss — even in an invalid match.
-    if (player.leftEarly) {
-      // What they showed before leaving counts too: the usual per-round impact against the lobby (±8) on top of the fixed −25.
-      // In a match that does not count (or if they never played a round) there is no lobby to compare with: the −25 stands alone.
-      if (!valid || player.roundsPlayed <= 0) return settle(LEAVER_DELTA, { ...base, rule: "leaver" }, true, "loss");
-      const score = scores.get(player.userId) ?? 0;
-      const { z, performance } = performanceTerm(score, lobbyMean, lobbyStd);
-      return settle(LEAVER_DELTA + performance, { ...base, performance, score: round2(score), z: round2(z), rule: "leaver" }, true, "loss");
-    }
+    // A leaver who never came back loses a fixed 10 and it counts as a loss — even in an invalid match. The rest of the match is not touched
+    // by it: the players who stayed are paid as usual (owner decision 2026-10-30, it was 25 plus the Performance term).
+    if (player.leftEarly) return settle(LEAVER_DELTA, { ...base, rule: "leaver" }, true, "loss");
     if (!valid) return settle(0, { ...base, rule: "invalid_match" }, false);
     if (totalRounds > 0 && player.roundsPlayed / totalRounds < MIN_PARTICIPATION) {
       return settle(0, { ...base, rule: "low_participation" }, false);

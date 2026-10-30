@@ -224,22 +224,16 @@ describe("calculateMatchExp", () => {
     expect(find(result, "u6").expDelta).toBe(-30);
   });
 
-  it("charges a leaver the fixed −25 and adds what they showed before leaving (±8) as a loss", () => {
-    const good = calculateMatchExp(match({ players: lobby((id) => (id === 3 ? { leftEarly: true, roundsPlayed: 6, kills: 25 } : {})), humanPlayersAtEnd: 9 }));
-    const goodLeaver = find(good, "u3");
-    expect(goodLeaver.breakdown.performance).toBeGreaterThan(0);
-    expect(goodLeaver.expDelta).toBe(LEAVER_DELTA + goodLeaver.breakdown.performance);
-    expect(goodLeaver.expDelta).toBeGreaterThan(LEAVER_DELTA);   // played well: the penalty is eased
-    expect(goodLeaver.expDelta).toBeLessThan(0);                 // but leaving is never a gain
-    expect(goodLeaver.outcome).toBe("loss");
-    expect(goodLeaver.breakdown).toMatchObject({ rule: "leaver", result: 0 });
-    expect(goodLeaver.countsAsRankedMatch).toBe(true);
-
-    const bad = calculateMatchExp(match({ players: lobby((id) => (id === 3 ? { leftEarly: true, roundsPlayed: 6, kills: 0, deaths: 6, assists: 0 } : {})), humanPlayersAtEnd: 9 }));
-    const badLeaver = find(bad, "u3");
-    expect(badLeaver.breakdown.performance).toBeLessThan(0);
-    expect(badLeaver.expDelta).toBeLessThan(LEAVER_DELTA);       // played badly: the penalty is deeper
-    expect(badLeaver.expDelta).toBeGreaterThanOrEqual(LEAVER_DELTA - 8);
+  it("charges a leaver a flat 10 as a loss, however they played", () => {
+    for (const stats of [{ kills: 25 }, { kills: 0, deaths: 6, assists: 0 }, { roundsPlayed: 0 }]) {
+      const result = calculateMatchExp(match({ players: lobby((id) => (id === 3 ? { leftEarly: true, roundsPlayed: 6, ...stats } : {})), humanPlayersAtEnd: 9 }));
+      const leaver = find(result, "u3");
+      expect(leaver.expDelta).toBe(LEAVER_DELTA);
+      expect(LEAVER_DELTA).toBe(-10);
+      expect(leaver.outcome).toBe("loss");
+      expect(leaver.breakdown).toMatchObject({ rule: "leaver", result: 0 });
+      expect(leaver.countsAsRankedMatch).toBe(true);
+    }
   });
 
   it("halves only a loss for a team that played ≥3 rounds short-handed", () => {

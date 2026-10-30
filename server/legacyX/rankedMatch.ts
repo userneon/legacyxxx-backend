@@ -203,13 +203,14 @@ export function buildRankedInputV2(
   for (const participant of participants) {
     const team: TeamKey = participant.team_key === "team2" ? "team2" : "team1";
     const reported = bySteamId.get(participant.steam_id);
-    if (!reported) unrankable.push(`missing_player:${participant.steam_id}`);
+    // A registered player with no telemetry row is a player who was not there at the end (they dropped before the server kept a row): they
+    // are a leaver, and the match is still ranked for everyone else. One missing row used to make the whole match not ranked.
     const kills = counter(reported, "kills");
     const deaths = counter(reported, "deaths");
     const assists = counter(reported, "assists");
     const clutchesAll = counter(reported, "clutches_won");
     const clutchesBig = counter(reported, "clutches_won_1v3_plus");
-    const leftEarly = reported?.left_early === true;
+    const leftEarly = reported === undefined || reported.left_early === true;
     if (leftEarly && deriveShortHanded) {
       const leftAt = reported?.left_at_round ?? reported?.rounds_played ?? 0;
       shortHandedRounds[team] = Math.max(shortHandedRounds[team], Math.max(0, telemetry.total_rounds - leftAt));
