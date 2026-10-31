@@ -1478,20 +1478,29 @@ export function createLegacyXRouter() {
     ]);
     legacyXError(sessionResult.error || penaltyCount.error, "Unable to load profile");
 
-    // Playing now: an open session on a server whose heartbeat is fresh.
-    let presence: { serverId: string; serverName: string; connectAddress: string | null; map: string } | null = null;
+    // Everything that is left is independent of each other, so it is asked together instead of one after the other.
     const session = sessionResult.data as DbRow | null;
-    if (session) {
-      const live = (await loadPlayServers()).find((server) => server.id === textValue(session.server_id) && server.status !== "offline");
-      if (live) presence = { serverId: live.id, serverName: live.name, connectAddress: live.connectAddress, map: live.map };
-    }
-
-    const ownerExtras = role === "Owner" ? await loadOwnerProfileExtras(userId, viewer?.id ?? null) : {};
-    // Content creator badge and channel links; best effort, so a missing table never breaks the profile.
-    const creatorResult = await db().from("content_creators").select("tier,bio,links").eq("user_id", userId).maybeSingle();
+    const [presence, ownerExtras, creatorResult, mine, founder, discordLinked, discordBoosting, boosterPlace, clanTag, benchmark, penalties] = await Promise.all([
+      (async () => {
+        // Playing now: an open session on a server whose heartbeat is fresh.
+        if (!session) return null;
+        const live = (await loadPlayServers()).find((server) => server.id === textValue(session.server_id) && server.status !== "offline");
+        return live ? { serverId: live.id, serverName: live.name, connectAddress: live.connectAddress, map: live.map } : null;
+      })(),
+      role === "Owner" ? loadOwnerProfileExtras(userId, viewer?.id ?? null) : Promise.resolve({}),
+      // Content creator badge and channel links; best effort, so a missing table never breaks the profile.
+      db().from("content_creators").select("tier,bio,links").eq("user_id", userId).maybeSingle(),
+      equippedCosmeticsFor([textValue(user.id)]).then((map) => map.get(textValue(user.id))),
+      founderNumberOf(db(), textValue(user.id)),
+      discordLinkedUserIds(db(), [userId]).then((ids) => ids.has(userId)),
+      isBoostingNow(db(), userId),
+      boosterPlaceOf(db(), userId),
+      clanTagsFor([userId]).then((map) => map.get(userId) ?? null),
+      hidden.includes("stats") ? Promise.resolve(null) : statBenchmark(),
+      mapPenaltiesWithProfileIdentities((penaltiesResult.data ?? []) as DbRow[], db()),
+    ]);
     const creatorRow = creatorResult.error ? null : (creatorResult.data as DbRow | null);
     const creatorTierValue = creatorTier(creatorRow?.tier);
-    const penalties = await mapPenaltiesWithProfileIdentities((penaltiesResult.data ?? []) as DbRow[], db());
     const activePenalty = penalties.find((penalty) => !penalty.isUnbanned && (penalty.isPermanent || !penalty.expiresAt || Date.parse(String(penalty.expiresAt)) > Date.now()));
     res.json({
       user: {
@@ -1503,7 +1512,7 @@ export function createLegacyXRouter() {
         memberSince: timestampValue(user.created_at) || null,
         steamBackground: steamMedia.background,
         steamMedia: { backgroundVideo: steamMedia.backgroundVideo, animatedAvatar: steamMedia.animatedAvatar, avatarFrame: steamMedia.avatarFrame },
-        ...(await (async () => { const mine = (await equippedCosmeticsFor([textValue(user.id)])).get(textValue(user.id)); return { frame: mine?.frame ?? null, nameStyle: mine?.nameStyle ?? null, banner: mine?.banner ?? null, title: mine?.title ?? null, founder: await founderNumberOf(db(), textValue(user.id)) }; })()),
+        frame: mine?.frame ?? null, nameStyle: mine?.nameStyle ?? null, banner: mine?.banner ?? null, title: mine?.title ?? null, founder,
       },
       viewer: { isOwner, isStaff },
       // The owner's own switches, so the popover shows them; null for everyone else.
@@ -1524,7 +1533,7 @@ export function createLegacyXRouter() {
       } : null,
       lastPlayedAt: timestampValue(progression?.last_match_at) || null,
       trust: { steamAccountCreatedAt: steamCreatedAt, activePenalty: activePenalty ? { id: activePenalty.id, type: activePenalty.type } : null },
-      stats: hidden.includes("stats") ? null : profileStats(progression, await statBenchmark()),
+      stats: hidden.includes("stats") ? null : profileStats(progression, benchmark),
       recentMatches: hidden.includes("matches") ? null : expRows.slice(0, 10).map(mapExpRecentMatch),
       maps: hidden.includes("matches") ? null : mapWinRates(expRows),
       penalties: penalties.sort((a, b) => Number(b === activePenalty) - Number(a === activePenalty)).slice(0, 5),
@@ -1533,10 +1542,10 @@ export function createLegacyXRouter() {
       staff: staffCard(role, penaltyCount.count ?? 0),
       creator: creatorTierValue ? { tier: creatorTierValue, label: CREATOR_TIER_LABEL[creatorTierValue], bio: textValue(creatorRow?.bio), links: cleanCreatorLinks(creatorRow?.links) } : null,
       presence,
-      discordLinked: (await discordLinkedUserIds(db(), [userId])).has(userId),
-      discordBoosting: await isBoostingNow(db(), userId),
-      boosterPlace: await boosterPlaceOf(db(), userId),
-      clan: (await clanTagsFor([userId])).get(userId) ?? null,
+      discordLinked,
+      discordBoosting,
+      boosterPlace,
+      clan: clanTag,
       ...ownerExtras,
     });
   }));

@@ -11,13 +11,13 @@ function steamWebApiKey() {
   return value;
 }
 
-async function steamRequest(path: string, params: Record<string, string>) {
+async function steamRequest(path: string, params: Record<string, string>, timeoutMs = 10_000) {
   const url = new URL(`https://api.steampowered.com/${path}`);
   url.searchParams.set("key", steamWebApiKey());
   for (const [name, value] of Object.entries(params)) url.searchParams.set(name, value);
   let response: Response;
   try {
-    response = await fetch(url, { headers: { accept: "application/json" } });
+    response = await fetch(url, { headers: { accept: "application/json" }, signal: AbortSignal.timeout(timeoutMs) });
   } catch {
     throw Object.assign(new Error("Steam Web API is unavailable"), { statusCode: 502 });
   }
@@ -41,14 +41,25 @@ export async function fetchSteamProfile(steamId: string): Promise<SteamProfile> 
  * When the Steam account was created (GetPlayerSummaries.timecreated). Steam only returns it for
  * public profiles, so null means "private or unknown" — the profile then hides the row.
  */
+const createdAtCache = new Map<string, { value: string | null; expiresAt: number }>();
+const CREATED_AT_KEEP_MS = 12 * 60 * 60_000;
+const CREATED_AT_UNKNOWN_KEEP_MS = 10 * 60_000;
+
 export async function fetchSteamAccountCreatedAt(steamId: string): Promise<string | null> {
   if (!/^\d{17}$/.test(steamId)) return null;
+  // The creation date never changes, so a profile opened again does not ask Steam again (a failed or private answer is tried again after ten minutes).
+  const kept = createdAtCache.get(steamId);
+  if (kept && kept.expiresAt > Date.now()) return kept.value;
   try {
-    const payload = await steamRequest("ISteamUser/GetPlayerSummaries/v0002/", { steamids: steamId });
+    const payload = await steamRequest("ISteamUser/GetPlayerSummaries/v0002/", { steamids: steamId }, 3_000);
     const player = (payload.response as { players?: Array<Record<string, unknown>> } | undefined)?.players?.[0];
     const created = typeof player?.timecreated === "number" ? player.timecreated : null;
-    return created && created > 0 ? new Date(created * 1000).toISOString() : null;
+    const value = created && created > 0 ? new Date(created * 1000).toISOString() : null;
+    createdAtCache.set(steamId, { value, expiresAt: Date.now() + (value ? CREATED_AT_KEEP_MS : CREATED_AT_UNKNOWN_KEEP_MS) });
+    if (createdAtCache.size > 5_000) createdAtCache.clear();
+    return value;
   } catch {
+    createdAtCache.set(steamId, { value: null, expiresAt: Date.now() + 60_000 });
     return null;
   }
 }
