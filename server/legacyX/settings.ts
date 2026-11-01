@@ -28,6 +28,9 @@ export const SETTINGS = [
   { key: "chat.cooldown_seconds", group: "Chat", label: "Seconds between messages", hint: "A player may write one public chat message per this many seconds. 0 turns the wait off.", unit: "seconds", def: 3, min: 0, max: 60 },
   { key: "chat.max_per_minute", group: "Chat", label: "Messages per minute", hint: "More than this many messages from one player in a minute are refused (spam).", unit: "messages", def: 10, min: 1, max: 60 },
   { key: "chat.keep_hours", group: "Chat", label: "Keep chat messages for", hint: "Older public chat messages are removed. 0 keeps them for ever. The default is 30 days.", unit: "hours", def: 720, min: 0, max: 8760 },
+  { key: "referral.reward_new", group: "Creators", label: "Creator code: LX for the new player", hint: "What a new player gets for entering a creator's code.", unit: "LX", def: 100, min: 0, max: 5000 },
+  { key: "referral.reward_creator", group: "Creators", label: "Creator code: LX for the creator", hint: "What the creator gets for each new player who enters their code.", unit: "LX", def: 100, min: 0, max: 5000 },
+  { key: "referral.window_days", group: "Creators", label: "Creator code: new player window", hint: "A code can be entered only this many days after the account was made, after the first ranked match.", unit: "days", def: 14, min: 1, max: 365 },
   { key: "creators.reapply_days", group: "Creators", label: "Apply again after a decline", hint: "A player whose creator application was declined may ask again after this long.", unit: "days", def: 7, min: 0, max: 365 },
 ] as const satisfies readonly SettingDef[];
 

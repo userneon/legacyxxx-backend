@@ -41,6 +41,7 @@ import { leaveRulesFrom, leaveStatus, loadLeaves, playerAccess } from "./playAcc
 import { CHAT_PAGE, checkChatBody, chatMessageSchema, chatRoomQuery, clanOfRoom, clanRoom, spamProblem } from "./chat";
 import { cosmeticEditSchema } from "./cosmeticAdmin";
 import { SETTINGS, forgetSettings, loadSettings, settingDef, validSettingValue } from "./settings";
+import { cleanReferralCode, newReferralCode, referralRefusal } from "./referrals";
 import { ANNOUNCEMENT_MAX_AGE_HOURS, ANNOUNCEMENT_PAGE, announcementRow, announcementSchema, announcementView, type AnnouncementRecord } from "./announcements";
 import { ADMIN_CALL_COOLDOWN_SECONDS, ADMIN_CALL_MAX_AGE_HOURS, ADMIN_CALL_PAGE, adminCallRow, adminCallSchema, adminCallView, parseAfter, type AdminCallRecord } from "./adminCalls";
 import { COIN_RULES, NotEnoughCoinsError, applyWalletChange, awardDiscordLink, awardMatchBonuses, awardMatchCoins, clanPrices, earnRules, loadWallet, loadWalletSummary, penalizeWallet, walletGrantSchema, walletPenaltySchema } from "./wallet";
@@ -4987,6 +4988,89 @@ export function createLegacyXRouter() {
     if (!data || data.length === 0) apiError(403, "Only content creators can change this", "creator_required");
     await db().from("audit_logs").insert({ actor_type: "user", actor_id: user.id, action: "creator.about", target_type: "content_creators", target_id: user.id, metadata: {} });
     res.json({ about: input.bio });
+  }));
+  // Creator codes (owner request 2026-11-01, supabase/legacy_x_creator_referrals.sql): a creator reads their code and who used it ...
+  router.get("/creators/me/referral", userRoute(async (_req, res, user) => {
+    const creator = await db().from("content_creators").select("user_id,referral_code").eq("user_id", user.id).maybeSingle();
+    legacyXError(creator.error, "Unable to load your code");
+    if (!creator.data) apiError(403, "Only content creators have a code", "creator_required");
+    let code = textValue((creator.data as DbRow).referral_code);
+    for (let attempt = 0; !code && attempt < 6; attempt += 1) {
+      const candidate = newReferralCode();
+      const saved = await db().from("content_creators").update({ referral_code: candidate }).eq("user_id", user.id).is("referral_code", null).select("referral_code");
+      if (saved.error?.code === "23505") continue;
+      legacyXError(saved.error, "Unable to make your code");
+      code = textValue(saved.data?.[0]?.referral_code) || textValue((await db().from("content_creators").select("referral_code").eq("user_id", user.id).maybeSingle()).data?.referral_code);
+    }
+    if (!code) apiError(503, "Unable to make your code, try again", "referral_code_failed");
+    const { data: rows, error } = await db().from("creator_referrals").select("referred_id,reward_creator,created_at").eq("creator_id", user.id).order("created_at", { ascending: false }).limit(200);
+    legacyXError(error, "Unable to load who used your code");
+    const list = (rows ?? []) as DbRow[];
+    const names = list.length ? await db().from("users").select("id,username,steam_id,avatar").in("id", list.slice(0, 10).map((row) => textValue(row.referred_id))) : { data: [] as DbRow[], error: null };
+    const byId = new Map(((names.data ?? []) as DbRow[]).map((row) => [textValue(row.id), row]));
+    res.set("Cache-Control", "no-store");
+    res.json({
+      code,
+      count: list.length,
+      earned: list.reduce((sum, row) => sum + numberValue(row.reward_creator), 0),
+      recent: list.slice(0, 10).map((row) => {
+        const who = byId.get(textValue(row.referred_id));
+        return { id: textValue(row.referred_id), name: textValue(who?.username) || "Player", steamId: textValue(who?.steam_id), avatar: who?.avatar ? textValue(who.avatar) : null, at: textValue(row.created_at) };
+      }),
+    });
+  }));
+  // ... and a new player says whether they can enter one and what it gives.
+  router.get("/referral/status", userRoute(async (_req, res, user) => {
+    const settings = await loadSettings(db());
+    const [creator, used, profile, account] = await Promise.all([
+      db().from("content_creators").select("user_id").eq("user_id", user.id).maybeSingle(),
+      db().from("creator_referrals").select("created_at,reward_referred").eq("referred_id", user.id).maybeSingle(),
+      db().from("competitive_player_profiles").select("matches_completed").eq("user_id", user.id).maybeSingle(),
+      db().from("users").select("created_at").eq("id", user.id).maybeSingle(),
+    ]);
+    legacyXError(creator.error || used.error || profile.error || account.error, "Unable to check your code status");
+    const ageDays = (Date.now() - Date.parse(textValue((account.data as DbRow | null)?.created_at))) / 86_400_000;
+    const refusal = referralRefusal({ isCreator: Boolean(creator.data), alreadyUsed: Boolean(used.data), accountAgeDays: Number.isFinite(ageDays) ? ageDays : 0, windowDays: settings["referral.window_days"], rankedMatches: numberValue((profile.data as DbRow | null)?.matches_completed) });
+    res.set("Cache-Control", "no-store");
+    res.json({ canRedeem: refusal === null, reason: refusal, used: Boolean(used.data), rewardNew: settings["referral.reward_new"], windowDays: settings["referral.window_days"] });
+  }));
+  router.post("/referral/redeem", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
+    const input = z.object({ code: z.string().trim().min(1).max(16) }).strict().parse(req.body);
+    const code = cleanReferralCode(input.code);
+    if (!code) apiError(404, "That code does not exist", "referral_unknown");
+    const settings = await loadSettings(db());
+    const [owner, creator, used, profile, account] = await Promise.all([
+      db().from("content_creators").select("user_id").eq("referral_code", code).maybeSingle(),
+      db().from("content_creators").select("user_id").eq("user_id", user.id).maybeSingle(),
+      db().from("creator_referrals").select("referred_id").eq("referred_id", user.id).maybeSingle(),
+      db().from("competitive_player_profiles").select("matches_completed").eq("user_id", user.id).maybeSingle(),
+      db().from("users").select("created_at").eq("id", user.id).maybeSingle(),
+    ]);
+    legacyXError(owner.error || creator.error || used.error || profile.error || account.error, "Unable to check the code");
+    if (!owner.data) apiError(404, "That code does not exist", "referral_unknown");
+    const creatorId = textValue((owner.data as DbRow).user_id);
+    if (creatorId === user.id) apiError(409, "You cannot use your own code", "referral_own");
+    const ageDays = (Date.now() - Date.parse(textValue((account.data as DbRow | null)?.created_at))) / 86_400_000;
+    const refusal = referralRefusal({ isCreator: Boolean(creator.data), alreadyUsed: Boolean(used.data), accountAgeDays: Number.isFinite(ageDays) ? ageDays : 0, windowDays: settings["referral.window_days"], rankedMatches: numberValue((profile.data as DbRow | null)?.matches_completed) });
+    if (refusal === "creator") apiError(409, "Content creators cannot enter a code", "referral_creator");
+    if (refusal === "already_used") apiError(409, "You already entered a creator's code", "referral_used");
+    if (refusal === "too_old") apiError(409, `A code can be entered in the first ${settings["referral.window_days"]} days of an account`, "referral_too_old");
+    if (refusal === "not_played") apiError(409, "Play your first ranked match first, then enter the code", "referral_not_played");
+    const rewardNew = settings["referral.reward_new"];
+    const rewardCreator = settings["referral.reward_creator"];
+    // The row first: its key (the new player) lets one code through, even when two requests race.
+    const claimed = await db().from("creator_referrals").insert({ referred_id: user.id, creator_id: creatorId, code, reward_referred: rewardNew, reward_creator: rewardCreator });
+    if (claimed.error?.code === "23505") apiError(409, "You already entered a creator's code", "referral_used");
+    legacyXError(claimed.error, "Unable to save the code");
+    try {
+      if (rewardNew > 0) await applyWalletChange(legacyXDb(), { userId: user.id, amount: rewardNew, kind: "grant", reason: "Creator code", ref: `referral:new:${user.id}`, actor: user.id });
+      if (rewardCreator > 0) await applyWalletChange(legacyXDb(), { userId: creatorId, amount: rewardCreator, kind: "grant", reason: "A new player used your creator code", ref: `referral:creator:${user.id}`, actor: user.id });
+    } catch (error) {
+      await db().from("creator_referrals").delete().eq("referred_id", user.id);
+      throw error;
+    }
+    await db().from("audit_logs").insert({ actor_type: "user", actor_id: user.id, action: "creator.referral", target_type: "creator_referrals", metadata: { creator: creatorId, code, rewardNew, rewardCreator } });
+    res.status(201).json({ redeemed: true, reward: rewardNew });
   }));
   router.get("/staff/creators/applications", userRoute(async (_req, res, user) => {
     await requireClanModerator(user.id);
