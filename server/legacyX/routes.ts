@@ -38,7 +38,7 @@ import { RANK_CALCULATION_VERSION, calculateMatchExp, expLimitUsage, limitWindow
 import { buildRankedInput, rankedResultSchema, type MatchParticipant, type PlayerProgression } from "./rankedMatch";
 import { matchResultAnnouncement, resultSteamIds } from "./matchAnnouncement";
 import { leaveRulesFrom, leaveStatus, loadLeaves, playerAccess } from "./playAccess";
-import { CHAT_PAGE, checkChatBody, chatMessageSchema, spamProblem } from "./chat";
+import { CHAT_PAGE, checkChatBody, chatMessageSchema, chatRoomQuery, clanOfRoom, clanRoom, spamProblem } from "./chat";
 import { cosmeticEditSchema } from "./cosmeticAdmin";
 import { SETTINGS, forgetSettings, loadSettings, settingDef, validSettingValue } from "./settings";
 import { ANNOUNCEMENT_MAX_AGE_HOURS, ANNOUNCEMENT_PAGE, announcementRow, announcementSchema, announcementView, type AnnouncementRecord } from "./announcements";
@@ -4804,15 +4804,46 @@ export function createLegacyXRouter() {
   };
   router.get("/public/chat", asyncRoute(async (_req, res) => {
     const messages = await publicCached(CHAT_CACHE_KEY, 1500, async () => {
-      const { data, error } = await db().from("chat_messages").select("id,user_id,body,created_at,users!chat_messages_user_id_fkey(id,steam_id,username,avatar)").is("deleted_at", null).order("created_at", { ascending: false }).limit(CHAT_PAGE);
+      const { data, error } = await db().from("chat_messages").select("id,user_id,body,created_at,users!chat_messages_user_id_fkey(id,steam_id,username,avatar)").eq("room", "global").is("deleted_at", null).order("created_at", { ascending: false }).limit(CHAT_PAGE);
       legacyXError(error, "Unable to load the chat");
       return chatView(((data ?? []) as DbRow[]).reverse());
     });
     res.set("Cache-Control", "no-store");
     res.json({ messages });
   }));
+  // A room of the chat: the community ("global") or a clan's own ("clan:<id>", its members only).
+  const chatRoomAllowed = async (userId: string, room: string) => {
+    const clanId = clanOfRoom(room);
+    if (!clanId) return true;
+    const { data, error } = await db().from("clan_members").select("role").eq("clan_id", clanId).eq("user_id", userId).maybeSingle();
+    legacyXError(error, "Unable to check your clan");
+    return Boolean(data);
+  };
+  // The rooms the signed-in player can open: the community chat, and their clan's room when they are in a clan.
+  router.get("/chat/rooms", userRoute(async (_req, res, user) => {
+    const { data, error } = await db().from("clan_members").select("clan_id,clans(id,name,tag)").eq("user_id", user.id);
+    legacyXError(error, "Unable to load your rooms");
+    const rooms = [{ room: "global", kind: "global", name: "Community" }];
+    for (const row of (data ?? []) as DbRow[]) {
+      const clan = firstRow(row.clans);
+      if (clan) rooms.push({ room: clanRoom(textValue(clan.id)), kind: "clan", name: textValue(clan.tag) ? `[${textValue(clan.tag)}] ${textValue(clan.name)}` : textValue(clan.name) });
+    }
+    res.set("Cache-Control", "no-store");
+    res.json({ rooms });
+  }));
+  // The last messages of a room the player may read (a clan's room is not public, so it is not cached).
+  router.get("/chat/room", userRoute(async (req, res, user) => {
+    const input = chatRoomQuery.parse(req.query);
+    if (!(await chatRoomAllowed(user.id, input.room))) apiError(403, "That room is for its members", "chat_room_forbidden");
+    const { data, error } = await db().from("chat_messages").select("id,user_id,body,created_at,users!chat_messages_user_id_fkey(id,steam_id,username,avatar)").eq("room", input.room).is("deleted_at", null).order("created_at", { ascending: false }).limit(CHAT_PAGE);
+    legacyXError(error, "Unable to load the chat");
+    res.set("Cache-Control", "no-store");
+    res.json({ messages: await chatView(((data ?? []) as DbRow[]).reverse()) });
+  }));
   router.post("/chat", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
     const input = chatMessageSchema.parse(req.body);
+    const room = input.room ?? "global";
+    if (!(await chatRoomAllowed(user.id, room))) apiError(403, "That room is for its members", "chat_room_forbidden");
     const settings = await loadSettings(db());
     const { data: staffRow } = await db().from("staff").select("role").eq("user_id", user.id).eq("status", "active").maybeSingle();
     const isStaff = Boolean(staffRow && ["OWNER", "MANAGER", "ADMIN"].includes(textValue(staffRow.role)));
@@ -4830,13 +4861,13 @@ export function createLegacyXRouter() {
     }
     if (!isStaff) {
       // Flood checks over the last two minutes of the chat: repeats, the same text from several players, too many in a minute.
-      const { data: lately } = await db().from("chat_messages").select("user_id,body,created_at").gte("created_at", new Date(Date.now() - 120_000).toISOString()).order("created_at", { ascending: false }).limit(200);
+      const { data: lately } = await db().from("chat_messages").select("user_id,body,created_at").eq("room", room).gte("created_at", new Date(Date.now() - 120_000).toISOString()).order("created_at", { ascending: false }).limit(200);
       const problem = spamProblem(checked.body, user.id, ((lately ?? []) as DbRow[]).map((row) => ({ userId: textValue(row.user_id), body: textValue(row.body), at: Date.parse(textValue(row.created_at)) })), Date.now(), settings["chat.max_per_minute"]);
       if (problem) apiError(429, { duplicate: "You already wrote that", copied: "That message looks like spam", too_fast: "You are writing too fast, slow down" }[problem], `chat_${problem}`);
     }
-    const { data, error } = await db().from("chat_messages").insert({ user_id: user.id, body: checked.body }).select("id,user_id,body,created_at,users!chat_messages_user_id_fkey(id,steam_id,username,avatar)").single();
+    const { data, error } = await db().from("chat_messages").insert({ user_id: user.id, body: checked.body, room }).select("id,user_id,body,created_at,users!chat_messages_user_id_fkey(id,steam_id,username,avatar)").single();
     legacyXError(error, "Unable to send the message");
-    forgetCached(CHAT_CACHE_KEY);
+    if (room === "global") forgetCached(CHAT_CACHE_KEY);
     // Old messages go now and then, so the table stays small.
     if (settings["chat.keep_hours"] > 0 && Math.random() < 0.05) void db().from("chat_messages").delete().lt("created_at", new Date(Date.now() - settings["chat.keep_hours"] * 3_600_000).toISOString());
     res.status(201).json({ message: (await chatView([data as DbRow]))[0] });

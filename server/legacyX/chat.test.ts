@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { checkChatBody, cleanChatBody, hasLink } from "./chat";
+import { checkChatBody, chatMessageSchema, chatRoomSchema, clanOfRoom, clanRoom, cleanChatBody, hasLink } from "./chat";
 
 describe("public chat messages", () => {
   it("cleans spacing and control characters", () => {
@@ -54,3 +54,22 @@ describe("chat spam checks", () => {
     expect(spamProblem("another one", "u1", flood, now, 6)).toBeNull();
   });
 });
+
+describe("chat rooms", () => {
+  const clan = "2c3f6a52-5f1d-4d5b-9d6e-2f8c1a7b9e10";
+  it("knows the global room and a clan's room, nothing else", () => {
+    expect(chatRoomSchema.safeParse("global").success).toBe(true);
+    expect(chatRoomSchema.safeParse(clanRoom(clan)).success).toBe(true);
+    for (const bad of ["", "clan:", "clan:abc", "dm:1", "Global", `clan:${clan};drop`, `clan:${clan.toUpperCase()}`]) expect(chatRoomSchema.safeParse(bad).success).toBe(false);
+  });
+  it("finds the clan of a room", () => {
+    expect(clanOfRoom("global")).toBeNull();
+    expect(clanOfRoom(clanRoom(clan))).toBe(clan);
+  });
+  it("takes a room with a message, or none (the global chat)", () => {
+    expect(chatMessageSchema.safeParse({ body: "hi" }).success).toBe(true);
+    expect(chatMessageSchema.safeParse({ body: "hi", room: clanRoom(clan) }).success).toBe(true);
+    expect(chatMessageSchema.safeParse({ body: "hi", room: "dm:x" }).success).toBe(false);
+  });
+});
+

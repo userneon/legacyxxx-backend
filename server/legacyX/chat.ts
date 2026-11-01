@@ -16,7 +16,14 @@ export function cleanChatBody(raw: string): string {
 const LINK = /(?:https?:\/\/|www\.|\b[a-z0-9-]{2,}\s?(?:\.|\(dot\)|\[dot\]|\sdot\s)\s?(?:com|net|org|gg|mn|cc|ru|io|tv|me|xyz|gl|ly|co)\b|discord\.gg|t\.me)/i;
 export const hasLink = (text: string) => LINK.test(text);
 
-export const chatMessageSchema = z.object({ body: z.string().max(2000) }).strict();
+/** A chat room: the community chat ("global") or the private chat of one clan ("clan:<clan id>", only its members read and write). */
+export const chatRoomSchema = z.string().regex(/^(global|clan:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/);
+export const clanRoom = (clanId: string) => `clan:${clanId}`;
+/** The clan id of a clan room, or null for "global". */
+export const clanOfRoom = (room: string): string | null => (room.startsWith("clan:") ? room.slice(5) : null);
+
+export const chatMessageSchema = z.object({ body: z.string().max(2000), room: chatRoomSchema.optional() }).strict();
+export const chatRoomQuery = z.object({ room: chatRoomSchema });
 
 export type ChatBodyProblem = "empty" | "too_long" | "link" | "repeated_characters" | "shouting";
 
