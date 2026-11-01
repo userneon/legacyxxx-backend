@@ -161,3 +161,37 @@ export function menuRarity(rarity: unknown): string | null {
   if (value.includes("consumer") || value.includes("base")) return "consumer";
   return null;
 }
+
+/**
+ * The in-game menu's "Customise" part for the skin the player wears (owner request 2026-11-01): wear, StatTrak and a name tag.
+ * Only what is sent changes; a name tag of null (or an empty one) takes it off. The skin's own wear range (metadata minWear / maxWear) bounds the wear.
+ */
+export const menuSkinOptionsBody = z.object({
+  steam_id: steamId,
+  catalog_item_id: z.string().uuid(),
+  team: z.enum(["t", "ct"]),
+  wear: z.number().min(0).max(1).optional(),
+  stat_trak: z.boolean().optional(),
+  name_tag: z.string().trim().max(32).nullable().optional(),
+}).strict().refine((body) => body.wear !== undefined || body.stat_trak !== undefined || body.name_tag !== undefined, { message: "Nothing to change" });
+
+/** Names a player may give a weapon: letters, digits, spaces and a few marks, never markup or control characters. */
+export function cleanNameTag(raw: string): string {
+  return raw.replace(/[\u0000-\u001f\u007f<>{}\\"]/g, "").replace(/\s+/g, " ").trim().slice(0, 20);
+}
+
+/** Merges the menu's changes into an entry's options, keeping everything else (stickers, charm, seed). */
+export function mergeMenuOptions(
+  options: Record<string, unknown>,
+  change: { wear?: number; stat_trak?: boolean; name_tag?: string | null },
+  range: { min: number; max: number },
+): Record<string, unknown> {
+  const next: Record<string, unknown> = { ...options };
+  if (change.wear !== undefined) next.wear = Math.min(range.max, Math.max(range.min, change.wear));
+  if (change.stat_trak !== undefined) { if (change.stat_trak) next.statTrak = true; else delete next.statTrak; }
+  if (change.name_tag !== undefined) {
+    const tag = change.name_tag === null ? "" : cleanNameTag(change.name_tag);
+    if (tag.length > 0) next.nameTag = tag; else delete next.nameTag;
+  }
+  return next;
+}

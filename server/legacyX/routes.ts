@@ -48,7 +48,7 @@ import { isMissingTableError, ownerLinks, ownerProfileSchema, ownerTeam, ownerUp
 import { liftInfo } from "./penaltyLift";
 import { CARD_SELL_SHARE, cardPrice, cardSellPrice } from "./cards";
 import { cleanPlayerConfig, playerConfigSchema } from "./playerConfig";
-import { menuLoadoutQuery, menuRarity, menuTiles, MENU_AGENT_TEAMS, MENU_SKIN_PAGE, MENU_SLOT_CATEGORY, entriesReplacedByEquip, menuAgentName, menuGunModel, menuSkinEquipBody, menuSkinUnequipBody, entriesRemovedByUnequip, menuSkinItemsQuery, menuSkinName, menuSkinSlotSchema, menuSkinTypesQuery, menuSlotKey, sharedGunEntryMovedTo, type LoadoutRow, type MenuSkinSlot } from "./menuSkins";
+import { menuLoadoutQuery, menuRarity, menuTiles, MENU_AGENT_TEAMS, MENU_SKIN_PAGE, MENU_SLOT_CATEGORY, entriesReplacedByEquip, menuAgentName, menuGunModel, menuSkinEquipBody, menuSkinOptionsBody, mergeMenuOptions, menuSkinUnequipBody, entriesRemovedByUnequip, menuSkinItemsQuery, menuSkinName, menuSkinSlotSchema, menuSkinTypesQuery, menuSlotKey, sharedGunEntryMovedTo, type LoadoutRow, type MenuSkinSlot } from "./menuSkins";
 import { PROFILE_NAME_MAX, PROFILE_SECTIONS, bestNameMatch, escapeLike, hiddenForViewer, loadoutShowcase, mapWinRates, normalizeHiddenSections, profileStats, buildBenchmark, BENCHMARK_MIN_MATCHES, staffCard, type ProfileSection } from "./profileOverview";
 import { activeBans, bannedPlayer, checkBansSchema, issueBan, issueBanSchema, issueIpBan, issueIpBanSchema, listActiveBans, revokeAllBans, revokeAllBansSchema, revokeBans, revokeBanSchema, revokeIpBans, revokeIpBanSchema } from "./bans";
 import { authorizationRequestSchema, resolveAuthorizations } from "./adminAuthorization";
@@ -5670,7 +5670,7 @@ export function createLegacyXRouter() {
     const { data: user, error: userError } = await db().from("users").select("id").eq("steam_id", input.steam_id).maybeSingle();
     legacyXError(userError, "Unable to resolve player");
     const { data: entryData, error: entryError } = await db().from("skinchanger_loadout_entries")
-      .select("slot,slot_key,team_scope,catalog_item_id")
+      .select("slot,slot_key,team_scope,catalog_item_id,options")
       .eq("user_id", user ? textValue(user.id) : "00000000-0000-0000-0000-000000000000");
     legacyXError(entryError, "Unable to load skinchanger loadout");
     const entries = (entryData ?? []) as DbRow[];
@@ -5696,6 +5696,12 @@ export function createLegacyXRouter() {
           paintId: item.paint_id === null || item.paint_id === undefined ? null : numberValue(item.paint_id),
           defindex: isAgent && item.weapon_defindex !== null && item.weapon_defindex !== undefined ? numberValue(item.weapon_defindex) : null,
           rarity: menuRarity(recordValue(item.metadata).rarity),
+          // What the Customise part of the menu shows and changes (wear, StatTrak, name tag), with the skin's own wear range.
+          wear: typeof recordValue(entry?.options).wear === "number" ? (recordValue(entry?.options).wear as number) : null,
+          minWear: typeof recordValue(item.metadata).minWear === "number" ? (recordValue(item.metadata).minWear as number) : 0,
+          maxWear: typeof recordValue(item.metadata).maxWear === "number" ? (recordValue(item.metadata).maxWear as number) : 1,
+          statTrak: recordValue(entry?.options).statTrak === true,
+          nameTag: typeof recordValue(entry?.options).nameTag === "string" ? (recordValue(entry?.options).nameTag as string) : null,
         } : null,
       };
     });
@@ -5867,6 +5873,54 @@ export function createLegacyXRouter() {
     }
     await writePluginAudit(plugin, "skinchanger.menu.unequip", "skinchanger_loadouts", userId, { version, catalogItemId: input.catalog_item_id, team: input.team, removed: remove.length });
     res.json({ version, removed: remove.length });
+  }));
+
+  // The menu's Customise part (owner request 2026-11-01): wear, StatTrak and a name tag of the skin the player wears on this team.
+  router.post("/plugin/menu/skins/options", menuSkinsRateLimit, pluginRoute("skinchanger:write", async (req, res, plugin) => {
+    const input = menuSkinOptionsBody.parse(req.body);
+    const { data: user, error: userError } = await db().from("users").select("id").eq("steam_id", input.steam_id).maybeSingle();
+    legacyXError(userError, "Unable to resolve player");
+    if (!user) apiError(404, "No saved skins for this player");
+    const userId = textValue((user as DbRow).id);
+    const { data: item, error: itemError } = await db().from("skinchanger_catalog_items").select("id,category,metadata").eq("id", input.catalog_item_id).maybeSingle();
+    legacyXError(itemError, "Unable to read the item");
+    if (!item) apiError(404, "That skin is not in the catalog");
+    const category = textValue((item as DbRow).category);
+    if ((input.stat_trak !== undefined || input.name_tag !== undefined) && !(category === "weapon_skin" || category === "weapon" || category === "knife")) apiError(400, "StatTrak and a name tag are for guns and knives");
+    if (input.wear !== undefined && category === "agent") apiError(400, "An agent has no wear");
+    const metadata = recordValue((item as DbRow).metadata);
+    const minWear = typeof metadata.minWear === "number" ? metadata.minWear : 0;
+    const maxWear = typeof metadata.maxWear === "number" ? metadata.maxWear : 1;
+    const { data: loadout, error: loadoutError } = await db().from("skinchanger_loadouts").select("version").eq("user_id", userId).maybeSingle();
+    legacyXError(loadoutError, "Unable to load the loadout");
+    let version = loadout ? numberValue((loadout as DbRow).version) : 0;
+    const { data: rows, error: rowsError } = await db().from("skinchanger_loadout_entries")
+      .select("slot,slot_key,team_scope,catalog_item_id,options")
+      .eq("user_id", userId)
+      .eq("catalog_item_id", input.catalog_item_id);
+    legacyXError(rowsError, "Unable to load the loadout entries");
+    // The entry of this team, or the one saved for both teams (changing it changes it for both).
+    const mine = ((rows ?? []) as LoadoutRow[]).filter((row) => row.team_scope === input.team || row.team_scope === "all");
+    if (!mine.length) apiError(404, "You are not wearing that skin on this team");
+    let lastOptions: Record<string, unknown> = {};
+    for (const row of mine) {
+      const options = mergeMenuOptions(recordValue(row.options), { wear: input.wear, stat_trak: input.stat_trak, name_tag: input.name_tag }, { min: minWear, max: maxWear });
+      lastOptions = options;
+      const { data: saved, error: saveError } = await db().rpc("upsert_skinchanger_loadout_entry", {
+        p_user_id: userId,
+        p_expected_version: version,
+        p_entry: { slot: row.slot, slot_key: row.slot_key, team_scope: row.team_scope, catalog_item_id: row.catalog_item_id, options },
+      });
+      legacyXError(saveError, "Unable to save the options");
+      version = numberValue(recordValue(saved).version);
+    }
+    await writePluginAudit(plugin, "skinchanger.menu.options", "skinchanger_loadouts", userId, { version, catalogItemId: input.catalog_item_id, team: input.team, wear: input.wear, statTrak: input.stat_trak, nameTag: input.name_tag === undefined ? undefined : input.name_tag !== null });
+    res.json({
+      version,
+      wear: typeof lastOptions.wear === "number" ? lastOptions.wear : null,
+      statTrak: lastOptions.statTrak === true,
+      nameTag: typeof lastOptions.nameTag === "string" ? lastOptions.nameTag : null,
+    });
   }));
 
   router.post("/plugin/live-match/snapshots", pluginRoute("servers:write", async (req, res, plugin) => {

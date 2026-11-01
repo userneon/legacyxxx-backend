@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { entriesReplacedByEquip, entriesRemovedByUnequip, menuSkinUnequipBody, sharedGunEntryMovedTo, gunIsForTeam, menuRarity, menuTiles, menuAgentName, menuGunModel, menuSkinEquipBody, menuSkinItemsQuery, menuSkinName, menuSkinTypesQuery, menuSlotKey } from "./menuSkins";
+import { entriesReplacedByEquip, entriesRemovedByUnequip, menuSkinUnequipBody, sharedGunEntryMovedTo, gunIsForTeam, menuRarity, menuTiles, menuAgentName, menuGunModel, menuSkinEquipBody, menuSkinOptionsBody, mergeMenuOptions, cleanNameTag, menuSkinItemsQuery, menuSkinName, menuSkinTypesQuery, menuSlotKey } from "./menuSkins";
 
 describe("menuSkinName", () => {
   it("drops the knife name and the wear", () => {
@@ -148,5 +148,25 @@ describe("taking a skin off", () => {
   it("needs a real item id and a team", () => {
     expect(menuSkinUnequipBody.safeParse({ steam_id: "76561198000000000", catalog_item_id: id, team: "t" }).success).toBe(true);
     expect(menuSkinUnequipBody.safeParse({ steam_id: "76561198000000000", catalog_item_id: id }).success).toBe(false);
+  });
+});
+
+describe("menu skin options", () => {
+  const base = { steam_id: "76561198000000000", catalog_item_id: "2c3f6a52-5f1d-4d5b-9d6e-2f8c1a7b9e10", team: "ct" as const };
+  it("needs something to change", () => {
+    expect(menuSkinOptionsBody.safeParse(base).success).toBe(false);
+    expect(menuSkinOptionsBody.safeParse({ ...base, wear: 0.1 }).success).toBe(true);
+    expect(menuSkinOptionsBody.safeParse({ ...base, wear: 1.2 }).success).toBe(false);
+    expect(menuSkinOptionsBody.safeParse({ ...base, name_tag: null }).success).toBe(true);
+    expect(menuSkinOptionsBody.safeParse({ ...base, team: "both", wear: 0.1 }).success).toBe(false);
+  });
+  it("keeps what it is not told about and clamps the wear to the skin's range", () => {
+    const merged = mergeMenuOptions({ seed: 5, stickers: [{ slot: 0 }] }, { wear: 0.9, stat_trak: true, name_tag: "  My   gun " }, { min: 0.0001, max: 0.8 });
+    expect(merged).toEqual({ seed: 5, stickers: [{ slot: 0 }], wear: 0.8, statTrak: true, nameTag: "My gun" });
+    expect(mergeMenuOptions({ statTrak: true, nameTag: "x" }, { stat_trak: false, name_tag: null }, { min: 0, max: 1 })).toEqual({});
+  });
+  it("cleans a name tag", () => {
+    expect(cleanNameTag("<b>Hi</b>\n{x}\"y\"")).toBe("bHi/bxy");
+    expect(cleanNameTag("a".repeat(40)).length).toBe(20);
   });
 });
