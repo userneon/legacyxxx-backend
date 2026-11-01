@@ -2112,6 +2112,7 @@ export function createLegacyXRouter() {
       flashEffects: ofKind("flash_effect"),
     });
   }));
+  const COSMETIC_UNDO_SECONDS = 7;
   router.post("/cosmetics/:itemId/buy", userRoute(async (req, res, user) => {
     const itemId = cosmeticIdSchema.parse(req.params.itemId);
     const input = z.object({ duration: cosmeticDurationSchema.default("30d") }).strict().parse(req.body ?? {});
@@ -2142,8 +2143,30 @@ export function createLegacyXRouter() {
       await applyWalletChange(legacyXDb(), { userId: user.id, amount: price, kind: "refund", reason: `${label} purchase failed`, ref: `${ref}:refund`, actor: user.id }).catch((refundError) => console.error("[legacy-x-api] cosmetic refund failed", refundError));
       legacyXError(error, "Unable to save the purchase");
     }
-    await db().from("audit_logs").insert({ actor_type: "user", actor_id: user.id, action: "cosmetic.buy", target_type: "cosmetic_items", target_id: itemId, metadata: { price, duration: length.key, extended: Boolean(running) } });
-    res.status(201).json({ owned: true, expiresAt: endsAt });
+    await db().from("audit_logs").insert({ actor_type: "user", actor_id: user.id, action: "cosmetic.buy", target_type: "cosmetic_items", metadata: { item: itemId, price, duration: length.key, extended: Boolean(running), ref, previous: running ? { expires_at: (current as DbRow).expires_at ?? null, source: textValue((current as DbRow).source) || "coin" } : null } });
+    res.status(201).json({ owned: true, expiresAt: endsAt, undoSeconds: COSMETIC_UNDO_SECONDS });
+  }));
+  // Undo a purchase made a moment ago (owner request 2026-11-01, the Shop's 7-second Undo): the LX come back whole and the item goes back to how it was.
+  router.post("/cosmetics/:itemId/undo-buy", userRoute(async (req, res, user) => {
+    const itemId = cosmeticIdSchema.parse(req.params.itemId);
+    const { data: last, error: lastError } = await db().from("audit_logs").select("metadata,created_at").eq("actor_id", user.id).eq("action", "cosmetic.buy").eq("metadata->>item", itemId).order("created_at", { ascending: false }).limit(1).maybeSingle();
+    legacyXError(lastError, "Unable to find your purchase");
+    const meta = (((last as DbRow | null)?.metadata ?? {}) as Record<string, unknown>);
+    const age = last ? (Date.now() - Date.parse(textValue((last as DbRow).created_at))) / 1000 : Infinity;
+    if (!last || typeof meta.ref !== "string" || !(age <= COSMETIC_UNDO_SECONDS + 5)) apiError(409, "This purchase can no longer be undone", "cosmetic_undo_expired");
+    const price = Number(meta.price);
+    if (!Number.isFinite(price) || price <= 0) apiError(409, "This purchase can no longer be undone", "cosmetic_undo_expired");
+    // One refund per purchase: the wallet ignores a second change under the same ref.
+    const refund = await applyWalletChange(legacyXDb(), { userId: user.id, amount: price, kind: "refund", reason: "Purchase undone", ref: `${meta.ref}:undo`, actor: user.id });
+    if (!refund.applied) apiError(409, "This purchase was already undone", "cosmetic_undo_done");
+    const previous = meta.previous as { expires_at: string | null; source: string } | null;
+    if (previous) await db().from("cosmetic_owned").update({ expires_at: previous.expires_at, source: previous.source }).eq("user_id", user.id).eq("item_id", itemId);
+    else {
+      await db().from("cosmetic_owned").delete().eq("user_id", user.id).eq("item_id", itemId);
+      await db().from("cosmetic_equipped").delete().eq("user_id", user.id).eq("item_id", itemId);
+    }
+    await db().from("audit_logs").insert({ actor_type: "user", actor_id: user.id, action: "cosmetic.undo", target_type: "cosmetic_items", metadata: { item: itemId, price, ref: meta.ref } });
+    res.json({ undone: true, balance: refund.balance });
   }));
   // Wear one, or take it off with item: null. The older { frame } body still works.
   // Pick the colour of a custom item you own (a player buys it like any other cosmetic first); saving wears it.
