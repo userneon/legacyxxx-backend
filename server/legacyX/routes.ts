@@ -42,6 +42,7 @@ import { CHAT_PAGE, checkChatBody, chatMessageSchema, chatRoomQuery, clanOfRoom,
 import { cosmeticEditSchema } from "./cosmeticAdmin";
 import { SETTINGS, forgetSettings, loadSettings, settingDef, validSettingValue } from "./settings";
 import { cleanReferralCode, newReferralCode, referralRefusal } from "./referrals";
+import { frameLookSchema, readFrameLook } from "./frameLook";
 import { ANNOUNCEMENT_MAX_AGE_HOURS, ANNOUNCEMENT_PAGE, announcementRow, announcementSchema, announcementView, type AnnouncementRecord } from "./announcements";
 import { ADMIN_CALL_COOLDOWN_SECONDS, ADMIN_CALL_MAX_AGE_HOURS, ADMIN_CALL_PAGE, adminCallRow, adminCallSchema, adminCallView, parseAfter, type AdminCallRecord } from "./adminCalls";
 import { COIN_RULES, NotEnoughCoinsError, applyWalletChange, awardDiscordLink, awardMatchBonuses, awardMatchCoins, clanPrices, earnRules, loadWallet, loadWalletSummary, penalizeWallet, walletGrantSchema, walletPenaltySchema } from "./wallet";
@@ -1503,6 +1504,8 @@ export function createLegacyXRouter() {
     const creatorRow = creatorResult.error ? null : (creatorResult.data as DbRow | null);
     const creatorTierValue = creatorTier(creatorRow?.tier);
     const activePenalty = penalties.find((penalty) => !penalty.isUnbanned && (penalty.isPermanent || !penalty.expiresAt || Date.parse(String(penalty.expiresAt)) > Date.now()));
+    // The settings of a Crystal Orb frame, only for a player who wears one (best effort: a missing table never breaks the profile).
+    const profileFrameLook = mine?.frame === "crystal-orb" ? readFrameLook(((await db().from("frame_looks").select("look").eq("user_id", userId).maybeSingle()).data as DbRow | null)?.look) : null;
     res.json({
       user: {
         id: textValue(user.id),
@@ -1513,7 +1516,7 @@ export function createLegacyXRouter() {
         memberSince: timestampValue(user.created_at) || null,
         steamBackground: steamMedia.background,
         steamMedia: { backgroundVideo: steamMedia.backgroundVideo, animatedAvatar: steamMedia.animatedAvatar, avatarFrame: steamMedia.avatarFrame },
-        frame: mine?.frame ?? null, nameStyle: mine?.nameStyle ?? null, banner: mine?.banner ?? null, title: mine?.title ?? null, founder,
+        frame: mine?.frame ?? null, frameLook: mine?.frame === "crystal-orb" ? profileFrameLook : null, nameStyle: mine?.nameStyle ?? null, banner: mine?.banner ?? null, title: mine?.title ?? null, founder,
       },
       viewer: { isOwner, isStaff },
       // The owner's own switches, so the popover shows them; null for everyone else.
@@ -2076,6 +2079,8 @@ export function createLegacyXRouter() {
     const catalog = [...enabledCatalog, ...(retiredRows as DbRow[])];
     const endsAt = new Map<string, string | null>(runningRows.map((row) => [textValue(row.item_id), row.expires_at ? timestampValue(row.expires_at) : null]));
     const wearing = new Map(((equippedRows.data ?? []) as DbRow[]).filter((row) => textValue(catalog.find((item) => textValue(item.id) === textValue(row.item_id))?.unlock) !== "coin" || ownedIds.has(textValue(row.item_id))).map((row) => [textValue(row.kind), textValue(row.item_id)]));
+    const frameLookRow = user ? await db().from("frame_looks").select("look").eq("user_id", user.id).maybeSingle() : { data: null, error: null };
+    const frameLookOwn = frameLookRow.error ? null : readFrameLook((frameLookRow.data as DbRow | null)?.look);
     const mine = user ? await db().from("cosmetic_custom").select("item_id,color,color2").eq("user_id", user.id) : { data: [] as DbRow[], error: null };
     const mineRows = new Map<string, DbRow>(((mine.error ? [] : mine.data ?? []) as DbRow[]).map((row) => [textValue(row.item_id), row]));
     // A design shows the colours this player picked for it, or neutral grey until they pick (a visitor sees grey).
@@ -2089,6 +2094,8 @@ export function createLegacyXRouter() {
     res.json({
       players: players.error ? null : players.count ?? 0,
       equippedFrame: user ? worn.get(user.id)?.frame ?? null : null,
+      /** The settings of the Crystal Orb this player picked (null: none yet, the website shows the preset). */
+      frameLook: frameLookOwn,
       equippedNameColor: wearing.get("name_color") ?? null,
       equippedNameGlow: wearing.get("name_glow") ?? null,
       equippedBanner: wearing.get("banner") ?? null,
@@ -2168,6 +2175,16 @@ export function createLegacyXRouter() {
     }
     await db().from("audit_logs").insert({ actor_type: "user", actor_id: user.id, action: "cosmetic.undo", target_type: "cosmetic_items", metadata: { item: itemId, price, ref: meta.ref } });
     res.json({ undone: true, balance: refund.balance });
+  }));
+  // The settings of the Crystal Orb frame (owner request 2026-11-01): everything the React Bits ball has, saved by its owner and read back for every viewer of their profile.
+  router.put("/cosmetics/frame-look", userRoute(async (req, res, user) => {
+    const look = frameLookSchema.parse(req.body);
+    const { data, error: ownedError } = await db().from("cosmetic_owned").select("item_id,expires_at").eq("user_id", user.id).eq("item_id", "crystal-orb").maybeSingle();
+    legacyXError(ownedError, "Unable to check your cosmetics");
+    if (!data || !stillRunning((data as DbRow).expires_at)) apiError(403, "You do not own the Crystal Orb yet", "cosmetic_not_owned");
+    const saved = await db().from("frame_looks").upsert({ user_id: user.id, look, updated_at: new Date().toISOString() }, { onConflict: "user_id" });
+    legacyXError(saved.error, "Unable to save your orb");
+    res.json({ look: readFrameLook(look) });
   }));
   // Wear one, or take it off with item: null. The older { frame } body still works.
   // Pick the colour of a custom item you own (a player buys it like any other cosmetic first); saving wears it.
