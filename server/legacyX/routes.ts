@@ -75,6 +75,7 @@ import { killEventSchema, killFeed } from "./killfeed";
 import { heartbeatSchema, ingestHeartbeat } from "./serverHeartbeat";
 import { backfillProfiles, ensureAccounts, isBare, nameFromGame } from "./profileBackfill";
 import { EXP_CHANGE_WINDOW_MS, latestExpChanges } from "./expChange";
+import { numericAddress } from "./hostAddress";
 import { mapPlayServer, pickQuickJoin, sortPlayServers, type PlayMode } from "./play";
 import { bracketRounds, checkInOpen, groupTeams, mapTournamentMatch as mapTournamentPlayerMatch, mapTournamentSummary, nextMatchFor, tournamentPhase } from "./tournaments";
 
@@ -1209,7 +1210,7 @@ export function createLegacyXRouter() {
       liveMatch: {
         serverId,
         serverName: textValue(serverResult.data.display_name) || serverId,
-        connectAddress: textValue(serverResult.data.connect_address) || null,
+        connectAddress: await numericAddress(textValue(serverResult.data.connect_address) || null),
         gotvAddress: textValue(serverResult.data.gotv_address) || null,
         players: numberValue(serverResult.data.player_count),
         maxPlayers: numberValue(serverResult.data.max_players) || 10,
@@ -2659,9 +2660,11 @@ export function createLegacyXRouter() {
     ]);
     legacyXError(serversResult.error || snapshotsResult.error, "Unable to load servers");
     const snapshots = new Map(((snapshotsResult.data ?? []) as DbRow[]).map((row) => [textValue(row.server_id), row]));
-    return ((serversResult.data ?? []) as DbRow[])
+    const servers = ((serversResult.data ?? []) as DbRow[])
       .map((row) => mapPlayServer(row, snapshots.get(textValue(row.server_id)) ?? null))
       .filter((server): server is NonNullable<typeof server> => server !== null);
+    // Connect uses a numeric address (see hostAddress.ts).
+    return Promise.all(servers.map(async (server) => ({ ...server, connectAddress: await numericAddress(server.connectAddress) })));
   };
   // Live kill feed for the top bar: kept in memory only (killfeed.ts), polled with a cursor.
   router.get("/public/killfeed", asyncRoute(async (req, res) => {
