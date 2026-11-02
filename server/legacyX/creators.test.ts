@@ -53,3 +53,13 @@ describe("content creators", () => {
     expect(creatorApplicationSchema.safeParse({ bio: "I make CS2 clips every week", links: { tiktok: "www.example.com/@x" } }).success).toBe(false);
   });
 });
+
+describe("a creator's own links", () => {
+  it("accepts links on each platform's own host, adds https, and keeps at least one", async () => {
+    const { ownCreatorLinksSchema } = await import("./creators");
+    expect(ownCreatorLinksSchema.parse({ links: { twitch: "twitch.tv/legacyx", youtube: "" } }).links).toEqual({ twitch: "https://twitch.tv/legacyx" });
+    expect(ownCreatorLinksSchema.safeParse({ links: {} }).success).toBe(false);
+    expect(ownCreatorLinksSchema.safeParse({ links: { twitch: "https://evil.example/legacyx" } }).success).toBe(false);
+    expect(ownCreatorLinksSchema.safeParse({ links: { twitch: "twitch.tv/x" }, tier: "main" }).success).toBe(false);
+  });
+});

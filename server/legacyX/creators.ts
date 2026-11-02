@@ -53,6 +53,10 @@ const linksSchema = z.object({
   instagram: link("instagram"),
 }).strict();
 
+/** A creator changes their own channel links (owner request 2026-11-02): each on its own platform's host, at least one kept. */
+export const ownCreatorLinksSchema = z.object({ links: linksSchema }).strict().transform((value) => ({ links: Object.fromEntries(Object.entries(value.links).filter(([, url]) => url)) as Partial<Record<CreatorPlatform, string>> }))
+  .refine((value) => Object.keys(value.links).length > 0, { message: "Keep at least one channel link", path: ["links"] });
+
 export const upsertCreatorSchema = z.object({
   tier: z.enum(CREATOR_TIERS),
   bio: z.string().trim().max(200).default(""),

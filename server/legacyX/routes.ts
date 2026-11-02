@@ -56,7 +56,7 @@ import { menuLoadoutQuery, menuRarity, menuTiles, MENU_AGENT_TEAMS, MENU_SKIN_PA
 import { PROFILE_NAME_MAX, PROFILE_SECTIONS, bestNameMatch, escapeLike, hiddenForViewer, loadoutShowcase, mapWinRates, normalizeHiddenSections, profileStats, buildBenchmark, BENCHMARK_MIN_MATCHES, staffCard, type ProfileSection } from "./profileOverview";
 import { activeBans, bannedPlayer, checkBansSchema, issueBan, issueBanSchema, issueIpBan, issueIpBanSchema, listActiveBans, revokeAllBans, revokeAllBansSchema, revokeBans, revokeBanSchema, revokeIpBans, revokeIpBanSchema } from "./bans";
 import { authorizationRequestSchema, loadGameRoles, resolveAuthorizations } from "./adminAuthorization";
-import { CREATOR_TIER_LABEL, cleanCreatorLinks, creatorApplicationSchema, creatorDecisionSchema, creatorTier, sortCreators, upsertCreatorSchema } from "./creators";
+import { CREATOR_TIER_LABEL, cleanCreatorLinks, creatorApplicationSchema, creatorDecisionSchema, creatorTier, ownCreatorLinksSchema, sortCreators, upsertCreatorSchema } from "./creators";
 import { boosterPlaceOf, endBoosterFrames, grantBoosterFrames, isBoostingNow, syncBoosterPodium } from "./boosterRewards";
 import { cleanClanLinks, clanLinksSchema } from "./clanLinks";
 import { claimFounder, founderCount, founderLabel, founderNumberOf, founderSalesOpen, FOUNDER_PRODUCT_KIND, productDeadlines } from "./founder";
@@ -5097,7 +5097,7 @@ export function createLegacyXRouter() {
   router.get("/creators/applications/me", userRoute(async (_req, res, user) => {
     const reapplyDays = (await loadSettings(db()))["creators.reapply_days"];
     const [creator, last] = await Promise.all([
-      db().from("content_creators").select("user_id,bio").eq("user_id", user.id).maybeSingle(),
+      db().from("content_creators").select("user_id,bio,links").eq("user_id", user.id).maybeSingle(),
       db().from("creator_applications").select("status,note,created_at,decided_at").eq("user_id", user.id).order("created_at", { ascending: false }).limit(1).maybeSingle(),
     ]);
     legacyXError(creator.error || last.error, "Unable to load your application");
@@ -5108,6 +5108,7 @@ export function createLegacyXRouter() {
       isCreator: Boolean(creator.data),
       /** A creator's own line about themselves, to edit (null for everyone else). */
       about: creator.data ? textValue((creator.data as DbRow).bio) : null,
+      links: creator.data ? cleanCreatorLinks((creator.data as DbRow).links) : null,
       application: row ? { status: textValue(row.status), note: textValue(row.note), createdAt: textValue(row.created_at), decidedAt: row.decided_at ? textValue(row.decided_at) : null } : null,
       /** When a declined player may apply again (null: now, or nothing to wait for). */
       canApplyAgainAt: declinedAt !== null && declinedAt + reapplyDays * 86_400_000 > Date.now() ? new Date(declinedAt + reapplyDays * 86_400_000).toISOString() : null,
@@ -5121,6 +5122,15 @@ export function createLegacyXRouter() {
     if (!data || data.length === 0) apiError(403, "Only content creators can change this", "creator_required");
     await db().from("audit_logs").insert({ actor_type: "user", actor_id: user.id, action: "creator.about", target_type: "content_creators", target_id: user.id, metadata: {} });
     res.json({ about: input.bio });
+  }));
+  // A creator changes their own channel links too (owner request 2026-11-02); the tier stays with staff.
+  router.put("/creators/me/links", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
+    const input = ownCreatorLinksSchema.parse(req.body);
+    const { data, error } = await db().from("content_creators").update({ links: input.links }).eq("user_id", user.id).select("user_id");
+    legacyXError(error, "Unable to save your links");
+    if (!data || data.length === 0) apiError(403, "Only content creators can change this", "creator_required");
+    await db().from("audit_logs").insert({ actor_type: "user", actor_id: user.id, action: "creator.links", target_type: "content_creators", target_id: user.id, metadata: { platforms: Object.keys(input.links) } });
+    res.json({ links: input.links });
   }));
   // Creator codes (owner request 2026-11-01, supabase/legacy_x_creator_referrals.sql): a creator reads their code and who used it ...
   router.get("/creators/me/referral", userRoute(async (_req, res, user) => {
