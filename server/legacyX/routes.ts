@@ -2816,6 +2816,52 @@ export function createLegacyXRouter() {
     if (cooldownsActive() && leaveCooldownLeftMs(data?.created_at as string | undefined) > 0) apiError(409, "Wait a day after leaving a clan before joining another", "clan_cooldown");
   };
 
+  /**
+   * What a clan's card on the Clans page shows besides its name: who leads it, a few of its members' pictures, and the totals of its members' real
+   * ranked results (the same numbers the clan ladder uses). Nothing is made up: a clan with no ranked matches has no win rate. Best effort: a failed
+   * lookup leaves the card as it was.
+   */
+  const clanPreviewsFor = async (clanIds: string[]) => {
+    const previews = new Map<string, { leader: { name: string; avatar: string } | null; members: Array<{ name: string; avatar: string }>; totalExp: number; matches: number; wins: number; topPlayer: { name: string; exp: number } | null; blurb: string }>();
+    if (!clanIds.length) return previews;
+    try {
+      const [members, clans] = await Promise.all([
+        db().from("clan_members").select("clan_id,user_id,role,users(username,avatar)").in("clan_id", clanIds),
+        db().from("clans").select("id,description").in("id", clanIds),
+      ]);
+      if (members.error) { console.warn("[legacy-x-api] clan previews unavailable", members.error.message); return previews; }
+      const rows = (members.data ?? []) as DbRow[];
+      const userIds = Array.from(new Set(rows.map((row) => textValue(row.user_id))));
+      const progression = userIds.length ? await db().from("competitive_player_progression").select("user_id,current_exp,matches_completed,wins").in("user_id", userIds) : { data: [], error: null };
+      const byUser = new Map(((progression.data ?? []) as DbRow[]).map((row) => [textValue(row.user_id), row]));
+      const blurbs = new Map(((clans.data ?? []) as DbRow[]).map((row) => [textValue(row.id), textValue(row.description).replace(/\s+/g, " ").trim().slice(0, 110)]));
+      const roleOrder: Record<string, number> = { leader: 0, "co-leader": 1, member: 2 };
+      for (const clanId of clanIds) {
+        const own = rows.filter((row) => textValue(row.clan_id) === clanId).map((row) => {
+          const user = firstRow(row.users) ?? {};
+          const stats = byUser.get(textValue(row.user_id));
+          return { role: textValue(row.role), name: textValue(user.username), avatar: textValue(user.avatar), exp: numberValue(stats?.current_exp), matches: numberValue(stats?.matches_completed), wins: numberValue(stats?.wins) };
+        });
+        if (!own.length) continue;
+        own.sort((a, b) => (roleOrder[a.role] ?? 3) - (roleOrder[b.role] ?? 3) || b.exp - a.exp);
+        const leader = own.find((member) => member.role === "leader") ?? null;
+        const top = [...own].sort((a, b) => b.exp - a.exp)[0];
+        previews.set(clanId, {
+          leader: leader ? { name: leader.name, avatar: leader.avatar } : null,
+          members: own.slice(0, 5).map((member) => ({ name: member.name, avatar: member.avatar })),
+          totalExp: own.reduce((sum, member) => sum + member.exp, 0),
+          matches: own.reduce((sum, member) => sum + member.matches, 0),
+          wins: own.reduce((sum, member) => sum + member.wins, 0),
+          topPlayer: top && top.exp > 0 ? { name: top.name, exp: top.exp } : null,
+          blurb: blurbs.get(clanId) ?? "",
+        });
+      }
+    } catch (error) {
+      console.warn("[legacy-x-api] clan previews unavailable", error instanceof Error ? error.message : error);
+    }
+    return previews;
+  };
+
   router.get("/clans", optionalUserRoute(async (req, res) => {
     const input = z.object({ q: z.string().trim().max(40).optional(), sort: z.enum(["new", "name"]).default("new"), limit: z.coerce.number().int().min(1).max(60).default(24), offset: z.coerce.number().int().min(0).max(5000).default(0) }).parse(req.query);
     let query = db().from("clans").select("*,clan_members(count)");
@@ -2827,7 +2873,8 @@ export function createLegacyXRouter() {
     const recruiting = await clanRecruitmentFor(((data ?? []) as DbRow[]).map((row) => textValue(row.id)));
     const levels = await db().from("clan_progress").select("clan_id,xp").in("clan_id", ((data ?? []) as DbRow[]).map((row) => textValue(row.id)));
     const levelOf = new Map(((levels.data ?? []) as DbRow[]).map((row) => [textValue(row.clan_id), levelFor(numberValue(row.xp)).level]));
-    res.json(((data ?? []) as DbRow[]).map((row) => ({ ...mapClanCard(row), level: levelOf.get(textValue(row.id)) ?? 1, look: looks.get(textValue(row.id)) ?? null, recruit: recruiting.has(textValue(row.id)) ? { questions: recruiting.get(textValue(row.id)) ?? [] } : null })));
+    const previews = await clanPreviewsFor(((data ?? []) as DbRow[]).map((row) => textValue(row.id)));
+    res.json(((data ?? []) as DbRow[]).map((row) => ({ ...mapClanCard(row), level: levelOf.get(textValue(row.id)) ?? 1, preview: previews.get(textValue(row.id)) ?? null, look: looks.get(textValue(row.id)) ?? null, recruit: recruiting.has(textValue(row.id)) ? { questions: recruiting.get(textValue(row.id)) ?? [] } : null })));
   }));
   // Ranking: the total EXP of a clan's members, counted from real ranked results.
   router.get("/clans/leaderboard", optionalUserRoute(async (_req, res) => {
