@@ -58,12 +58,19 @@ describe("in-game staff authorization", () => {
       row("76561198000000004", "staff", "active", "server", "2026-09-28T00:00:00.000Z"),
     ]);
     const result = await resolveAuthorizations(db, { serverId: "srv-1", steamIds: ["76561198000000001", "76561198000000002", "76561198000000003", "76561198000000004"] }, now);
-    expect(result).toEqual([
+    expect(result.map((entry) => ({ steamId: entry.steamId, authorized: entry.authorized, role: entry.role, status: entry.status, source: entry.source, expiresAt: entry.expiresAt, clanTag: entry.clanTag }))).toEqual([
       { steamId: "76561198000000001", authorized: true, role: "owner", status: "active", source: "global", expiresAt: null, clanTag: null },
       { steamId: "76561198000000002", authorized: true, role: "manager", status: "active", source: "global", expiresAt: null, clanTag: null },
       { steamId: "76561198000000003", authorized: true, role: "admin", status: "active", source: "server", expiresAt: null, clanTag: null },
       { steamId: "76561198000000004", authorized: true, role: "staff", status: "active", source: "server", expiresAt: "2026-09-28T00:00:00.000Z", clanTag: null },
     ]);
+    // The Owner role is built into the plugin; the others carry what the staff site says (the built-in roles until edited).
+    expect(result[0].grant).toBeUndefined();
+    expect(result[2].grant?.flags).toEqual(expect.arrayContaining(["@css/ban", "@css/changemap", "@legacyx/match"]));
+    expect(result[2].grant?.commands).toEqual(expect.arrayContaining(["ban", "kick", "slap"]));
+    expect(result[2].grant?.commands).not.toContain("unban");
+    expect(result[3].grant?.commands).not.toContain("ban");
+    expect(result[2].grant?.immunity).toBe(500);
   });
 
   it("denies players, inactive, expired, unknown roles and SteamIDs the database did not answer for", async () => {

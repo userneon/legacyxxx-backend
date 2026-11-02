@@ -42,6 +42,7 @@ import { CHAT_PAGE, checkChatBody, chatMessageSchema, chatRoomQuery, clanOfRoom,
 import { cosmeticEditSchema } from "./cosmeticAdmin";
 import { SETTINGS, forgetSettings, loadSettings, settingDef, validSettingValue } from "./settings";
 import { cleanReferralCode, newReferralCode, referralRefusal } from "./referrals";
+import { GAME_COMMANDS, GAME_MODES, GAME_ROLES, GAME_ROLE_LABELS, EXTRA_FLAGS, defaultGameRole, gameRoleConfigSchema, isGameRole } from "./gameRoles";
 import { frameLookSchema, readFrameLook, type FrameLook } from "./frameLook";
 import { backgroundLookSchema, isBackgroundItem, readBackgroundLook } from "./backgroundLook";
 import { ANNOUNCEMENT_MAX_AGE_HOURS, ANNOUNCEMENT_PAGE, announcementRow, announcementSchema, announcementView, type AnnouncementRecord } from "./announcements";
@@ -54,7 +55,7 @@ import { cleanPlayerConfig, playerConfigSchema } from "./playerConfig";
 import { menuLoadoutQuery, menuRarity, menuTiles, MENU_AGENT_TEAMS, MENU_SKIN_PAGE, MENU_SLOT_CATEGORY, entriesReplacedByEquip, menuAgentName, menuGunModel, menuSkinEquipBody, menuSkinOptionsBody, mergeMenuOptions, menuSkinUnequipBody, entriesRemovedByUnequip, menuSkinItemsQuery, menuSkinName, menuSkinSlotSchema, menuSkinTypesQuery, menuSlotKey, sharedGunEntryMovedTo, type LoadoutRow, type MenuSkinSlot } from "./menuSkins";
 import { PROFILE_NAME_MAX, PROFILE_SECTIONS, bestNameMatch, escapeLike, hiddenForViewer, loadoutShowcase, mapWinRates, normalizeHiddenSections, profileStats, buildBenchmark, BENCHMARK_MIN_MATCHES, staffCard, type ProfileSection } from "./profileOverview";
 import { activeBans, bannedPlayer, checkBansSchema, issueBan, issueBanSchema, issueIpBan, issueIpBanSchema, listActiveBans, revokeAllBans, revokeAllBansSchema, revokeBans, revokeBanSchema, revokeIpBans, revokeIpBanSchema } from "./bans";
-import { authorizationRequestSchema, resolveAuthorizations } from "./adminAuthorization";
+import { authorizationRequestSchema, loadGameRoles, resolveAuthorizations } from "./adminAuthorization";
 import { CREATOR_TIER_LABEL, cleanCreatorLinks, creatorApplicationSchema, creatorDecisionSchema, creatorTier, sortCreators, upsertCreatorSchema } from "./creators";
 import { boosterPlaceOf, endBoosterFrames, grantBoosterFrames, isBoostingNow, syncBoosterPodium } from "./boosterRewards";
 import { cleanClanLinks, clanLinksSchema } from "./clanLinks";
@@ -5040,6 +5041,41 @@ export function createLegacyXRouter() {
     forgetSettings();
     await db().from("audit_logs").insert({ actor_type: "user", actor_id: user.id, action: "setting.change", target_type: "site_settings", target_id: def.key, metadata: { value: input.value } });
     res.json({ key: def.key, value: input.value === null ? def.def : validSettingValue(def, input.value) });
+  }));
+  // Staff → Roles (Owner only): which commands each in-game role may run, on which kinds of server, and its immunity (gameRoles.ts, table game_roles).
+  // The plugin reads the result with the next staff check (within a minute); no row means the built-in role.
+  router.get("/staff/game-roles", userRoute(async (_req, res, user) => {
+    await requireOwnerStaffRole(user.id);
+    const roles = await loadGameRoles(db());
+    res.set("Cache-Control", "no-store");
+    res.json({
+      roles: GAME_ROLES.map((role) => {
+        const config = roles.get(role)!;
+        return { role, label: GAME_ROLE_LABELS[role], commands: config.commands, extraFlags: config.extraFlags, modes: config.modes, immunity: config.immunity, changed: config.stored, updatedAt: config.updatedAt, builtIn: defaultGameRole(role) };
+      }),
+      commands: GAME_COMMANDS.map(({ name, group, summary, locked }) => ({ name, group, summary, locked })),
+      extraFlags: EXTRA_FLAGS,
+      modes: GAME_MODES,
+    });
+  }));
+  router.put("/staff/game-roles/:role", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
+    await requireOwnerStaffRole(user.id);
+    const role = String(req.params.role);
+    if (!isGameRole(role)) apiError(404, "No such role");
+    const config = gameRoleConfigSchema.parse(req.body);
+    const { error } = await db().from("game_roles").upsert({ role, config, updated_by: user.id, updated_at: new Date().toISOString() }, { onConflict: "role" });
+    legacyXError(error, "Unable to save the role");
+    await db().from("audit_logs").insert({ actor_type: "user", actor_id: user.id, action: "game_role.change", target_type: "game_roles", target_id: null, metadata: { role, commands: config.commands.length, modes: config.modes, immunity: config.immunity } });
+    res.json({ role, ...config });
+  }));
+  router.delete("/staff/game-roles/:role", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
+    await requireOwnerStaffRole(user.id);
+    const role = String(req.params.role);
+    if (!isGameRole(role)) apiError(404, "No such role");
+    const { error } = await db().from("game_roles").delete().eq("role", role);
+    legacyXError(error, "Unable to reset the role");
+    await db().from("audit_logs").insert({ actor_type: "user", actor_id: user.id, action: "game_role.reset", target_type: "game_roles", target_id: null, metadata: { role } });
+    res.status(204).end();
   }));
   // A player asks to become a creator from the Creators page; an Owner or Manager answers in Staff → Creators (supabase/legacy_x_creator_applications.sql).
   router.post("/creators/applications", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {

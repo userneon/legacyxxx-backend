@@ -2,6 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { z } from "zod";
 import { legacyXError } from "./supabase";
 import { playModeFromServerMode } from "./play";
+import { GAME_ROLES, defaultGameRole, flagsFor, isGameRole, parseGameRole, type GameRoleConfig, type GameRoleKey } from "./gameRoles";
 
 /**
  * In-game staff authorization for LegacyX-Admin (POST /plugin/admin/authorizations).
@@ -37,6 +38,8 @@ export type PlayerAuthorization = {
   expiresAt: string | null;
   /** The staff member's website clan tag (shown in Tab as [CLAN | ROLE]); null when they have none. Cosmetic only. */
   clanTag: string | null;
+  /** What the plugin gives this player, from the role as edited on the staff site (absent for an Owner: that role is built into the plugin). */
+  grant?: { flags: string[]; commands: string[]; immunity: number } | null;
 };
 
 const resolvedRowSchema = z.object({
@@ -52,16 +55,11 @@ function unauthorized(steamId: string, status = "none", source = "none"): Player
 }
 
 
-/**
- * Content creators get their in-game role (the fun commands, none that punish) only on a server in fun mode: on a ranked or pro server a
- * noclip or a god mode would be cheating. Fail closed: an unknown server mode, a failed lookup or any error gives nobody anything.
- */
-async function creatorRolesFor(db: Db, serverId: string, steamIds: string[]): Promise<Map<string, "creator" | "main_creator">> {
+/** Which of these players are content creators (Main or plain). Fail closed: any error gives nobody a role. */
+async function creatorRolesFor(db: Db, steamIds: string[]): Promise<Map<string, "creator" | "main_creator">> {
   const roles = new Map<string, "creator" | "main_creator">();
   if (steamIds.length === 0) return roles;
   try {
-    const server = await db.from("reconnect_servers").select("current_mode").eq("server_id", serverId).maybeSingle();
-    if (server.error || playModeFromServerMode(server.data?.current_mode) !== "fun") return roles;
     const { data, error } = await db.from("content_creators").select("tier,users!content_creators_user_id_fkey!inner(steam_id)").in("users.steam_id", steamIds);
     if (error) return roles;
     for (const row of (Array.isArray(data) ? data : []) as Array<{ tier?: unknown; users?: unknown }>) {
@@ -71,6 +69,24 @@ async function creatorRolesFor(db: Db, serverId: string, steamIds: string[]): Pr
     }
   } catch (error) {
     console.warn("[legacy-x-api] creator roles unavailable", error instanceof Error ? error.message : error);
+  }
+  return roles;
+}
+
+/** Every editable role as it stands: the stored version, or the built-in one when nothing valid is stored or the table cannot be read. */
+export async function loadGameRoles(db: Db): Promise<Map<GameRoleKey, GameRoleConfig & { stored: boolean; updatedAt: string | null }>> {
+  const roles = new Map<GameRoleKey, GameRoleConfig & { stored: boolean; updatedAt: string | null }>();
+  let rows: Array<{ role?: unknown; config?: unknown; updated_at?: unknown }> = [];
+  try {
+    const result = await db.from("game_roles").select("role,config,updated_at");
+    if (!result?.error && Array.isArray(result?.data)) rows = result.data;
+  } catch (error) {
+    console.warn("[legacy-x-api] game roles unavailable", error instanceof Error ? error.message : error);
+  }
+  for (const role of GAME_ROLES) {
+    const row = rows.find((entry) => entry.role === role);
+    const valid = row ? parseGameRole(row.config) : null;
+    roles.set(role, { ...(valid ?? defaultGameRole(role)), stored: Boolean(valid), updatedAt: valid && typeof row?.updated_at === "string" ? row.updated_at : null });
   }
   return roles;
 }
@@ -115,9 +131,29 @@ export async function resolveAuthorizations(db: Db, input: z.infer<typeof author
     }
     bySteamId.set(steamId, { steamId, authorized: true, role: role as GameStaffRole, status, source, expiresAt: expiry ? expiry.toISOString() : null, clanTag: null });
   }
-  // Anyone the staff records do not vouch for may still be a content creator, on a fun server.
-  const creators = await creatorRolesFor(db, input.serverId, steamIds.filter((steamId) => !bySteamId.get(steamId)?.authorized));
+  // Anyone the staff records do not vouch for may still be a content creator.
+  const creators = await creatorRolesFor(db, steamIds.filter((steamId) => !bySteamId.get(steamId)?.authorized));
   creators.forEach((role, steamId) => bySteamId.set(steamId, { steamId, authorized: true, role, status: "active", source: "creator", expiresAt: null, clanTag: null }));
+  // Each editable role is what the Owner set on the staff site: its commands, its immunity, and the kinds of server it works on.
+  // A role limited to some kinds of server gets nothing on another (or on one whose kind is not known): fail closed.
+  const configs = await loadGameRoles(db);
+  const authorized = Array.from(bySteamId.values()).filter((entry) => entry.authorized && isGameRole(entry.role));
+  const limited = authorized.some((entry) => (configs.get(entry.role as GameRoleKey)?.modes.length ?? 0) > 0);
+  let serverMode: string | null = null;
+  if (limited) {
+    try {
+      const server = await db.from("reconnect_servers").select("current_mode").eq("server_id", input.serverId).maybeSingle();
+      serverMode = server.error ? null : playModeFromServerMode(server.data?.current_mode);
+    } catch { serverMode = null; }
+  }
+  for (const entry of authorized) {
+    const config = configs.get(entry.role as GameRoleKey) ?? defaultGameRole(entry.role as GameRoleKey);
+    if (config.modes.length > 0 && (!serverMode || !(config.modes as string[]).includes(serverMode))) {
+      bySteamId.set(entry.steamId, unauthorized(entry.steamId, "mode", entry.source));
+      continue;
+    }
+    entry.grant = { flags: flagsFor(config), commands: config.commands, immunity: config.immunity };
+  }
   await addClanTags(db, Array.from(bySteamId.values()).filter((entry) => entry.authorized));
   return steamIds.map((steamId) => bySteamId.get(steamId) ?? unauthorized(steamId));
 }
