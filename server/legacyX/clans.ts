@@ -1,6 +1,7 @@
 /** Clan rules that do not need a database: who may do what, and the limits the routes enforce. */
 
-export type ClanRole = "leader" | "co-leader" | "member";
+/** A captain (owner request 2026-11-02) is a title the leader gives to a trusted member: it shows on the roster, and it carries no powers of its own. */
+export type ClanRole = "leader" | "co-leader" | "captain" | "member";
 
 export const CLAN_LIMITS = {
   /** Open requests one player may have at the same time. */
@@ -15,7 +16,7 @@ export const CLAN_LIMITS = {
 } as const;
 
 export function clanRole(value: unknown): ClanRole | null {
-  return value === "leader" || value === "co-leader" || value === "member" ? value : null;
+  return value === "leader" || value === "co-leader" || value === "captain" || value === "member" ? value : null;
 }
 
 /** Leaders and co-leaders run the day to day: requests, invitations, removing members. */
@@ -23,11 +24,11 @@ export function canManage(role: ClanRole | null) {
   return role === "leader" || role === "co-leader";
 }
 
-/** A co-leader removes members; only the leader removes a co-leader; nobody removes the leader. */
+/** A co-leader removes members and captains; only the leader removes a co-leader; nobody removes the leader. */
 export function canRemove(actor: ClanRole | null, target: ClanRole | null) {
   if (!actor || !target || target === "leader") return false;
   if (actor === "leader") return true;
-  return actor === "co-leader" && target === "member";
+  return actor === "co-leader" && (target === "member" || target === "captain");
 }
 
 /** Milliseconds a player still has to wait after leaving a clan, or 0. */
@@ -47,6 +48,7 @@ export function describeClanAction(action: string, detail: string | null) {
     kicked: "was removed",
     promoted: "was made a manager",
     demoted: "is a member again",
+    captained: "was made a captain",
     transferred: "became the leader",
     accepted: "was accepted",
     declined: "was declined",

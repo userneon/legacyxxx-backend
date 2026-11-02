@@ -12,6 +12,9 @@ describe("clan permissions", () => {
     expect(canRemove("leader", "member")).toBe(true);
     expect(canRemove("leader", "co-leader")).toBe(true);
     expect(canRemove("co-leader", "member")).toBe(true);
+    expect(canRemove("co-leader", "captain")).toBe(true);
+    expect(canRemove("captain", "member")).toBe(false);
+    expect(canManage("captain")).toBe(false);
     expect(canRemove("co-leader", "co-leader")).toBe(false);
     expect(canRemove("co-leader", "leader")).toBe(false);
     expect(canRemove("leader", "leader")).toBe(false);
@@ -21,6 +24,7 @@ describe("clan permissions", () => {
   it("reads only known roles", () => {
     expect(clanRole("co-leader")).toBe("co-leader");
     expect(clanRole("owner")).toBeNull();
+    expect(clanRole("captain")).toBe("captain");
   });
 });
 

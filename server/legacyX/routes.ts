@@ -2832,7 +2832,7 @@ export function createLegacyXRouter() {
       const progression = userIds.length ? await db().from("competitive_player_progression").select("user_id,current_exp,matches_completed,wins").in("user_id", userIds) : { data: [], error: null };
       const byUser = new Map(((progression.data ?? []) as DbRow[]).map((row) => [textValue(row.user_id), row]));
       const blurbs = new Map(((clans.data ?? []) as DbRow[]).map((row) => [textValue(row.id), textValue(row.description).replace(/\s+/g, " ").trim().slice(0, 110)]));
-      const roleOrder: Record<string, number> = { leader: 0, "co-leader": 1, member: 2 };
+      const roleOrder: Record<string, number> = { leader: 0, "co-leader": 1, captain: 2, member: 3 };
       for (const clanId of clanIds) {
         const own = rows.filter((row) => textValue(row.clan_id) === clanId).map((row) => {
           const user = firstRow(row.users) ?? {};
@@ -3718,13 +3718,13 @@ export function createLegacyXRouter() {
   router.put("/clans/:clanId/members/:userId/role", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
     const clanId = await clanIdOf(req.params.clanId);
     const target = userIdSchema.parse(req.params.userId);
-    const input = z.object({ role: z.enum(["co-leader", "member"]) }).strict().parse(req.body);
+    const input = z.object({ role: z.enum(["co-leader", "captain", "member"]) }).strict().parse(req.body);
     const clan = await requireClanLeader(clanId, user.id);
     if (target === user.id) apiError(409, "The leader keeps the leader role", "clan_rejected");
     if (!(await roleInClan(clanId, target))) apiError(404, "That player is not in the clan", "clan_not_member");
     const { error } = await db().from("clan_members").update({ role: input.role, updated_at: new Date().toISOString() }).eq("clan_id", clanId).eq("user_id", target);
     legacyXError(error, "Unable to change the role");
-    await logClan(clan, user.id, input.role === "co-leader" ? "promoted" : "demoted", target);
+    await logClan(clan, user.id, input.role === "co-leader" ? "promoted" : input.role === "captain" ? "captained" : "demoted", target);
     res.status(204).end();
   }));
   router.post("/clans/:clanId/transfer", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
@@ -3762,7 +3762,7 @@ export function createLegacyXRouter() {
     res.json(rows.map((row) => {
       const actor = names.get(textValue(row.actor_id)) ?? "Someone";
       const target = row.target_id ? names.get(textValue(row.target_id)) ?? "a player" : null;
-      const subject = target && ["kicked", "promoted", "demoted", "transferred", "accepted", "declined", "invited", "invite_revoked"].includes(textValue(row.action)) ? target : actor;
+      const subject = target && ["kicked", "promoted", "demoted", "captained", "transferred", "accepted", "declined", "invited", "invite_revoked"].includes(textValue(row.action)) ? target : actor;
       const by = subject !== actor ? ` · by ${actor}` : "";
       return { id: textValue(row.id), text: `${subject} ${describeClanAction(textValue(row.action), row.detail == null ? null : textValue(row.detail))}${by}`, at: textValue(row.created_at) };
     }));
