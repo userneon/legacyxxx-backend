@@ -69,7 +69,7 @@ import { loadCheckerRules, probesOf } from "./checkerRules";
 import { judgeFacts } from "./checkerJudge";
 import { checkerBase, checkerMsi, checkerSha256, zipChunks, zipLength } from "./checkerZip";
 import { checkDownloadUrl, downloadHostAllowed, CHECK_ROLES, HWID_MATCH_KINDS, checkReportSchema, createCheckSchema, generateCheckCode, hashCheckCode, normalizeCheckCode, summarizeReport, sharesSamePc, recentSteamIds } from "./playerChecks";
-import { CLAN_LOOK_ITEMS, CLAN_LOOK_KINDS, clanLookItem, clanLooksFor } from "./clanLooks";
+import { CLAN_LOOK_ITEMS, CLAN_LOOK_KINDS, clanLookItem, clanLooksFor, type ClanLook } from "./clanLooks";
 import { killEventSchema, killFeed } from "./killfeed";
 import { heartbeatSchema, ingestHeartbeat } from "./serverHeartbeat";
 import { backfillProfiles, ensureAccounts, isBare, nameFromGame } from "./profileBackfill";
@@ -1107,13 +1107,15 @@ export function createLegacyXRouter() {
   };
   /** Clan tags of the given players (the clan feature may be switched off, then nobody has one). */
   const clanTagsFor = async (userIds: string[]) => {
-    const tags = new Map<string, { id: string; number: number | null; name: string; tag: string }>();
+    const tags = new Map<string, { id: string; number: number | null; name: string; tag: string; look: ClanLook | null }>();
     if (!userIds.length || !isDeferredFeatureEnabled("clan")) return tags;
     const { data, error } = await db().from("clan_members").select("user_id,clans(id,number,name,tag)").in("user_id", userIds);
     if (error) { console.warn("[legacy-x-api] clan tags unavailable", error.message); return tags; }
+    // The tag is drawn in the clan's colour and glow wherever it appears, so each clan's look comes along (best effort: a clan without one is plain).
+    const looks = await clanLooksFor(db(), Array.from(new Set(((data ?? []) as DbRow[]).map((row) => textValue(firstRow(row.clans)?.id)).filter(Boolean))));
     for (const row of (data ?? []) as DbRow[]) {
       const clan = firstRow(row.clans);
-      if (clan) tags.set(textValue(row.user_id), { id: textValue(clan.id), number: typeof clan.number === "number" ? clan.number : null, name: textValue(clan.name), tag: textValue(clan.tag) });
+      if (clan) tags.set(textValue(row.user_id), { id: textValue(clan.id), number: typeof clan.number === "number" ? clan.number : null, name: textValue(clan.name), tag: textValue(clan.tag), look: looks.get(textValue(clan.id)) ?? null });
     }
     return tags;
   };
@@ -1140,7 +1142,7 @@ export function createLegacyXRouter() {
     })();
     // These four only need the ladder's user IDs: they run side by side.
     const [linked, clanTags, worn, expChanges] = await Promise.all([discordLinkedUserIds(db(), userIds.filter(Boolean)), clanTagsFor(userIds), equippedCosmeticsFor(userIds), expChangesPromise]);
-    const rows = ((data ?? []) as DbRow[]).map((row): DbRow => ({ ...row, exp_change: expChanges.get(textValue(row.user_id)) ?? null, discord_linked: linked.has(textValue(row.user_id)), clan_tag: clanTags.get(textValue(row.user_id))?.tag ?? null, frame: worn.get(textValue(row.user_id))?.frame ?? null, frame_look: worn.get(textValue(row.user_id))?.frameLook ?? null, name_style: worn.get(textValue(row.user_id))?.nameStyle ?? null }));
+    const rows = ((data ?? []) as DbRow[]).map((row): DbRow => ({ ...row, exp_change: expChanges.get(textValue(row.user_id)) ?? null, discord_linked: linked.has(textValue(row.user_id)), clan_tag: clanTags.get(textValue(row.user_id))?.tag ?? null, clan_look: clanTags.get(textValue(row.user_id))?.look ?? null, frame: worn.get(textValue(row.user_id))?.frame ?? null, frame_look: worn.get(textValue(row.user_id))?.frameLook ?? null, name_style: worn.get(textValue(row.user_id))?.nameStyle ?? null }));
     if (sort === "exp") return { sort, minimumMatches: 0, entries: rows };
     // K/D and win rate are only meaningful with a sample: 10 completed matches minimum.
     const metric = (row: DbRow) => Number(sort === "kd" ? row.kd_ratio : row.win_rate) || 0;
@@ -4525,6 +4527,7 @@ export function createLegacyXRouter() {
         ...member,
         since: textValue(row?.created_at) || null,
         clanTag: tags.get(userId)?.tag ?? null,
+        clanLook: tags.get(userId)?.look ?? null,
         rank: profile && numberValue(profile.rank_id) ? { id: numberValue(profile.rank_id), name: textValue(profile.rank_name), imageKey: textValue(profile.rank_image_key) || null } : null,
         stats: profile && matches > 0 ? { matches, wins: numberValue(profile.wins), kills: numberValue(profile.kills), deaths: numberValue(profile.deaths) } : null,
       };
