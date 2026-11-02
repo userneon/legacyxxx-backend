@@ -1986,7 +1986,9 @@ export function createLegacyXRouter() {
     { key: "forever", days: null, percent: 300 },
   ] as const;
   const cosmeticDurationSchema = z.enum(["1d", "7d", "30d", "forever"]);
-  const cosmeticPrices = (basePrice: number) => Object.fromEntries(COSMETIC_DURATIONS.map((duration) => [duration.key, Math.max(1, Math.round((basePrice * duration.percent) / 100))]));
+  // Items rented for 30 days only (no day, week or forever price): the Crystal Orb, whose live canvas is the costliest thing on a profile (owner request 2026-11-02).
+  const THIRTY_DAYS_ONLY = new Set(["crystal-orb"]);
+  const cosmeticPrices = (basePrice: number, itemId = "") => Object.fromEntries(COSMETIC_DURATIONS.filter((duration) => !THIRTY_DAYS_ONLY.has(itemId) || duration.key === "30d").map((duration) => [duration.key, Math.max(1, Math.round((basePrice * duration.percent) / 100))]));
   const stillRunning = (expiresAt: unknown, now = Date.now()) => !expiresAt || Date.parse(textValue(expiresAt)) > now;
   const loadCosmeticCatalog = async () => {
     const { data, error } = await db().from("cosmetic_items").select("id,kind,name_en,name_mn,unlock,price,requirement,sort,color,color2,glow,fx,rarity,featured").eq("enabled", true).in("kind", [...COSMETIC_KINDS]).order("sort");
@@ -2043,7 +2045,7 @@ export function createLegacyXRouter() {
     unlock: textValue(item.unlock),
     price: numberValue(item.price),
     /** What each rental length costs (only for items sold with LX). */
-    ...(textValue(item.unlock) === "coin" ? { prices: cosmeticPrices(numberValue(item.price)) } : {}),
+    ...(textValue(item.unlock) === "coin" ? { prices: cosmeticPrices(numberValue(item.price), textValue(item.id)) } : {}),
     /** When a rented item runs out; absent when it is yours for good. */
     ...(endsAt.get(textValue(item.id)) ? { expiresAt: endsAt.get(textValue(item.id)) } : {}),
     requirement: textValue(item.requirement),
@@ -2134,7 +2136,8 @@ export function createLegacyXRouter() {
     if (!item) apiError(404, "Item not found");
     if (textValue(item.unlock) !== "coin") apiError(409, "This item is not for sale", "cosmetic_not_for_sale");
     const length = COSMETIC_DURATIONS.find((entry) => entry.key === input.duration)!;
-    const price = Number(cosmeticPrices(numberValue(item.price))[length.key]);
+    if (THIRTY_DAYS_ONLY.has(itemId) && length.key !== "30d") apiError(409, "This item is rented for 30 days only", "cosmetic_duration_not_sold");
+    const price = Number(cosmeticPrices(numberValue(item.price), itemId)[length.key]);
     const label = item.kind === "frame" ? "Frame" : item.kind === "name_color" ? "Name colour" : item.kind === "banner" ? "Banner" : item.kind === "title" ? "Title" : item.kind === "smoke_color" ? "Smoke colour" : item.kind === "grenade_trail" ? "Grenade trail" : item.kind === "grenade_light" ? "Grenade light" : item.kind === "flash_effect" ? "Flash effect" : "Name glow";
     // Already yours: a rental is added on to the time left, and an item that is yours for good cannot be bought again.
     const { data: current, error: currentError } = await db().from("cosmetic_owned").select("expires_at,source").eq("user_id", user.id).eq("item_id", itemId).maybeSingle();

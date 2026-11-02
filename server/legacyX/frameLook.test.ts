@@ -9,7 +9,7 @@ describe("Crystal Orb look", () => {
   it("refuses unknown fields and values out of range", () => {
     expect(frameLookSchema.safeParse({ nope: 1 }).success).toBe(false);
     expect(frameLookSchema.safeParse({ glow: 2 }).success).toBe(false);
-    expect(frameLookSchema.safeParse({ particleCount: 999999 }).success).toBe(false);
+    expect(frameLookSchema.safeParse({ particleCount: 15001 }).success).toBe(false);
     expect(frameLookSchema.safeParse({ color: "red" }).success).toBe(false);
     expect(frameLookSchema.safeParse({ preset: "lava" }).success).toBe(false);
   });
