@@ -1984,17 +1984,14 @@ export function createLegacyXRouter() {
   const cosmeticIdSchema = z.string().regex(/^[a-z0-9-]{2,40}$/);
   const COSMETIC_KINDS = ["frame", "name_color", "name_glow", "banner", "title", "smoke_color", "grenade_trail", "grenade_light", "flash_effect", "background"] as const;
   type CosmeticKind = (typeof COSMETIC_KINDS)[number];
-  // Bought cosmetics are rented: a share of the item's price (its 30-day price) buys 1 day, 7 days, 30 days or forever.
+  // Bought cosmetics are rented: a share of the item's price (its 30-day price) buys 1 day, 7 days or 30 days (owner request 2026-11-02: no forever, and the same three lengths for every item, the Crystal Orb and the backgrounds too).
   const COSMETIC_DURATIONS = [
     { key: "1d", days: 1, percent: 25 },
     { key: "7d", days: 7, percent: 60 },
     { key: "30d", days: 30, percent: 100 },
-    { key: "forever", days: null, percent: 300 },
   ] as const;
-  const cosmeticDurationSchema = z.enum(["1d", "7d", "30d", "forever"]);
-  // Items rented for 30 days only (no day, week or forever price): the Crystal Orb, whose live canvas is the costliest thing on a profile (owner request 2026-11-02).
-  const thirtyDaysOnly = (id: string) => id === "crystal-orb" || isBackgroundItem(id);
-  const cosmeticPrices = (basePrice: number, itemId = "") => Object.fromEntries(COSMETIC_DURATIONS.filter((duration) => !thirtyDaysOnly(itemId) || duration.key === "30d").map((duration) => [duration.key, Math.max(1, Math.round((basePrice * duration.percent) / 100))]));
+  const cosmeticDurationSchema = z.enum(["1d", "7d", "30d"]);
+  const cosmeticPrices = (basePrice: number) => Object.fromEntries(COSMETIC_DURATIONS.map((duration) => [duration.key, Math.max(1, Math.round((basePrice * duration.percent) / 100))]));
   const stillRunning = (expiresAt: unknown, now = Date.now()) => !expiresAt || Date.parse(textValue(expiresAt)) > now;
   const loadCosmeticCatalog = async () => {
     const { data, error } = await db().from("cosmetic_items").select("id,kind,name_en,name_mn,unlock,price,requirement,sort,color,color2,glow,fx,rarity,featured").eq("enabled", true).in("kind", [...COSMETIC_KINDS]).order("sort");
@@ -2052,7 +2049,7 @@ export function createLegacyXRouter() {
     unlock: textValue(item.unlock),
     price: numberValue(item.price),
     /** What each rental length costs (only for items sold with LX). */
-    ...(textValue(item.unlock) === "coin" ? { prices: cosmeticPrices(numberValue(item.price), textValue(item.id)) } : {}),
+    ...(textValue(item.unlock) === "coin" ? { prices: cosmeticPrices(numberValue(item.price)) } : {}),
     /** When a rented item runs out; absent when it is yours for good. */
     ...(endsAt.get(textValue(item.id)) ? { expiresAt: endsAt.get(textValue(item.id)) } : {}),
     requirement: textValue(item.requirement),
@@ -2150,8 +2147,7 @@ export function createLegacyXRouter() {
     if (!item) apiError(404, "Item not found");
     if (textValue(item.unlock) !== "coin") apiError(409, "This item is not for sale", "cosmetic_not_for_sale");
     const length = COSMETIC_DURATIONS.find((entry) => entry.key === input.duration)!;
-    if (thirtyDaysOnly(itemId) && length.key !== "30d") apiError(409, "This item is rented for 30 days only", "cosmetic_duration_not_sold");
-    const price = Number(cosmeticPrices(numberValue(item.price), itemId)[length.key]);
+    const price = Number(cosmeticPrices(numberValue(item.price))[length.key]);
     const label = item.kind === "frame" ? "Frame" : item.kind === "name_color" ? "Name colour" : item.kind === "banner" ? "Banner" : item.kind === "title" ? "Title" : item.kind === "smoke_color" ? "Smoke colour" : item.kind === "grenade_trail" ? "Grenade trail" : item.kind === "grenade_light" ? "Grenade light" : item.kind === "flash_effect" ? "Flash effect" : "Name glow";
     // Already yours: a rental is added on to the time left, and an item that is yours for good cannot be bought again.
     const { data: current, error: currentError } = await db().from("cosmetic_owned").select("expires_at,source").eq("user_id", user.id).eq("item_id", itemId).maybeSingle();
@@ -2160,11 +2156,11 @@ export function createLegacyXRouter() {
     const running = current && stillRunning((current as DbRow).expires_at, now);
     if (running && (!(current as DbRow).expires_at || textValue((current as DbRow).source) !== "coin")) apiError(409, "You already own this for good", "cosmetic_owned_forever");
     const startsFrom = running ? Date.parse(textValue((current as DbRow).expires_at)) : now;
-    const endsAt = length.days === null ? null : new Date(startsFrom + length.days * 86_400_000).toISOString();
+    const endsAt = new Date(startsFrom + length.days * 86_400_000).toISOString();
     // The ref is per player, item and length for ten seconds, so a double click or a retry charges once, and a later renewal charges again.
     const ref = `cosmetic:${itemId}:${user.id}:${length.key}:${Math.floor(now / 10_000)}`;
     try {
-      await applyWalletChange(legacyXDb(), { userId: user.id, amount: -price, kind: "spend", reason: `${label}: ${textValue(item.name_en)} (${length.key === "forever" ? "forever" : `${length.days} day${length.days === 1 ? "" : "s"}`})`, ref, actor: user.id });
+      await applyWalletChange(legacyXDb(), { userId: user.id, amount: -price, kind: "spend", reason: `${label}: ${textValue(item.name_en)} (${length.days} day${length.days === 1 ? "" : "s"})`, ref, actor: user.id });
     } catch (error) {
       if (error instanceof NotEnoughCoinsError) apiError(402, `This costs ${price} LX`, "cosmetic_no_coins");
       throw error;
