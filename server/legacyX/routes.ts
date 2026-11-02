@@ -1050,7 +1050,7 @@ export function createLegacyXRouter() {
   const loadClanDetail = async (clanId: string, viewerId?: string) => {
     const [clanResult, membersResult] = await Promise.all([
       db().from("clans").select("*,clan_members(count)").eq("id", clanId).maybeSingle(),
-      db().from("clan_members").select("role,user_id,users(id,steam_id,username,avatar,faceit_username,faceit_elo,faceit_level)").eq("clan_id", clanId).order("created_at"),
+      db().from("clan_members").select("role,user_id,created_at,users(id,steam_id,username,avatar,faceit_username,faceit_elo,faceit_level)").eq("clan_id", clanId).order("created_at"),
     ]);
     legacyXError(clanResult.error || membersResult.error, "Unable to load clan");
     if (!clanResult.data) apiError(404, "Clan was not found");
@@ -1068,6 +1068,7 @@ export function createLegacyXRouter() {
       const deaths = numberValue(profile?.deaths);
       return {
         ...mapClanMember(member),
+        joinedAt: member.created_at ? timestampValue(member.created_at) : null,
         ...lookOf(worn, textValue(member.user_id)),
         stats: profile ? {
           rankId: numberValue(profile.rank_id), rankName: textValue(profile.rank_name), rankImageKey: textValue(profile.rank_image_key), currentExp: numberValue(profile.current_exp),
