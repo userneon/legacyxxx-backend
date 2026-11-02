@@ -58,6 +58,7 @@ import { authorizationRequestSchema, loadGameRoles, resolveAuthorizations } from
 import { CREATOR_TIER_LABEL, cleanCreatorLinks, creatorApplicationSchema, creatorDecisionSchema, creatorTier, ownCreatorLinksSchema, sortCreators, upsertCreatorSchema } from "./creators";
 import { boosterPlaceOf, endBoosterFrames, grantBoosterFrames, isBoostingNow, syncBoosterPodium } from "./boosterRewards";
 import { cleanClanLinks, clanLinksSchema } from "./clanLinks";
+import { QPAY_INVOICE_MINUTES, QpayError, checkQpayInvoice, createQpayInvoice, invoiceIsPaid, qpayConfig } from "./qpay";
 import { claimFounder, founderCount, founderLabel, founderNumberOf, founderSalesOpen, FOUNDER_PRODUCT_KIND, productDeadlines } from "./founder";
 import { cachedFor as publicCached, forgetCached } from "./responseCache";
 import { communityInputSchema, loadCommunity, recordCommunity } from "./discordCommunity";
@@ -3786,6 +3787,8 @@ export function createLegacyXRouter() {
     legacyXError(productError, "Unable to read the product");
     if (!product || !product.enabled) apiError(404, "Product not found");
     if (numberValue(product.stock) < input.quantity) apiError(409, "Not enough in stock", "shop_out_of_stock");
+    // LX packages are paid with QPay (POST /wallet/topup); nobody calls to confirm them any more.
+    if (textValue(product.kind) === "lx") apiError(400, "LX top-ups are paid with QPay", "shop_lx_use_qpay");
     if (textValue(product.kind) === FOUNDER_PRODUCT_KIND) {
       // One numbered pack per player, only while the numbers last and before the deadline.
       if (input.quantity !== 1) apiError(400, "There is one Genesis pack per player");
@@ -3854,6 +3857,110 @@ export function createLegacyXRouter() {
       return textValue(product?.kind) === FOUNDER_PRODUCT_KIND ? { ...view, founderNumber } : view;
     }) });
   }));
+  // LX top-up with QPay (owner request 2026-11-02, replaces the staff-call orders for LX packages): the player picks a package, we make a QPay
+  // invoice, they pay it in a bank app, and the LX are added once QPay itself says it is paid. Credentials are environment variables only.
+  const topupView = (row: DbRow, extra: Record<string, unknown> = {}) => ({
+    id: textValue(row.id),
+    productId: textValue(row.product_id),
+    amountMnt: numberValue(row.amount_mnt),
+    grantsLx: numberValue(row.grants_lx),
+    status: textValue(row.status),
+    createdAt: textValue(row.created_at),
+    paidAt: row.paid_at ? textValue(row.paid_at) : null,
+    ...extra,
+  });
+  const topupExpired = (row: DbRow) => Date.now() - Date.parse(textValue(row.created_at)) > QPAY_INVOICE_MINUTES * 60_000;
+  /** Asks QPay about one pending top-up and, if it is paid in full, adds the LX once (the wallet ref is the top-up). Returns the row's current status. */
+  const settleTopup = async (row: DbRow): Promise<string> => {
+    if (textValue(row.status) !== "pending") return textValue(row.status);
+    const config = qpayConfig();
+    const invoiceId = textValue(row.qpay_invoice_id);
+    if (config && invoiceId) {
+      const check = await checkQpayInvoice(config, invoiceId);
+      if (invoiceIsPaid(check, numberValue(row.amount_mnt))) {
+        const credit = await applyWalletChange(legacyXDb(), { userId: textValue(row.user_id), amount: numberValue(row.grants_lx), kind: "grant", reason: "LX top-up (QPay)", ref: `qpay:${textValue(row.id)}`, actor: null });
+        await db().from("qpay_topups").update({ status: "paid", qpay_payment_id: check.paymentId, paid_at: new Date().toISOString() }).eq("id", textValue(row.id)).eq("status", "pending");
+        if (credit.applied) {
+          const { error: tellError } = await db().from("notifications").insert({ user_id: textValue(row.user_id), kind: "system", title: "LX added", body: `${numberValue(row.grants_lx).toLocaleString("en-US")} LX from your QPay top-up are in your wallet.`, metadata: { kind: "wallet" } });
+          if (tellError) console.warn("[legacy-x-api] top-up notification not saved", tellError.message);
+          await db().from("audit_logs").insert({ actor_type: "user", actor_id: textValue(row.user_id), action: "wallet.topup.qpay", target_type: "qpay_topups", target_id: textValue(row.id), metadata: { amountMnt: numberValue(row.amount_mnt), lx: numberValue(row.grants_lx) } });
+        }
+        return "paid";
+      }
+    }
+    if (topupExpired(row)) {
+      await db().from("qpay_topups").update({ status: "expired" }).eq("id", textValue(row.id)).eq("status", "pending");
+      return "expired";
+    }
+    return "pending";
+  };
+  router.get("/wallet/topup/status", (_req, res) => {
+    res.set("Cache-Control", "no-store");
+    res.json({ available: qpayConfig() !== null });
+  });
+  router.post("/wallet/topup", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
+    const input = z.object({ productId: z.string().uuid() }).strict().parse(req.body);
+    const config = qpayConfig();
+    if (!config) apiError(503, "QPay is not set up yet", "qpay_unavailable");
+    const { data: product, error: productError } = await db().from("shop_products").select("id,name,kind,grants_lx,price_mnt,enabled").eq("id", input.productId).maybeSingle();
+    legacyXError(productError, "Unable to read the package");
+    if (!product || !product.enabled || textValue(product.kind) !== "lx" || numberValue(product.grants_lx) <= 0 || numberValue(product.price_mnt) <= 0) apiError(404, "Package not found");
+    const since = new Date(Date.now() - QPAY_INVOICE_MINUTES * 60_000).toISOString();
+    const { count, error: countError } = await db().from("qpay_topups").select("id", { count: "exact", head: true }).eq("user_id", user.id).eq("status", "pending").gte("created_at", since);
+    legacyXError(countError, "Unable to check your top-ups");
+    if ((count ?? 0) >= 5) apiError(429, "You have several unpaid invoices. Pay one or wait a few minutes.", "qpay_too_many");
+    const { data: row, error } = await db().from("qpay_topups").insert({ user_id: user.id, product_id: input.productId, amount_mnt: numberValue(product.price_mnt), grants_lx: numberValue(product.grants_lx) }).select("id,user_id,product_id,amount_mnt,grants_lx,status,created_at,paid_at").single();
+    legacyXError(error, "Unable to start the top-up");
+    if (!row) apiError(500, "The top-up was not saved");
+    const origin = (process.env.PUBLIC_API_ORIGIN?.trim() || "").replace(/\/$/, "");
+    try {
+      const invoice = await createQpayInvoice(config, { senderNo: textValue(row.id), description: `LEGACY-X ${textValue(product.name)}`.slice(0, 100), amount: numberValue(product.price_mnt), callbackUrl: `${origin}/api/v1/public/qpay/callback/${textValue(row.id)}` });
+      const { error: saveError } = await db().from("qpay_topups").update({ qpay_invoice_id: invoice.invoiceId }).eq("id", textValue(row.id));
+      legacyXError(saveError, "Unable to save the invoice");
+      res.status(201).json(topupView(row as DbRow, { name: textValue(product.name), qrImage: invoice.qrImage, qrText: invoice.qrText, shortUrl: invoice.shortUrl, links: invoice.links, expiresInMinutes: QPAY_INVOICE_MINUTES }));
+    } catch (error) {
+      await db().from("qpay_topups").update({ status: "failed" }).eq("id", textValue(row.id));
+      if (error instanceof QpayError) {
+        console.error("[legacy-x-api] qpay invoice failed", error.message);
+        apiError(502, "QPay did not answer. Try again in a moment.", "qpay_failed");
+      }
+      throw error;
+    }
+  }));
+  // The page asks every few seconds while the invoice is open; each ask checks QPay (nothing is credited from the browser's word).
+  router.get("/wallet/topup/:topupId", userRoute(async (req, res, user) => {
+    const topupId = z.string().uuid().parse(req.params.topupId);
+    const { data: row, error } = await db().from("qpay_topups").select("id,user_id,product_id,amount_mnt,grants_lx,qpay_invoice_id,status,created_at,paid_at").eq("id", topupId).eq("user_id", user.id).maybeSingle();
+    legacyXError(error, "Unable to read the top-up");
+    if (!row) apiError(404, "Top-up not found");
+    let status: string;
+    try {
+      status = await settleTopup(row as DbRow);
+    } catch (settleError) {
+      if (!(settleError instanceof QpayError)) throw settleError;
+      console.error("[legacy-x-api] qpay check failed", settleError.message);
+      status = textValue(row.status);
+    }
+    res.set("Cache-Control", "no-store");
+    res.json(topupView({ ...(row as DbRow), status }));
+  }));
+  router.get("/wallet/topups", userRoute(async (_req, res, user) => {
+    const { data, error } = await db().from("qpay_topups").select("id,product_id,amount_mnt,grants_lx,status,created_at,paid_at").eq("user_id", user.id).order("created_at", { ascending: false }).limit(20);
+    legacyXError(error, "Unable to load your top-ups");
+    res.set("Cache-Control", "no-store");
+    res.json({ topups: ((data ?? []) as DbRow[]).map((row) => topupView(row, { status: textValue(row.status) === "pending" && topupExpired(row) ? "expired" : textValue(row.status) })) });
+  }));
+  // QPay calls this when an invoice is paid. It is only a nudge: the status is read from QPay itself, so a forged call credits nothing.
+  const qpayCallback = asyncRoute(async (req, res) => {
+    const topupId = z.string().uuid().safeParse(req.params.topupId);
+    if (topupId.success) {
+      const { data: row } = await db().from("qpay_topups").select("id,user_id,product_id,amount_mnt,grants_lx,qpay_invoice_id,status,created_at").eq("id", topupId.data).maybeSingle();
+      if (row) await settleTopup(row as DbRow).catch((error) => console.error("[legacy-x-api] qpay callback check failed", error instanceof Error ? error.message : error));
+    }
+    res.status(200).type("text/plain").send("SUCCESS");
+  });
+  router.get("/public/qpay/callback/:topupId", qpayCallback);
+  router.post("/public/qpay/callback/:topupId", qpayCallback);
   // Owners and Managers: the orders waiting for them (with the player's contact), their status, and the product list.
   router.get("/staff/shop/orders", userRoute(async (req, res, user) => {
     await requireClanModerator(user.id);
@@ -3880,8 +3987,7 @@ export function createLegacyXRouter() {
     const { data: current, error: readError } = await db().from("shop_orders").select("id,user_id,product_id,quantity").eq("id", orderId).maybeSingle();
     legacyXError(readError, "Unable to read the order");
     if (!current) apiError(404, "Order not found");
-    // A paid LX package credits the wallet, once: the ref is the order, so marking it paid again changes nothing. The goods are also
-    // given when staff go straight to shipped or done: on 2026-10-23 a Genesis order was set to done without "Paid" and the buyer was left
+    // The goods are given when staff go straight to shipped or done: on 2026-10-23 a Genesis order was set to done without "Paid" and the buyer was left
     // with nothing to wear. Giving them is safe to repeat (the number is per player, the credit is per order).
     if (input.status === "paid" || input.status === "shipped" || input.status === "done") {
       const { data: product, error: productError } = await db().from("shop_products").select("kind,grants_lx,name,stock").eq("id", textValue(current.product_id)).maybeSingle();
@@ -3895,14 +4001,6 @@ export function createLegacyXRouter() {
           const { error: tellError } = await db().from("notifications").insert({ user_id: textValue(current.user_id), kind: "system", title: `You are Genesis ${founderLabel(number)}`, body: "The Genesis frame, Gold Foil banner and Genesis title are yours. Wear them in Profile → Appearance.", metadata: { kind: "founder" } });
           if (tellError) console.warn("[legacy-x-api] founder notification not saved", tellError.message);
           await db().from("audit_logs").insert({ actor_type: "user", actor_id: user.id, action: "shop.founder.claim", target_type: "shop_orders", target_id: orderId, metadata: { number } });
-        }
-      }
-      const amount = product && textValue(product.kind) === "lx" ? numberValue(product.grants_lx) * numberValue(current.quantity) : 0;
-      if (amount > 0) {
-        const credit = await applyWalletChange(legacyXDb(), { userId: textValue(current.user_id), amount, kind: "grant", reason: `LX top-up: ${textValue(product?.name)}`, ref: `topup:${orderId}`, actor: user.id });
-        if (credit.applied) {
-          const { error: tellError } = await db().from("notifications").insert({ user_id: textValue(current.user_id), kind: "system", title: "LX added", body: `${amount.toLocaleString("en-US")} LX from your top-up are in your wallet.`, metadata: { kind: "wallet" } });
-          if (tellError) console.warn("[legacy-x-api] top-up notification not saved", tellError.message);
         }
       }
     }
