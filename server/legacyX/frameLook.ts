@@ -26,7 +26,7 @@ export const frameLookSchema = z.object({
   crackle: unit,
   flares: unit,
   sparks: unit,
-  particleCount: z.number().int().min(2000).max(ORB_MAX_PARTICLES),
+  particleCount: z.number().int().min(1000).max(ORB_MAX_PARTICLES),
   fill: unit,
   depth: unit,
   twinkle: unit,
