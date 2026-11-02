@@ -58,7 +58,7 @@ import { authorizationRequestSchema, loadGameRoles, resolveAuthorizations } from
 import { CREATOR_TIER_LABEL, cleanCreatorLinks, creatorApplicationSchema, creatorDecisionSchema, creatorTier, ownCreatorLinksSchema, sortCreators, upsertCreatorSchema } from "./creators";
 import { boosterPlaceOf, endBoosterFrames, grantBoosterFrames, isBoostingNow, syncBoosterPodium } from "./boosterRewards";
 import { cleanClanLinks, clanLinksSchema } from "./clanLinks";
-import { QPAY_INVOICE_MINUTES, QpayError, checkQpayInvoice, createQpayInvoice, invoiceIsPaid, qpayConfig } from "./qpay";
+import { CUSTOM_TOPUP_MAX_MNT, CUSTOM_TOPUP_MIN_MNT, CUSTOM_TOPUP_STEP_MNT, QPAY_INVOICE_MINUTES, customTopUpLx, QpayError, checkQpayInvoice, createQpayInvoice, invoiceIsPaid, qpayConfig } from "./qpay";
 import { claimFounder, founderCount, founderLabel, founderNumberOf, founderSalesOpen, FOUNDER_PRODUCT_KIND, productDeadlines } from "./founder";
 import { cachedFor as publicCached, forgetCached } from "./responseCache";
 import { communityInputSchema, loadCommunity, recordCommunity } from "./discordCommunity";
@@ -3896,25 +3896,44 @@ export function createLegacyXRouter() {
   };
   router.get("/wallet/topup/status", (_req, res) => {
     res.set("Cache-Control", "no-store");
-    res.json({ available: qpayConfig() !== null });
+    res.json({ available: qpayConfig() !== null, custom: { minMnt: CUSTOM_TOPUP_MIN_MNT, maxMnt: CUSTOM_TOPUP_MAX_MNT, stepMnt: CUSTOM_TOPUP_STEP_MNT } });
   });
   router.post("/wallet/topup", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
-    const input = z.object({ productId: z.string().uuid() }).strict().parse(req.body);
+    const input = z.object({ productId: z.string().uuid().optional(), amountMnt: z.number().int().optional() }).strict().refine((value) => Boolean(value.productId) !== (value.amountMnt !== undefined), { message: "Pick a package or an amount" }).parse(req.body);
     const config = qpayConfig();
     if (!config) apiError(503, "QPay is not set up yet", "qpay_unavailable");
-    const { data: product, error: productError } = await db().from("shop_products").select("id,name,kind,grants_lx,price_mnt,enabled").eq("id", input.productId).maybeSingle();
-    legacyXError(productError, "Unable to read the package");
-    if (!product || !product.enabled || textValue(product.kind) !== "lx" || numberValue(product.grants_lx) <= 0 || numberValue(product.price_mnt) <= 0) apiError(404, "Package not found");
+    let product: DbRow | null = null;
+    let priceMnt = 0;
+    let grantsLx = 0;
+    if (input.productId) {
+      const { data, error: productError } = await db().from("shop_products").select("id,name,kind,grants_lx,price_mnt,enabled").eq("id", input.productId).maybeSingle();
+      legacyXError(productError, "Unable to read the package");
+      if (!data || !data.enabled || textValue(data.kind) !== "lx" || numberValue(data.grants_lx) <= 0 || numberValue(data.price_mnt) <= 0) apiError(404, "Package not found");
+      product = data as DbRow;
+      priceMnt = numberValue(product.price_mnt);
+      grantsLx = numberValue(product.grants_lx);
+    } else {
+      // Any amount, at the smallest package's rate; that package is also the row's product.
+      const { data: packs, error: packsError } = await db().from("shop_products").select("id,name,kind,grants_lx,price_mnt,enabled").eq("kind", "lx").eq("enabled", true).gt("grants_lx", 0).gt("price_mnt", 0);
+      legacyXError(packsError, "Unable to read the packages");
+      const base = ((packs ?? []) as DbRow[]).sort((a, b) => numberValue(a.price_mnt) - numberValue(b.price_mnt))[0];
+      if (!base) apiError(404, "There are no packages to top up from");
+      const lx = customTopUpLx(input.amountMnt ?? 0, { priceMnt: numberValue(base.price_mnt), grantsLx: numberValue(base.grants_lx) });
+      if (lx === null) apiError(400, `Pick ${CUSTOM_TOPUP_MIN_MNT.toLocaleString("en-US")}₮ to ${CUSTOM_TOPUP_MAX_MNT.toLocaleString("en-US")}₮ in steps of ${CUSTOM_TOPUP_STEP_MNT.toLocaleString("en-US")}₮`, "topup_amount");
+      product = { ...base, name: `${lx.toLocaleString("en-US")} LX` };
+      priceMnt = input.amountMnt ?? 0;
+      grantsLx = lx;
+    }
     const since = new Date(Date.now() - QPAY_INVOICE_MINUTES * 60_000).toISOString();
     const { count, error: countError } = await db().from("qpay_topups").select("id", { count: "exact", head: true }).eq("user_id", user.id).eq("status", "pending").gte("created_at", since);
     legacyXError(countError, "Unable to check your top-ups");
     if ((count ?? 0) >= 5) apiError(429, "You have several unpaid invoices. Pay one or wait a few minutes.", "qpay_too_many");
-    const { data: row, error } = await db().from("qpay_topups").insert({ user_id: user.id, product_id: input.productId, amount_mnt: numberValue(product.price_mnt), grants_lx: numberValue(product.grants_lx) }).select("id,user_id,product_id,amount_mnt,grants_lx,status,created_at,paid_at").single();
+    const { data: row, error } = await db().from("qpay_topups").insert({ user_id: user.id, product_id: textValue(product.id), amount_mnt: priceMnt, grants_lx: grantsLx }).select("id,user_id,product_id,amount_mnt,grants_lx,status,created_at,paid_at").single();
     legacyXError(error, "Unable to start the top-up");
     if (!row) apiError(500, "The top-up was not saved");
     const origin = (process.env.PUBLIC_API_ORIGIN?.trim() || "").replace(/\/$/, "");
     try {
-      const invoice = await createQpayInvoice(config, { senderNo: textValue(row.id), description: `LEGACY-X ${textValue(product.name)}`.slice(0, 100), amount: numberValue(product.price_mnt), callbackUrl: `${origin}/api/v1/public/qpay/callback/${textValue(row.id)}` });
+      const invoice = await createQpayInvoice(config, { senderNo: textValue(row.id), description: `LEGACY-X ${textValue(product.name)}`.slice(0, 100), amount: priceMnt, callbackUrl: `${origin}/api/v1/public/qpay/callback/${textValue(row.id)}` });
       const { error: saveError } = await db().from("qpay_topups").update({ qpay_invoice_id: invoice.invoiceId }).eq("id", textValue(row.id));
       legacyXError(saveError, "Unable to save the invoice");
       res.status(201).json(topupView(row as DbRow, { name: textValue(product.name), qrImage: invoice.qrImage, qrText: invoice.qrText, shortUrl: invoice.shortUrl, links: invoice.links, expiresInMinutes: QPAY_INVOICE_MINUTES }));
