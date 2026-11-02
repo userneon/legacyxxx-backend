@@ -43,6 +43,7 @@ import { cosmeticEditSchema } from "./cosmeticAdmin";
 import { SETTINGS, forgetSettings, loadSettings, settingDef, validSettingValue } from "./settings";
 import { cleanReferralCode, newReferralCode, referralRefusal } from "./referrals";
 import { frameLookSchema, readFrameLook, type FrameLook } from "./frameLook";
+import { backgroundLookSchema, isBackgroundItem, readBackgroundLook } from "./backgroundLook";
 import { ANNOUNCEMENT_MAX_AGE_HOURS, ANNOUNCEMENT_PAGE, announcementRow, announcementSchema, announcementView, type AnnouncementRecord } from "./announcements";
 import { ADMIN_CALL_COOLDOWN_SECONDS, ADMIN_CALL_MAX_AGE_HOURS, ADMIN_CALL_PAGE, adminCallRow, adminCallSchema, adminCallView, parseAfter, type AdminCallRecord } from "./adminCalls";
 import { COIN_RULES, NotEnoughCoinsError, applyWalletChange, awardDiscordLink, awardMatchBonuses, awardMatchCoins, clanPrices, earnRules, loadWallet, loadWalletSummary, penalizeWallet, walletGrantSchema, walletPenaltySchema } from "./wallet";
@@ -1505,6 +1506,8 @@ export function createLegacyXRouter() {
     const creatorTierValue = creatorTier(creatorRow?.tier);
     const activePenalty = penalties.find((penalty) => !penalty.isUnbanned && (penalty.isPermanent || !penalty.expiresAt || Date.parse(String(penalty.expiresAt)) > Date.now()));
     // The settings of a Crystal Orb frame, only for a player who wears one (best effort: a missing table never breaks the profile).
+    // The background worn on this profile and its saved knobs (best effort).
+    const profileBackground = mine?.background ? { id: mine.background, look: readBackgroundLook(((await db().from("background_looks").select("look").eq("user_id", userId).eq("item_id", mine.background).maybeSingle()).data as DbRow | null)?.look) } : null;
     const profileFrameLook = mine?.frame === "crystal-orb" ? readFrameLook(((await db().from("frame_looks").select("look").eq("user_id", userId).maybeSingle()).data as DbRow | null)?.look) : null;
     res.json({
       user: {
@@ -1516,6 +1519,7 @@ export function createLegacyXRouter() {
         memberSince: timestampValue(user.created_at) || null,
         steamBackground: steamMedia.background,
         steamMedia: { backgroundVideo: steamMedia.backgroundVideo, animatedAvatar: steamMedia.animatedAvatar, avatarFrame: steamMedia.avatarFrame },
+        background: profileBackground,
         frame: mine?.frame ?? null, frameLook: mine?.frame === "crystal-orb" ? profileFrameLook : null, nameStyle: mine?.nameStyle ?? null, banner: mine?.banner ?? null, title: mine?.title ?? null, founder,
       },
       viewer: { isOwner, isStaff },
@@ -1976,7 +1980,7 @@ export function createLegacyXRouter() {
   });
   router.use("/cosmetics", cosmeticRateLimit);
   const cosmeticIdSchema = z.string().regex(/^[a-z0-9-]{2,40}$/);
-  const COSMETIC_KINDS = ["frame", "name_color", "name_glow", "banner", "title", "smoke_color", "grenade_trail", "grenade_light", "flash_effect"] as const;
+  const COSMETIC_KINDS = ["frame", "name_color", "name_glow", "banner", "title", "smoke_color", "grenade_trail", "grenade_light", "flash_effect", "background"] as const;
   type CosmeticKind = (typeof COSMETIC_KINDS)[number];
   // Bought cosmetics are rented: a share of the item's price (its 30-day price) buys 1 day, 7 days, 30 days or forever.
   const COSMETIC_DURATIONS = [
@@ -1987,8 +1991,8 @@ export function createLegacyXRouter() {
   ] as const;
   const cosmeticDurationSchema = z.enum(["1d", "7d", "30d", "forever"]);
   // Items rented for 30 days only (no day, week or forever price): the Crystal Orb, whose live canvas is the costliest thing on a profile (owner request 2026-11-02).
-  const THIRTY_DAYS_ONLY = new Set(["crystal-orb"]);
-  const cosmeticPrices = (basePrice: number, itemId = "") => Object.fromEntries(COSMETIC_DURATIONS.filter((duration) => !THIRTY_DAYS_ONLY.has(itemId) || duration.key === "30d").map((duration) => [duration.key, Math.max(1, Math.round((basePrice * duration.percent) / 100))]));
+  const thirtyDaysOnly = (id: string) => id === "crystal-orb" || isBackgroundItem(id);
+  const cosmeticPrices = (basePrice: number, itemId = "") => Object.fromEntries(COSMETIC_DURATIONS.filter((duration) => !thirtyDaysOnly(itemId) || duration.key === "30d").map((duration) => [duration.key, Math.max(1, Math.round((basePrice * duration.percent) / 100))]));
   const stillRunning = (expiresAt: unknown, now = Date.now()) => !expiresAt || Date.parse(textValue(expiresAt)) > now;
   const loadCosmeticCatalog = async () => {
     const { data, error } = await db().from("cosmetic_items").select("id,kind,name_en,name_mn,unlock,price,requirement,sort,color,color2,glow,fx,rarity,featured").eq("enabled", true).in("kind", [...COSMETIC_KINDS]).order("sort");
@@ -1998,7 +2002,7 @@ export function createLegacyXRouter() {
   /** What each of these players wears: their frame (item id) and name style (plain colours); players with nothing are left out. */
   const equippedCosmeticsFor = async (userIds: string[]) => {
     const ids = Array.from(new Set(userIds.filter(Boolean)));
-    const worn = new Map<string, { frame: string | null; frameLook?: FrameLook | null; banner: string | null; title: string | null; nameStyle: { color: string | null; glow: string | null; colorFx: string | null; glowFx: string | null } | null }>();
+    const worn = new Map<string, { frame: string | null; frameLook?: FrameLook | null; background?: string | null; banner: string | null; title: string | null; nameStyle: { color: string | null; glow: string | null; colorFx: string | null; glowFx: string | null } | null }>();
     if (!ids.length) return worn;
     // The colour each player picked for each design (name colours and glows are coloured by their wearer).
     const customRows = await db().from("cosmetic_custom").select("user_id,item_id,color,color2").in("user_id", ids);
@@ -2016,6 +2020,7 @@ export function createLegacyXRouter() {
       if (!item || ran.has(`${userId}:${textValue(row.item_id)}`)) continue;
       const entry = worn.get(userId) ?? { frame: null, banner: null, title: null, nameStyle: null };
       if (row.kind === "frame") entry.frame = textValue(item.id);
+      else if (row.kind === "background") entry.background = textValue(item.id);
       else if (row.kind === "banner") entry.banner = textValue(item.fx) || null;
       else if (row.kind === "title") entry.title = textValue(item.name_en) || null;
       else if (row.kind === "name_color" || row.kind === "name_glow") {
@@ -2089,6 +2094,9 @@ export function createLegacyXRouter() {
     const wearing = new Map(((equippedRows.data ?? []) as DbRow[]).filter((row) => textValue(catalog.find((item) => textValue(item.id) === textValue(row.item_id))?.unlock) !== "coin" || ownedIds.has(textValue(row.item_id))).map((row) => [textValue(row.kind), textValue(row.item_id)]));
     const frameLookRow = user ? await db().from("frame_looks").select("look").eq("user_id", user.id).maybeSingle() : { data: null, error: null };
     const frameLookOwn = frameLookRow.error ? null : readFrameLook((frameLookRow.data as DbRow | null)?.look);
+    const bgLookRows = user ? await db().from("background_looks").select("item_id,look").eq("user_id", user.id) : { data: [] as DbRow[], error: null };
+    const backgroundLooks: Record<string, unknown> = {};
+    if (!bgLookRows.error) for (const row of (bgLookRows.data ?? []) as DbRow[]) { const look = readBackgroundLook(row.look); if (look) backgroundLooks[textValue(row.item_id)] = look; }
     const mine = user ? await db().from("cosmetic_custom").select("item_id,color,color2").eq("user_id", user.id) : { data: [] as DbRow[], error: null };
     const mineRows = new Map<string, DbRow>(((mine.error ? [] : mine.data ?? []) as DbRow[]).map((row) => [textValue(row.item_id), row]));
     // A design shows the colours this player picked for it, or neutral grey until they pick (a visitor sees grey).
@@ -2102,6 +2110,9 @@ export function createLegacyXRouter() {
     res.json({
       players: players.error ? null : players.count ?? 0,
       equippedFrame: user ? worn.get(user.id)?.frame ?? null : null,
+      equippedBackground: wearing.get("background") ?? null,
+      /** The settings this player saved for each background they own (keyed by item id). */
+      backgroundLooks,
       /** The settings of the Crystal Orb this player picked (null: none yet, the website shows the preset). */
       frameLook: frameLookOwn,
       equippedNameColor: wearing.get("name_color") ?? null,
@@ -2115,6 +2126,7 @@ export function createLegacyXRouter() {
       /** Grenades that wear something other than the default (owner request 2026-10-26): { he: { grenade_trail: "trail-comet" }, flash: { grenade_trail: null } }, null meaning nothing on it. */
       nadeSlots: slotRows.error ? {} : slotOverrides((slotRows.data ?? []) as Array<{ nade: string; kind: string; item_id: string | null }>),
       frames: ofKind("frame"),
+      backgrounds: ofKind("background"),
       nameColors: ofKind("name_color"),
       nameGlows: ofKind("name_glow"),
       banners: ofKind("banner"),
@@ -2136,7 +2148,7 @@ export function createLegacyXRouter() {
     if (!item) apiError(404, "Item not found");
     if (textValue(item.unlock) !== "coin") apiError(409, "This item is not for sale", "cosmetic_not_for_sale");
     const length = COSMETIC_DURATIONS.find((entry) => entry.key === input.duration)!;
-    if (THIRTY_DAYS_ONLY.has(itemId) && length.key !== "30d") apiError(409, "This item is rented for 30 days only", "cosmetic_duration_not_sold");
+    if (thirtyDaysOnly(itemId) && length.key !== "30d") apiError(409, "This item is rented for 30 days only", "cosmetic_duration_not_sold");
     const price = Number(cosmeticPrices(numberValue(item.price), itemId)[length.key]);
     const label = item.kind === "frame" ? "Frame" : item.kind === "name_color" ? "Name colour" : item.kind === "banner" ? "Banner" : item.kind === "title" ? "Title" : item.kind === "smoke_color" ? "Smoke colour" : item.kind === "grenade_trail" ? "Grenade trail" : item.kind === "grenade_light" ? "Grenade light" : item.kind === "flash_effect" ? "Flash effect" : "Name glow";
     // Already yours: a rental is added on to the time left, and an item that is yours for good cannot be bought again.
@@ -2184,6 +2196,17 @@ export function createLegacyXRouter() {
     }
     await db().from("audit_logs").insert({ actor_type: "user", actor_id: user.id, action: "cosmetic.undo", target_type: "cosmetic_items", metadata: { item: itemId, price, ref: meta.ref } });
     res.json({ undone: true, balance: refund.balance });
+  }));
+  // The knobs of a profile background the player owns (owner request 2026-11-02), one saved set per background.
+  router.put("/cosmetics/background-look", userRoute(async (req, res, user) => {
+    const input = z.object({ item: cosmeticIdSchema, look: backgroundLookSchema }).strict().parse(req.body);
+    if (!isBackgroundItem(input.item)) apiError(404, "Item not found");
+    const { data, error: ownedError } = await db().from("cosmetic_owned").select("item_id,expires_at").eq("user_id", user.id).eq("item_id", input.item).maybeSingle();
+    legacyXError(ownedError, "Unable to check your cosmetics");
+    if (!data || !stillRunning((data as DbRow).expires_at)) apiError(403, "You do not own this background yet", "cosmetic_not_owned");
+    const saved = await db().from("background_looks").upsert({ user_id: user.id, item_id: input.item, look: input.look, updated_at: new Date().toISOString() }, { onConflict: "user_id,item_id" });
+    legacyXError(saved.error, "Unable to save your background");
+    res.json({ item: input.item, look: readBackgroundLook(input.look) });
   }));
   // The settings of the Crystal Orb frame (owner request 2026-11-01): everything the React Bits ball has, saved by its owner and read back for every viewer of their profile.
   router.put("/cosmetics/frame-look", userRoute(async (req, res, user) => {
