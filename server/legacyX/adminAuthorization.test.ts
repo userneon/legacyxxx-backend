@@ -99,4 +99,25 @@ describe("in-game staff authorization", () => {
     const { db } = fakeDb(null, { code: "XX000", message: "boom" });
     await expect(resolveAuthorizations(db, { serverId: "srv-1", steamIds: ["76561198000000001"] }, now)).rejects.toThrow();
   });
+
+  it("gives content creators their role on a fun server only, and never over a staff record", async () => {
+    const make = (mode: string | null) => ({
+      rpc: async () => ({ data: [row("76561198000000001", "admin", "active", "global")], error: null }),
+      from: (table: string) => {
+        const chain: any = {
+          select: () => chain, eq: () => chain,
+          in: async () => ({ data: table === "content_creators" ? [{ tier: "main", users: { steam_id: "76561198000000002" } }, { tier: "creator", users: [{ steam_id: "76561198000000003" }] }, { tier: "creator", users: { steam_id: "76561198000000001" } }] : [], error: null }),
+          maybeSingle: async () => ({ data: mode ? { current_mode: mode } : null, error: null }),
+        };
+        return chain;
+      },
+    });
+    const ids = ["76561198000000001", "76561198000000002", "76561198000000003", "76561198000000004"];
+    const fun = await resolveAuthorizations(make("fun") as any, { serverId: "srv-1", steamIds: ids }, now);
+    expect(fun.map((entry) => [entry.role, entry.authorized, entry.source])).toEqual([["admin", true, "global"], ["main_creator", true, "creator"], ["creator", true, "creator"], ["player", false, "none"]]);
+    for (const mode of ["competitive_5v5", "proleague", null]) {
+      const other = await resolveAuthorizations(make(mode) as any, { serverId: "srv-1", steamIds: ids }, now);
+      expect(other.map((entry) => entry.role)).toEqual(["admin", "player", "player", "player"]);
+    }
+  });
 });

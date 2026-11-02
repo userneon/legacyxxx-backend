@@ -1,6 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { z } from "zod";
 import { legacyXError } from "./supabase";
+import { playModeFromServerMode } from "./play";
 
 /**
  * In-game staff authorization for LegacyX-Admin (POST /plugin/admin/authorizations).
@@ -14,7 +15,8 @@ import { legacyXError } from "./supabase";
 type Db = SupabaseClient<any, any, any, any, any>;
 
 export const GAME_STAFF_ROLES = ["owner", "manager", "admin", "staff"] as const;
-export type GameStaffRole = (typeof GAME_STAFF_ROLES)[number] | "player";
+/** "creator" and "main_creator" are the content creators (owner request 2026-11-02): fun commands on fun servers, and nothing that punishes. */
+export type GameStaffRole = (typeof GAME_STAFF_ROLES)[number] | "creator" | "main_creator" | "player";
 
 const steamId64 = z.string().regex(/^7656119\d{10}$/, "SteamID64 is required");
 
@@ -47,6 +49,30 @@ const resolvedRowSchema = z.object({
 
 function unauthorized(steamId: string, status = "none", source = "none"): PlayerAuthorization {
   return { steamId, authorized: false, role: "player", status, source, expiresAt: null, clanTag: null };
+}
+
+
+/**
+ * Content creators get their in-game role (the fun commands, none that punish) only on a server in fun mode: on a ranked or pro server a
+ * noclip or a god mode would be cheating. Fail closed: an unknown server mode, a failed lookup or any error gives nobody anything.
+ */
+async function creatorRolesFor(db: Db, serverId: string, steamIds: string[]): Promise<Map<string, "creator" | "main_creator">> {
+  const roles = new Map<string, "creator" | "main_creator">();
+  if (steamIds.length === 0) return roles;
+  try {
+    const server = await db.from("reconnect_servers").select("current_mode").eq("server_id", serverId).maybeSingle();
+    if (server.error || playModeFromServerMode(server.data?.current_mode) !== "fun") return roles;
+    const { data, error } = await db.from("content_creators").select("tier,users!content_creators_user_id_fkey!inner(steam_id)").in("users.steam_id", steamIds);
+    if (error) return roles;
+    for (const row of (Array.isArray(data) ? data : []) as Array<{ tier?: unknown; users?: unknown }>) {
+      const user = Array.isArray(row.users) ? row.users[0] : row.users;
+      const steamId = typeof (user as { steam_id?: unknown } | undefined)?.steam_id === "string" ? (user as { steam_id: string }).steam_id : "";
+      if (steamId && steamIds.includes(steamId)) roles.set(steamId, row.tier === "main" ? "main_creator" : "creator");
+    }
+  } catch (error) {
+    console.warn("[legacy-x-api] creator roles unavailable", error instanceof Error ? error.message : error);
+  }
+  return roles;
 }
 
 /** Staff show their clan before their role in Tab. Purely cosmetic: any failure just leaves the tag out. */
@@ -89,6 +115,9 @@ export async function resolveAuthorizations(db: Db, input: z.infer<typeof author
     }
     bySteamId.set(steamId, { steamId, authorized: true, role: role as GameStaffRole, status, source, expiresAt: expiry ? expiry.toISOString() : null, clanTag: null });
   }
+  // Anyone the staff records do not vouch for may still be a content creator, on a fun server.
+  const creators = await creatorRolesFor(db, input.serverId, steamIds.filter((steamId) => !bySteamId.get(steamId)?.authorized));
+  creators.forEach((role, steamId) => bySteamId.set(steamId, { steamId, authorized: true, role, status: "active", source: "creator", expiresAt: null, clanTag: null }));
   await addClanTags(db, Array.from(bySteamId.values()).filter((entry) => entry.authorized));
   return steamIds.map((steamId) => bySteamId.get(steamId) ?? unauthorized(steamId));
 }
