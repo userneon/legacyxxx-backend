@@ -16,7 +16,7 @@ export function wireConfig(env: NodeJS.ProcessEnv = process.env): WireConfig | n
 export const wireWebhookSecret = (env: NodeJS.ProcessEnv = process.env) => env.WIRE_WEBHOOK_SECRET?.trim() || null;
 
 export class WireError extends Error {
-  constructor(message: string, readonly status = 0) { super(message); }
+  constructor(message: string, readonly status = 0, readonly code = "") { super(message); }
 }
 
 type Fetch = typeof fetch;
@@ -32,7 +32,7 @@ async function wireCall(config: WireConfig, fetcher: Fetch, method: "GET" | "POS
   const body = (await response.json().catch(() => ({}))) as Record<string, unknown>;
   if (!response.ok) {
     const error = body.error && typeof body.error === "object" ? (body.error as Record<string, unknown>) : {};
-    throw new WireError(`Wire answered ${response.status}${text(error.code) ? ` ${text(error.code)}` : ""}`, response.status);
+    throw new WireError(`Wire answered ${response.status}${text(error.code) ? ` ${text(error.code)}` : ""}${text(error.message) ? `: ${text(error.message).slice(0, 200)}` : ""}`, response.status, text(error.code).replace(/[^a-z0-9_]/gi, "").slice(0, 60));
   }
   return body;
 }

@@ -3953,7 +3953,8 @@ export function createLegacyXRouter() {
       await db().from("wallet_topups").update({ status: "failed" }).eq("id", textValue(row.id));
       if (error instanceof WireError) {
         console.error("[legacy-x-api] wire payment failed", error.message);
-        apiError(502, "The payment service did not answer. Try again in a moment.", "topup_failed");
+        // 4xx on purpose: the API hides the text of a 5xx, and the reason (connector_required, ...) is what the owner needs to see.
+        apiError(424, `The payment service refused it${error.code ? ` (${error.code})` : ""}. Try again in a moment.`, "topup_failed");
       }
       throw error;
     }
