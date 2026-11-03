@@ -33,9 +33,8 @@ STATIC_ASSET_BASE_URL=https://static.legacyx.cc
 # LX is bought with a top-up, not earned by playing (owner decision 2026-10-21). Set to "on" to pay coins for ranked matches, wins, ranks and streaks again.
 # LX_PLAY_EARNING=on
 
-# QPay (LX top-up). Merchant details come from QPay; leave empty and the top-up says QPay is not set up.
-# QPAY_SANDBOX=true uses https://merchant-sandbox.qpay.mn, QPAY_BASE_URL overrides the address.
-QPAY_CLIENT_ID=
-QPAY_CLIENT_SECRET=
-QPAY_INVOICE_CODE=
-QPAY_SANDBOX=false
+# Wire (LX top-up gateway, https://wire.mn; QPay and the other operators sit behind it). Leave empty and the Top up page says it is not set up.
+# WIRE_API_KEY is the project's sk_live_ key; WIRE_WEBHOOK_SECRET is the whsec_ shown once when the webhook endpoint
+# https://<PUBLIC_API_ORIGIN>/api/v1/public/wire/webhook is created in the Wire dashboard (then press "Баталгаажуулах").
+WIRE_API_KEY=
+WIRE_WEBHOOK_SECRET=

@@ -15,7 +15,7 @@ async function startServer() {
   // Nginx terminates TLS and forwards the client protocol/IP to the private Node listener.
   app.set("trust proxy", trustProxyValue());
   app.use(apiSecurityMiddleware);
-  app.use("/api/v1", express.json({ limit: apiBodyLimit() }), express.urlencoded({ limit: apiBodyLimit(), extended: true }), createLegacyXRouter());
+  app.use("/api/v1", express.json({ limit: apiBodyLimit(), verify: (req, _res, buf) => { if (req.url?.startsWith("/public/wire/webhook")) (req as { rawBody?: Buffer }).rawBody = buf } }), express.urlencoded({ limit: apiBodyLimit(), extended: true }), createLegacyXRouter());
   app.get("/health", (_req, res) => res.json({ ok: true, service: "legacy-x-backend" }));
   app.use(browserFallback);
   app.use(apiParseErrorHandler);
