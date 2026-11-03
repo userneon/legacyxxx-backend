@@ -525,6 +525,26 @@ const skinchangerLoadoutEntrySchema = z.object({
     context.addIssue({ code: z.ZodIssueCode.custom, path: ["options"], message: "Only weapons can be customised with stickers or charms" });
   }
 });
+// A craft (Skinchanger → Advanced studio): one skin and everything on it, saved to pick from the loadout later. Same option rules as a loadout entry.
+export const skinCraftInputSchema = z.object({
+  name: z.string().trim().max(40).default(""),
+  catalogItemId: z.string().uuid(),
+  options: z.object({
+    wear: z.number().min(0).max(1).optional(),
+    seed: z.number().int().min(0).max(1_000).optional(),
+    statTrak: z.boolean().optional(),
+    nameTag: z.string().trim().min(1).max(32).optional(),
+    stickers: z.array(skinchangerStickerSchema).max(5).optional(),
+    charm: skinchangerCharmSchema.optional(),
+  }).strict().default({}),
+}).strict().superRefine((craft, context) => {
+  const occupied = new Set<number>();
+  for (const sticker of craft.options.stickers ?? []) {
+    if (occupied.has(sticker.slot)) context.addIssue({ code: z.ZodIssueCode.custom, path: ["options", "stickers"], message: "Sticker slots must be unique" });
+    occupied.add(sticker.slot);
+  }
+});
+const MAX_SKIN_CRAFTS = 60;
 // An empty entry list is the intentional, confirmed action for removing the
 // final saved look. The database RPC then advances the version and clears rows.
 const skinchangerLoadoutSchema = z.object({ entries: z.array(skinchangerLoadoutEntrySchema).max(128) });
@@ -2555,6 +2575,101 @@ export function createLegacyXRouter() {
     });
     if (auditError) console.error("Unable to audit skinchanger entry save", auditError);
     res.json({ version });
+  }));
+
+  // ---- Advanced studio crafts ---------------------------------------------------------------------------------------------------------------------------
+  const CRAFT_ITEM_COLUMNS = "id,external_key,category,weapon_class,display_name,weapon_defindex,paint_id,model,image_key,image_url,metadata";
+  const craftView = (row: DbRow, items: Map<string, DbRow>) => {
+    const options = recordValue(row.options);
+    const accessoryIds = [...(Array.isArray(options.stickers) ? options.stickers : []).map((sticker: DbRow) => textValue(sticker.catalogItemId)), ...(options.charm ? [textValue(recordValue(options.charm).catalogItemId)] : [])];
+    return {
+      id: textValue(row.id),
+      name: textValue(row.name),
+      createdAt: textValue(row.created_at),
+      updatedAt: textValue(row.updated_at),
+      catalogItem: items.get(textValue(row.catalog_item_id)) ?? null,
+      options,
+      accessories: accessoryIds.map((id) => items.get(id)).filter((item): item is DbRow => Boolean(item)),
+    };
+  };
+  const loadCraftItems = async (rows: DbRow[]) => {
+    const ids = new Set<string>();
+    for (const row of rows) {
+      ids.add(textValue(row.catalog_item_id));
+      const options = recordValue(row.options);
+      for (const sticker of Array.isArray(options.stickers) ? options.stickers : []) ids.add(textValue((sticker as DbRow).catalogItemId));
+      if (options.charm) ids.add(textValue(recordValue(options.charm).catalogItemId));
+    }
+    ids.delete("");
+    if (ids.size === 0) return new Map<string, DbRow>();
+    const { data, error } = await db().from("skinchanger_catalog_items").select(CRAFT_ITEM_COLUMNS).in("id", Array.from(ids));
+    legacyXError(error, "Unable to load the crafts");
+    return new Map(((data ?? []) as DbRow[]).map((item) => [textValue(item.id), item]));
+  };
+  /** The skin must be an active weapon skin, knife or glove; stickers and charms only on a weapon skin, each an active item of its kind. Fills in the games' own ids. */
+  const prepareCraft = async (input: z.infer<typeof skinCraftInputSchema>) => {
+    const { data: item, error: itemError } = await db().from("skinchanger_catalog_items").select("id,category").eq("is_active", true).eq("id", input.catalogItemId).maybeSingle();
+    legacyXError(itemError, "Unable to validate the skin");
+    if (!item || !["weapon_skin", "knife", "glove"].includes(textValue(item.category))) apiError(400, "Pick a weapon skin, a knife or gloves");
+    const stickers = input.options.stickers ?? [];
+    if ((stickers.length > 0 || input.options.charm) && textValue(item.category) !== "weapon_skin") apiError(400, "Only weapons can be customised with stickers or charms");
+    const accessoryIds = Array.from(new Set([...stickers.map((sticker) => sticker.catalogItemId), ...(input.options.charm ? [input.options.charm.catalogItemId] : [])]));
+    const defindexes = new Map<string, { category: string; defindex: number | null }>();
+    if (accessoryIds.length > 0) {
+      const { data: accessories, error: accessoryError } = await db().from("skinchanger_catalog_items").select("id,category,weapon_defindex").eq("is_active", true).in("id", accessoryIds);
+      legacyXError(accessoryError, "Unable to validate custom items");
+      for (const accessory of accessories ?? []) defindexes.set(accessory.id, { category: accessory.category, defindex: accessory.weapon_defindex });
+    }
+    const defindexOf = (catalogItemId: string, category: "sticker" | "charm") => {
+      const accessory = defindexes.get(catalogItemId);
+      if (!accessory || accessory.category !== category || accessory.defindex === null) apiError(400, "One or more custom items are unavailable");
+      return accessory.defindex;
+    };
+    return {
+      catalog_item_id: input.catalogItemId,
+      name: input.name,
+      options: {
+        ...input.options,
+        stickers: input.options.stickers?.map((sticker) => ({ ...sticker, id: defindexOf(sticker.catalogItemId, "sticker") })),
+        charm: input.options.charm ? { ...input.options.charm, id: defindexOf(input.options.charm.catalogItemId, "charm") } : undefined,
+      },
+    };
+  };
+  router.get("/skinchanger/crafts", userRoute(async (_req, res, user) => {
+    const { data, error } = await db().from("skin_crafts").select("id,catalog_item_id,name,options,created_at,updated_at").eq("user_id", user.id).order("created_at", { ascending: false }).limit(MAX_SKIN_CRAFTS);
+    legacyXError(error, "Unable to load your crafts");
+    const rows = (data ?? []) as DbRow[];
+    const items = await loadCraftItems(rows);
+    res.set("Cache-Control", "no-store");
+    res.json({ crafts: rows.map((row) => craftView(row, items)).filter((craft) => craft.catalogItem !== null), limit: MAX_SKIN_CRAFTS });
+  }));
+  router.post("/skinchanger/crafts", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
+    const input = skinCraftInputSchema.parse(req.body);
+    const { count, error: countError } = await db().from("skin_crafts").select("id", { count: "exact", head: true }).eq("user_id", user.id);
+    legacyXError(countError, "Unable to check your crafts");
+    if ((count ?? 0) >= MAX_SKIN_CRAFTS) apiError(409, `You can keep ${MAX_SKIN_CRAFTS} crafts. Delete one first.`, "craft_limit");
+    const prepared = await prepareCraft(input);
+    const { data, error } = await db().from("skin_crafts").insert({ user_id: user.id, ...prepared }).select("id,catalog_item_id,name,options,created_at,updated_at").single();
+    legacyXError(error, "Unable to save the craft");
+    if (!data) apiError(500, "The craft was not saved");
+    const items = await loadCraftItems([data as DbRow]);
+    res.status(201).json(craftView(data as DbRow, items));
+  }));
+  router.put("/skinchanger/crafts/:craftId", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
+    const craftId = z.string().uuid().parse(req.params.craftId);
+    const input = skinCraftInputSchema.parse(req.body);
+    const prepared = await prepareCraft(input);
+    const { data, error } = await db().from("skin_crafts").update({ ...prepared, updated_at: new Date().toISOString() }).eq("id", craftId).eq("user_id", user.id).select("id,catalog_item_id,name,options,created_at,updated_at").maybeSingle();
+    legacyXError(error, "Unable to save the craft");
+    if (!data) apiError(404, "Craft not found");
+    const items = await loadCraftItems([data as DbRow]);
+    res.json(craftView(data as DbRow, items));
+  }));
+  router.delete("/skinchanger/crafts/:craftId", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
+    const craftId = z.string().uuid().parse(req.params.craftId);
+    const { error } = await db().from("skin_crafts").delete().eq("id", craftId).eq("user_id", user.id);
+    legacyXError(error, "Unable to delete the craft");
+    res.status(204).end();
   }));
 
   router.delete("/skinchanger/loadout/entry", userRoute(async (req, res, user) => {
