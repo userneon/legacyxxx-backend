@@ -511,6 +511,8 @@ const skinchangerLoadoutEntrySchema = z.object({
     wear: z.number().min(0).max(1).optional(),
     seed: z.number().int().min(0).max(1_000).optional(),
     statTrak: z.boolean().optional(),
+    // The kill count a StatTrak weapon starts with (Advanced studio); it counts up from there in game.
+    statTrakCount: z.number().int().min(0).max(999_999).optional(),
     nameTag: z.string().trim().min(1).max(32).optional(),
     stickers: z.array(skinchangerStickerSchema).max(5).optional(),
     charm: skinchangerCharmSchema.optional(),
@@ -533,6 +535,7 @@ export const skinCraftInputSchema = z.object({
     wear: z.number().min(0).max(1).optional(),
     seed: z.number().int().min(0).max(1_000).optional(),
     statTrak: z.boolean().optional(),
+    statTrakCount: z.number().int().min(0).max(999_999).optional(),
     nameTag: z.string().trim().min(1).max(32).optional(),
     stickers: z.array(skinchangerStickerSchema).max(5).optional(),
     charm: skinchangerCharmSchema.optional(),
@@ -2606,13 +2609,13 @@ export function createLegacyXRouter() {
     legacyXError(error, "Unable to load the crafts");
     return new Map(((data ?? []) as DbRow[]).map((item) => [textValue(item.id), item]));
   };
-  /** The skin must be an active weapon skin, knife or glove; stickers and charms only on a weapon skin, each an active item of its kind. Fills in the games' own ids. */
+  /** The skin must be an active weapon skin; stickers and the charm are each an active item of its kind. Fills in the games' own ids. */
   const prepareCraft = async (input: z.infer<typeof skinCraftInputSchema>) => {
     const { data: item, error: itemError } = await db().from("skinchanger_catalog_items").select("id,category").eq("is_active", true).eq("id", input.catalogItemId).maybeSingle();
     legacyXError(itemError, "Unable to validate the skin");
-    if (!item || !["weapon_skin", "knife", "glove"].includes(textValue(item.category))) apiError(400, "Pick a weapon skin, a knife or gloves");
+    // Crafts are for guns only (owner request 2026-11-03): no knives, gloves or agents.
+    if (!item || textValue(item.category) !== "weapon_skin") apiError(400, "Pick a weapon skin");
     const stickers = input.options.stickers ?? [];
-    if ((stickers.length > 0 || input.options.charm) && textValue(item.category) !== "weapon_skin") apiError(400, "Only weapons can be customised with stickers or charms");
     const accessoryIds = Array.from(new Set([...stickers.map((sticker) => sticker.catalogItemId), ...(input.options.charm ? [input.options.charm.catalogItemId] : [])]));
     const defindexes = new Map<string, { category: string; defindex: number | null }>();
     if (accessoryIds.length > 0) {

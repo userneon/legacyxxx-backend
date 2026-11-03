@@ -21,3 +21,12 @@ describe("skinCraftInputSchema", () => {
     expect(() => skinCraftInputSchema.parse({ catalogItemId: id, options: {}, extra: 1 })).toThrow();
   });
 });
+
+describe("skinCraftInputSchema StatTrak count", () => {
+  it("takes a kill count inside its range", () => {
+    expect(skinCraftInputSchema.parse({ catalogItemId: id, options: { statTrak: true, statTrakCount: 1337 } }).options.statTrakCount).toBe(1337);
+    expect(() => skinCraftInputSchema.parse({ catalogItemId: id, options: { statTrakCount: -1 } })).toThrow();
+    expect(() => skinCraftInputSchema.parse({ catalogItemId: id, options: { statTrakCount: 1_000_000 } })).toThrow();
+    expect(() => skinCraftInputSchema.parse({ catalogItemId: id, options: { statTrakCount: 1.5 } })).toThrow();
+  });
+});
