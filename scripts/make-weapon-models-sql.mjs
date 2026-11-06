@@ -3,7 +3,7 @@
 //   id | English name | Mongolian name | 30-day price in LX | replaces | world model | view model | anim base | notes
 //   katana-1 | Katana One | Катана 1 | 12000 | knife | models/weapons/legacyx/katana_01/katana_01.vmdl | models/weapons/legacyx/katana_01/katana_01_v.vmdl | m9 | uses the M9 animations
 //
-// "replaces" is knife, deagle or ak47. "anim base" is m9 or bayonet for a knife and empty for the others. The paths are the game's names (.vmdl, not .vmdl_c).
+// "replaces" is knife, deagle or ak47. "anim base" is m9, bayonet or default (the plain knife) for a knife and empty for the others. The paths are the game's names (.vmdl, not .vmdl_c).
 // Every item is added switched OFF: check each in game, then switch it on in Staff -> Shop -> Cosmetics.
 //
 //   node scripts/make-weapon-models-sql.mjs ../legacyxxx-workshop/compiled/MODELS.txt > supabase/legacy_x_weapon_models_items.sql
@@ -31,7 +31,7 @@ readFileSync(file, "utf8").split(/\r?\n/).forEach((raw, index) => {
   for (const [label, path] of [["world model", world], ["view model", view]]) {
     if (!/^[a-z0-9_/.\-]{4,200}\.vmdl$/.test(path ?? "")) return problems.push(`${where}: the ${label} path must be lower-case, end in .vmdl (not .vmdl_c) and use /`);
   }
-  if (weapon === "knife" ? !["m9", "bayonet"].includes(animBase) : animBase !== "") return problems.push(`${where}: the anim base is m9 or bayonet for a knife and empty for the others`);
+  if (weapon === "knife" ? !["m9", "bayonet", "default"].includes(animBase) : animBase !== "") return problems.push(`${where}: the anim base is m9, bayonet or default for a knife and empty for the others`);
   items.push(`  (${quote(id)}, ${quote(WEAPONS[weapon])}, ${quote(nameEn)}, ${quote(nameMn)}, 'coin', ${Number(price)}, '', ${sort++}, 3, false, false)`);
   links.push(`  (${quote(id)}, ${quote(weapon)}, ${quote(world)}, ${quote(view)}, ${animBase ? quote(animBase) : "NULL"})`);
 });

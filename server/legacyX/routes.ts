@@ -6089,7 +6089,7 @@ export function createLegacyXRouter() {
 
   /** Read on demand when a player types !rs. No queue and no session: the plugin applies what this returns. */
   /** The knife a worn knife model needs under it for its animations (M9 or Bayonet), or null: nothing worn, switched off, run out, or no animation base. */
-  const wornKnifeAnimation = async (userId: string): Promise<{ defindex: number; designer: string } | null> => {
+  const wornKnifeAnimation = async (userId: string): Promise<{ defindex: number; designer: string | null } | null> => {
     const { data: worn, error: wornError } = await db().from("cosmetic_equipped").select("item_id").eq("user_id", userId).eq("kind", "model_knife").maybeSingle();
     if (wornError || !worn) return null;
     const itemId = textValue((worn as DbRow).item_id);
@@ -6101,7 +6101,8 @@ export function createLegacyXRouter() {
     if (itemRes.error || modelRes.error || ownedRes.error) return null;
     if (!itemRes.data || (itemRes.data as DbRow).enabled !== true || !ownedRes.data || !stillRunning((ownedRes.data as DbRow).expires_at)) return null;
     const base = textValue((modelRes.data as DbRow | null)?.anim_base);
-    return base === "m9" ? { defindex: 508, designer: "weapon_knife_m9_bayonet" } : base === "bayonet" ? { defindex: 500, designer: "weapon_bayonet" } : null;
+    // "default": the model was made for the plain knife's skeleton, so the player's own knife pick (butterfly ...) is dropped and the plain knife stays under it.
+    return base === "m9" ? { defindex: 508, designer: "weapon_knife_m9_bayonet" } : base === "bayonet" ? { defindex: 500, designer: "weapon_bayonet" } : base === "default" ? { defindex: 0, designer: null } : null;
   };
   router.get("/plugin/skinchanger/loadout", skinchangerPluginLoadoutRateLimit, pluginRoute("skinchanger:read", async (req, res, plugin) => {
     const steamId = z.string().regex(/^\d{15,20}$/).parse(req.query.steam_id);
@@ -6137,7 +6138,7 @@ export function createLegacyXRouter() {
     const animationKnife = await wornKnifeAnimation(textValue(user.id));
     if (animationKnife) {
       const withoutKnife = entries.filter((entry) => entry.category !== "knife");
-      withoutKnife.push({ slot: "knife", slotKey: `knife:${animationKnife.defindex}`, teamScope: "all", catalogItemId: null, category: "knife", weaponDefindex: animationKnife.defindex, paintId: null, model: animationKnife.designer, options: {} });
+      if (animationKnife.designer) withoutKnife.push({ slot: "knife", slotKey: `knife:${animationKnife.defindex}`, teamScope: "all", catalogItemId: null, category: "knife", weaponDefindex: animationKnife.defindex, paintId: null, model: animationKnife.designer, options: {} });
       res.json({ entries: withoutKnife });
       return;
     }
