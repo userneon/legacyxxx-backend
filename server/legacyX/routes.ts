@@ -73,7 +73,7 @@ import { checkerBase, checkerMsi, checkerSha256, zipChunks, zipLength } from "./
 import { checkDownloadUrl, downloadHostAllowed, CHECK_ROLES, HWID_MATCH_KINDS, checkReportSchema, createCheckSchema, generateCheckCode, hashCheckCode, normalizeCheckCode, summarizeReport, sharesSamePc, recentSteamIds } from "./playerChecks";
 import { CLAN_LOOK_ITEMS, CLAN_LOOK_KINDS, clanLookItem, clanLooksFor, type ClanLook } from "./clanLooks";
 import { killEventSchema, killFeed } from "./killfeed";
-import { heartbeatSchema, ingestHeartbeat } from "./serverHeartbeat";
+import { heartbeatSchema, ingestHeartbeat, resolveServerName, serverNameSchema } from "./serverHeartbeat";
 import { backfillProfiles, ensureAccounts, isBare, nameFromGame } from "./profileBackfill";
 import { EXP_CHANGE_WINDOW_MS, latestExpChanges } from "./expChange";
 import { numericAddress } from "./hostAddress";
@@ -5018,6 +5018,16 @@ export function createLegacyXRouter() {
   }));
 
 
+  // Staff → Servers → Name (Owner): the name the website gives a server. The game server takes it with its next heartbeat and sets its hostname.
+  router.put("/staffpanel/servers/:serverId/name", ownerPanelRoute(async (req, res, staff) => {
+    const serverId = staffPanelServerSchema.parse(req.params.serverId);
+    const { name } = z.object({ name: serverNameSchema }).parse(req.body);
+    const { data, error } = await db().from("reconnect_servers").update({ site_name: name, display_name: name }).eq("server_id", serverId).select("server_id");
+    legacyXError(error, "Unable to rename the server");
+    if (!data?.length) apiError(404, "Target server was not found");
+    await db().from("staff_audit_logs").insert({ staff_id: staff.staffId, event_type: "staffpanel_server_renamed", target_type: "server", target_id: null, metadata: { server_id: serverId, name } });
+    res.json({ serverId, name });
+  }));
   router.get("/staffpanel/database", ownerPanelRoute(async (_req, res) => {
     const [users, penalties, matches, actions] = await Promise.all([
       db().from("users").select("id", { count: "exact", head: true }),
@@ -5588,7 +5598,9 @@ export function createLegacyXRouter() {
     // Players who never signed in on the website get an account here first, so ranks, stats and skins work for them too.
     const onServer = input.players.map((player) => player.steamId);
     void ensureAccounts(onServer).then(() => backfillProfiles(onServer)).then(() => nameFromGame(input.players)).catch(() => undefined);
-    res.json(result);
+    // The server's name as the website has it (made on the first heartbeat): the game server sets its own hostname from it.
+    const displayName = await resolveServerName(db(), input.serverId, input.mode);
+    res.json(displayName ? { ...result, displayName } : result);
   }));
   router.post("/plugin/match-core/events", pluginRoute("matches:write", async (req, res, plugin) => {
     const parsed = matchCoreEventSchema.parse(req.body);

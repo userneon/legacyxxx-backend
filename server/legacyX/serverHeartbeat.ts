@@ -34,3 +34,41 @@ export async function ingestHeartbeat(db: Db, input: z.infer<typeof heartbeatSch
   legacyXError(error, "Unable to record server heartbeat");
   return { players: typeof data === "number" ? data : input.players.length };
 }
+
+/** What the website calls a server of each mode until staff rename it ("Fun #2"). Other modes are named after the mode itself. */
+const MODE_LABELS: Record<string, string> = { competitive_5v5: "5x5", fun: "Fun", proleague: "Pro League", tournaments: "Tournament" };
+export function defaultServerName(mode: string, number: number): string {
+  const label = MODE_LABELS[mode] ?? (mode ? mode.replace(/[_-]+/g, " ") : "LEGACY-X");
+  return `${label} #${number}`.slice(0, 60);
+}
+
+/** A name safe to use as a hostname and to type into a game console: no control characters, quotes, semicolons or backslashes. */
+export const serverNameSchema = z.string().trim().min(1).max(60).regex(/^[^\u0000-\u001f\u007f"';\\$`=]+$/, "Use letters, digits, spaces and - _ . # | only");
+
+/**
+ * The name the website gives this server (reconnect_servers.site_name), made on the first heartbeat when it has none. The game server
+ * reads it from the heartbeat answer and sets its own hostname, so no name is written in a server's .env, cfg or service file.
+ * Null when it cannot be read (the migration supabase/legacy_x_server_site_name.sql is not applied yet): the answer then has no name.
+ */
+export async function resolveServerName(db: Db, serverId: string, mode: string): Promise<string | null> {
+  try {
+    const read = async () => {
+      const found = await db.from("reconnect_servers").select("site_name").eq("server_id", serverId).maybeSingle();
+      if (found.error) return undefined;   // the column is missing or the table cannot be read
+      const name = typeof found.data?.site_name === "string" ? found.data.site_name.trim() : "";
+      return name || null;
+    };
+    const existing = await read();
+    if (existing === undefined) return null;
+    if (existing) return existing;
+    const same = await db.from("reconnect_servers").select("server_id", { count: "exact", head: true }).eq("current_mode", mode).not("site_name", "is", null);
+    if (same.error) return null;
+    const name = defaultServerName(mode, (same.count ?? 0) + 1);
+    // Only a row still without a name takes it, so two servers starting together cannot overwrite each other.
+    const set = await db.from("reconnect_servers").update({ site_name: name, display_name: name }).eq("server_id", serverId).is("site_name", null).select("site_name");
+    if (set.error) return null;
+    return set.data?.length ? name : (await read()) ?? null;
+  } catch {
+    return null;
+  }
+}
