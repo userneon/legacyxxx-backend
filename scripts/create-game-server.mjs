@@ -19,8 +19,9 @@ import { writeFileSync } from "node:fs";
 const SCOPES = ["admin:read", "bans:read", "bans:write", "stats:write", "matches:write", "servers:write", "skinchanger:read", "skinchanger:write"];
 const MODES = ["competitive_5v5", "fun", "proleague"];
 const usage = () => {
-  console.error('Usage: node --env-file=.env scripts/create-game-server.mjs <host> <port>[:mode[:name]] [...] [--prefix <id-prefix>]');
-  console.error('  e.g. 203.0.113.5 "27015:competitive_5v5:LEGACY-X #1" "27016:fun:Fun #1"   (modes: competitive_5v5, fun, proleague)');
+  console.error('Usage: node --env-file=.env scripts/create-game-server.mjs <host> <port>[:mode] [...] [--prefix <id-prefix>]');
+  console.error("  e.g. 203.0.113.5 27015:competitive_5v5 27016:fun   (modes: competitive_5v5, fun, proleague)");
+  console.error("  No server name here: the website names each server (\"Fun #1\" on its first heartbeat; rename it in Staff → Servers).");
   process.exit(1);
 };
 
@@ -38,6 +39,7 @@ if (!host || !/^[A-Za-z0-9.-]{1,100}$/.test(host) || portArgs.length === 0) usag
 const servers = portArgs.map((arg) => {
   const [port, mode = "competitive_5v5", ...nameParts] = arg.split(":");
   const name = nameParts.join(":").trim();
+  if (name) console.error(`Note: the name "${name}" for port ${port} is not written anywhere; servers are named on the website (Staff → Servers → Name).`);
   const known = MODES.some((m) => mode === m || mode.startsWith(`${m}_`) || mode.startsWith(`${m}-`));
   if (!/^\d{2,5}$/.test(port) || Number(port) > 65535 || !known || name.length > 100 || /[\r\n]/.test(name)) usage();
   return { port: Number(port), mode, name };
@@ -69,7 +71,7 @@ if (error) {
 }
 
 const perServer = servers
-  .map(({ port, mode, name }) => [`LEGACYX_${port}_SERVER_MODE=${mode}`, name ? `LEGACYX_${port}_SERVER_NAME=${name}` : null].filter(Boolean).join("\n"))
+  .map(({ port, mode }) => `LEGACYX_${port}_SERVER_MODE=${mode}`)
   .join("\n");
 
 const env = `# LEGACY-X CounterStrikeSharp environment for ${host}, made by scripts/create-game-server.mjs.
