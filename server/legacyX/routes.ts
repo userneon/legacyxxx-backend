@@ -132,7 +132,19 @@ function hasAccessToken(req: Request) {
 
 /** Public read routes: guests are served as null, while a present-but-invalid token still 401s so the client can refresh it. */
 function optionalUserRoute(handler: (req: ApiRequest, res: Response, user: LegacyUser | null) => Promise<void>) {
-  return asyncRoute(async (req, res) => handler(req, res, hasAccessToken(req) ? await requireUser(req) : null));
+  return asyncRoute(async (req, res) => {
+    let user: LegacyUser | null = null;
+    if (hasAccessToken(req)) {
+      try {
+        user = await requireUser(req);
+      } catch (error) {
+        // The site asks again with this header once it has tried to renew the session and could not (a stale cookie of someone who is signed out):
+        // that visitor is served as a guest instead of seeing an error on a page that is public.
+        if (!(req.header("x-guest-fallback") === "1" && (error as { statusCode?: number })?.statusCode === 401)) throw error;
+      }
+    }
+    return handler(req, res, user);
+  });
 }
 
 
@@ -973,7 +985,7 @@ export function createLegacyXRouter() {
     if (origin && ((frontendOrigin && origin === frontendOrigin) || origin === adminOrigin())) {
       res.setHeader("Access-Control-Allow-Origin", origin);
       res.setHeader("Access-Control-Allow-Credentials", "true");
-      res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type");
+      res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Guest-Fallback");
       res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
       // Without this the browser asks permission again before every request (browsers keep an answer for only 5 seconds by default).
       res.setHeader("Access-Control-Max-Age", "7200");
