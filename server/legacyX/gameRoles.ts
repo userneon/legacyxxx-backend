@@ -89,16 +89,9 @@ export const GAME_COMMANDS: GameCommand[] = [
   { name: "swap", flag: "@css/kick", group: "Teams", summary: "", locked: false, stamina: 750 },
   { name: "team", flag: "@css/kick", group: "Teams", summary: "", locked: false, stamina: 750 },
   { name: "unban", flag: "@css/unban", group: "Bans", summary: "Unban a player from console", locked: false, stamina: 750 },
-  { name: "unblind", flag: "@css/slay", group: "Fun", summary: "", locked: false, stamina: 1000 },
-  { name: "unbury", flag: "@css/slay", group: "Fun", summary: "", locked: false, stamina: 1000 },
-  { name: "undrug", flag: "@css/slay", group: "Fun", summary: "", locked: false, stamina: 1000 },
-  { name: "unfreeze", flag: "@css/slay", group: "Fun", summary: "", locked: false, stamina: 1000 },
   { name: "ungag", flag: "@css/chat", group: "Chat and punishments", summary: "Ungag a player from console", locked: false, stamina: 250 },
   { name: "unmute", flag: "@css/chat", group: "Chat and punishments", summary: "Unmute a player from console", locked: false, stamina: 250 },
-  { name: "unshake", flag: "@css/slay", group: "Fun", summary: "", locked: false, stamina: 1000 },
   { name: "unsilence", flag: "@css/chat", group: "Chat and punishments", summary: "Remove mute+gag from a player (console)", locked: false, stamina: 250 },
-  { name: "unsize", flag: "@css/slay", group: "Fun", summary: "", locked: false },
-  { name: "unspeed", flag: "@css/cheats", group: "Cheats", summary: "", locked: false, stamina: 1000 },
   { name: "vote", flag: "@css/generic", group: "Basics and votes", summary: "Create a vote from console", locked: false, stamina: 250 },
   { name: "voteban", flag: "@css/generic", group: "Basics and votes", summary: "Create a ban vote from console", locked: false, stamina: 500 },
   { name: "votegag", flag: "@css/generic", group: "Basics and votes", summary: "Create a gag vote from console", locked: false, stamina: 250 },
@@ -125,7 +118,20 @@ export const EXTRA_FLAGS = [
 ] as const;
 const EXTRA_FLAG_NAMES = new Set<string>(EXTRA_FLAGS.map((entry) => entry.flag));
 
-export type GameRoleConfig = { commands: string[]; extraFlags: string[]; modes: GameMode[]; immunity: number };
+/** A limit on one command for a role: seconds to wait between two uses (0 = none) and uses per map (0 = no cap). */
+export type CommandLimit = { cooldown: number; perMap: number };
+export type GameRoleConfig = { commands: string[]; extraFlags: string[]; modes: GameMode[]; immunity: number; limits: Record<string, CommandLimit> };
+
+/**
+ * Commands that used to have an "un" twin (owner request 2026-11-06): the one command now switches the effect on and off, so the twin is no
+ * longer a separate entry. A role saved while the twins existed keeps working: a twin in its list becomes the command it undid.
+ */
+export const RETIRED_COMMANDS: Record<string, string> = { unblind: "blind", unbury: "bury", undrug: "drug", unfreeze: "freeze", unshake: "shake", unsize: "size", unspeed: "speed" };
+function migrateRole(value: unknown): unknown {
+  if (!value || typeof value !== "object" || !Array.isArray((value as { commands?: unknown }).commands)) return value;
+  const commands = (value as { commands: unknown[] }).commands.map((name) => (typeof name === "string" && RETIRED_COMMANDS[name]) || name);
+  return { ...(value as object), commands };
+}
 
 /** What each role gets until it is edited: the same as the plugin's built-in roles (kept in step with StaffPermissions.cs). */
 const BUILT_IN: Record<GameRoleKey, { flags: string[]; stamina: number; extraFlags: string[]; modes: GameMode[]; immunity: number; without?: string[] }> = {
@@ -141,16 +147,22 @@ export function defaultGameRole(role: GameRoleKey): GameRoleConfig {
   const commands = GAME_COMMANDS
     .filter((command) => !command.locked && base.flags.includes(command.flag) && (command.stamina ?? 0) <= base.stamina && !(base.without ?? []).includes(command.name))
     .map((command) => command.name);
-  return { commands, extraFlags: [...base.extraFlags], modes: [...base.modes], immunity: base.immunity };
+  return { commands, extraFlags: [...base.extraFlags], modes: [...base.modes], immunity: base.immunity, limits: {} };
 }
 
 /** What an Owner may save. Unknown or locked commands, unknown flags and modes are refused, not dropped. */
-export const gameRoleConfigSchema = z.object({
+export const gameRoleConfigSchema = z.preprocess(migrateRole, z.object({
   commands: z.array(z.string()).max(200).refine((list) => list.every((name) => GRANTABLE.has(name)), "A command is unknown or cannot be granted"),
   extraFlags: z.array(z.string()).max(10).refine((list) => list.every((flag) => EXTRA_FLAG_NAMES.has(flag)), "A permission is unknown"),
   modes: z.array(z.enum(GAME_MODES)).max(3),
   immunity: z.number().int().min(0).max(900),
-}).strict().transform((value) => ({ ...value, commands: Array.from(new Set(value.commands)).sort(), extraFlags: Array.from(new Set(value.extraFlags)).sort(), modes: Array.from(new Set(value.modes)) as GameMode[] }));
+  limits: z.record(z.string(), z.object({ cooldown: z.number().int().min(0).max(3600), perMap: z.number().int().min(0).max(999) }).strict()).default({}).refine((limits) => Object.keys(limits).every((name) => GRANTABLE.has(name)), "A limit is on an unknown command"),
+}).strict().transform((value) => {
+  const commands = Array.from(new Set(value.commands)).sort();
+  // A limit counts only on a command the role has, and one with nothing set is no limit.
+  const limits = Object.fromEntries(Object.entries(value.limits).filter(([name, limit]) => commands.includes(name) && (limit.cooldown > 0 || limit.perMap > 0)).sort(([a], [b]) => a.localeCompare(b)));
+  return { ...value, commands, extraFlags: Array.from(new Set(value.extraFlags)).sort(), modes: Array.from(new Set(value.modes)) as GameMode[], limits };
+}));
 
 /** A role as stored, or null when it does not fit the rules (then the built-in role applies). */
 export function parseGameRole(value: unknown): GameRoleConfig | null {

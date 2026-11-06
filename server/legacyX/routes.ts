@@ -5257,7 +5257,7 @@ export function createLegacyXRouter() {
     res.json({
       roles: GAME_ROLES.map((role) => {
         const config = roles.get(role)!;
-        return { role, label: GAME_ROLE_LABELS[role], commands: config.commands, extraFlags: config.extraFlags, modes: config.modes, immunity: config.immunity, changed: config.stored, updatedAt: config.updatedAt, builtIn: defaultGameRole(role) };
+        return { role, label: GAME_ROLE_LABELS[role], commands: config.commands, extraFlags: config.extraFlags, modes: config.modes, immunity: config.immunity, limits: config.limits, changed: config.stored, updatedAt: config.updatedAt, builtIn: defaultGameRole(role) };
       }),
       commands: GAME_COMMANDS.map(({ name, group, summary, locked }) => ({ name, group, summary, locked })),
       extraFlags: EXTRA_FLAGS,
@@ -5271,7 +5271,7 @@ export function createLegacyXRouter() {
     const config = gameRoleConfigSchema.parse(req.body);
     const { error } = await db().from("game_roles").upsert({ role, config, updated_by: user.id, updated_at: new Date().toISOString() }, { onConflict: "role" });
     legacyXError(error, "Unable to save the role");
-    await db().from("audit_logs").insert({ actor_type: "user", actor_id: user.id, action: "game_role.change", target_type: "game_roles", target_id: null, metadata: { role, commands: config.commands.length, modes: config.modes, immunity: config.immunity } });
+    await db().from("audit_logs").insert({ actor_type: "user", actor_id: user.id, action: "game_role.change", target_type: "game_roles", target_id: null, metadata: { role, commands: config.commands.length, modes: config.modes, immunity: config.immunity, limits: config.limits } });
     res.json({ role, ...config });
   }));
   router.delete("/staff/game-roles/:role", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {

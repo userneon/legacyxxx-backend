@@ -39,7 +39,7 @@ export type PlayerAuthorization = {
   /** The staff member's website clan tag (shown in Tab as [CLAN | ROLE]); null when they have none. Cosmetic only. */
   clanTag: string | null;
   /** What the plugin gives this player, from the role as edited on the staff site (absent for an Owner: that role is built into the plugin). */
-  grant?: { flags: string[]; commands: string[]; immunity: number } | null;
+  grant?: { flags: string[]; commands: string[]; immunity: number; limits?: Record<string, { cooldown: number; perMap: number }> } | null;
 };
 
 const resolvedRowSchema = z.object({
@@ -152,7 +152,7 @@ export async function resolveAuthorizations(db: Db, input: z.infer<typeof author
       bySteamId.set(entry.steamId, unauthorized(entry.steamId, "mode", entry.source));
       continue;
     }
-    entry.grant = { flags: flagsFor(config), commands: config.commands, immunity: config.immunity };
+    entry.grant = { flags: flagsFor(config), commands: config.commands, immunity: config.immunity, limits: config.limits };
   }
   await addClanTags(db, Array.from(bySteamId.values()).filter((entry) => entry.authorized));
   return steamIds.map((steamId) => bySteamId.get(steamId) ?? unauthorized(steamId));
