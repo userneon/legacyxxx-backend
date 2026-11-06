@@ -866,7 +866,17 @@ async function applyRankedMatchResult(pluginId: string, eventId: string, matchId
     // Clan XP follows the match; they never hold up or undo the ranked result.
     const finishedCore = await legacyXDb().from("core_matches").select("result").eq("id", matchId).maybeSingle();
     await recordClanMatch(legacyXDb(), matchId, outcome.players, finishedAt).catch((error) => coinLog("clan match record failed", error));
-    return { ...recordValue(applied.data), ...summary };
+    // What each player got, for the game server's final EXP card (the same fields as the half time preview).
+    const finalPlayers = outcome.players.map((player) => ({
+      steam_id: player.steamId,
+      team_key: player.team,
+      outcome: player.outcome,
+      exp_before: player.expBefore,
+      exp_delta: player.expDelta,
+      exp_after: player.expAfter,
+      breakdown: player.breakdown,
+    }));
+    return { ...recordValue(applied.data), ...summary, players: finalPlayers };
   }
   return { status: "not_ranked", reasons: ["exp_changed_concurrently"] };
 }
