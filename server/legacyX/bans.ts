@@ -286,3 +286,23 @@ export async function bannedPlayer(db: Db, steamId: string) {
   legacyXError(error, "Unable to read player");
   return data ? { steamId, username: String(data.username ?? ""), avatar: String(data.avatar ?? "") } : null;
 }
+
+/**
+ * Which of these users have an active ban right now (owner request 2026-11-06): a `ban` penalty that is not lifted and is permanent or has not run out.
+ * Read live, never stored on the player, so lifting a ban (or its end) brings everything back at once: the profile numbers, the place on the ladders and
+ * the Discord channels. A failed read throws: callers must not treat "unknown" as "not banned" when they strip something, nor as "banned" when they restore.
+ */
+export async function activeBannedUserIds(db: Db, userIds: string[]): Promise<Set<string>> {
+  const unique = Array.from(new Set(userIds.filter(Boolean)));
+  const banned = new Set<string>();
+  const now = Date.now();
+  for (let index = 0; index < unique.length; index += 200) {
+    const { data, error } = await db.from("penalties").select("user_id,is_permanent,expires_at").in("user_id", unique.slice(index, index + 200)).eq("type", "ban").eq("is_unbanned", false);
+    legacyXError(error, "Unable to read active bans");
+    for (const row of (data ?? []) as Array<{ user_id: string; is_permanent: boolean | null; expires_at: string | null }>) {
+      if (row.is_permanent || !row.expires_at || Date.parse(row.expires_at) > now) banned.add(row.user_id);
+    }
+  }
+  return banned;
+}
+

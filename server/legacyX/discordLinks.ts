@@ -2,6 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { createHash, randomBytes } from "node:crypto";
 import { z } from "zod";
 import { sha256 } from "./auth";
+import { activeBannedUserIds } from "./bans";
 import { legacyXError } from "./supabase";
 
 /**
@@ -111,6 +112,8 @@ export type DiscordLink = {
   creatorTier: string | null;
   /** 1, 2 or 3 for the three members who boost right now with the most boosts (the Boosters page's order), else null. */
   boosterPlace: number | null;
+  /** True while the player has an active ban: the bot gives the Banned role (every channel but support hidden) and takes it off when the ban is lifted. */
+  banned: boolean;
   /** The ping topics the player switched on (see PING_TOPICS). Gives the matching "Ping: …" roles. */
   pings: PingTopic[];
 };
@@ -178,6 +181,8 @@ export async function listLinks(db: Db, discordId?: string): Promise<DiscordLink
     for (const row of (creatorRows ?? []) as Row[]) creatorTiers.set(text(row.user_id), text(row.tier));
   }
   const places = await boosterPlaces(db);
+  // Banned members: the bot hides every Discord channel but support from them, and shows them again when the ban is lifted.
+  const bannedUsers = await activeBannedUserIds(db, userIds);
   const pings = new Map<string, PingTopic[]>();
   for (let index = 0; index < userIds.length; index += 200) {
     const { data: rows, error: pingError } = await db.from("discord_pings").select("user_id,topic").in("user_id", userIds.slice(index, index + 200));
@@ -205,6 +210,7 @@ export async function listLinks(db: Db, discordId?: string): Promise<DiscordLink
       staffRole: staffRoles.get(text(link.user_id)) || null,
       creatorTier: creatorTiers.get(text(link.user_id)) || null,
       boosterPlace: places.get(text(link.discord_id)) ?? null,
+      banned: bannedUsers.has(text(link.user_id)),
       pings: pings.get(text(link.user_id)) ?? [],
     };
   });

@@ -1556,6 +1556,9 @@ export function createLegacyXRouter() {
     const creatorRow = creatorResult.error ? null : (creatorResult.data as DbRow | null);
     const creatorTierValue = creatorTier(creatorRow?.tier);
     const activePenalty = penalties.find((penalty) => !penalty.isUnbanned && (penalty.isPermanent || !penalty.expiresAt || Date.parse(String(penalty.expiresAt)) > Date.now()));
+    // A player with an active ban (owner request 2026-11-06): the profile keeps their name, avatar and penalty record, but every number is withheld (the website
+    // draws those cards censored with "Banned"). Nothing is deleted: lifting the ban brings it all back, because it is read live from the penalty.
+    const bannedNow = activePenalty?.type === "ban" ? { permanent: Boolean(activePenalty.isPermanent) || !activePenalty.expiresAt, expiresAt: activePenalty.expiresAt ?? null, reason: textValue(activePenalty.reason) || null, since: activePenalty.date ?? null } : null;
     // The settings of a Crystal Orb frame, only for a player who wears one (best effort: a missing table never breaks the profile).
     // The background worn on this profile and its saved knobs (best effort).
     const profileBackground = mine?.background ? { id: mine.background, look: readBackgroundLook(((await db().from("background_looks").select("look").eq("user_id", userId).eq("item_id", mine.background).maybeSingle()).data as DbRow | null)?.look) } : null;
@@ -1574,10 +1577,11 @@ export function createLegacyXRouter() {
         frame: mine?.frame ?? null, frameLook: mine?.frame === "crystal-orb" ? profileFrameLook : null, nameStyle: mine?.nameStyle ?? null, banner: mine?.banner ?? null, title: mine?.title ?? null, founder,
       },
       viewer: { isOwner, isStaff },
+      banned: bannedNow,
       // The owner's own switches, so the popover shows them; null for everyone else.
       visibility: isOwner ? Object.fromEntries(PROFILE_SECTIONS.map((section) => [section, !ownerHidden.includes(section)])) : null,
       hidden,
-      competitive: progression ? {
+      competitive: progression && !bannedNow ? {
         exp: numberValue(progression.current_exp),
         rankId: numberValue(progression.rank_id),
         rankName: textValue(progression.rank_name),
@@ -1590,11 +1594,11 @@ export function createLegacyXRouter() {
         // The player's own daily / weekly EXP limits; only the owner sees them.
         expLimits: isOwner ? expLimitUsage(expRows.map((row) => ({ exp_delta: numberValue(row.exp_delta), created_at: textValue(row.created_at) }))) : null,
       } : null,
-      lastPlayedAt: timestampValue(progression?.last_match_at) || null,
+      lastPlayedAt: bannedNow ? null : timestampValue(progression?.last_match_at) || null,
       trust: { steamAccountCreatedAt: steamCreatedAt, activePenalty: activePenalty ? { id: activePenalty.id, type: activePenalty.type } : null },
-      stats: hidden.includes("stats") ? null : profileStats(progression, benchmark),
-      recentMatches: hidden.includes("matches") ? null : expRows.slice(0, 10).map(mapExpRecentMatch),
-      maps: hidden.includes("matches") ? null : mapWinRates(expRows),
+      stats: bannedNow || hidden.includes("stats") ? null : profileStats(progression, benchmark),
+      recentMatches: bannedNow || hidden.includes("matches") ? null : expRows.slice(0, 10).map(mapExpRecentMatch),
+      maps: bannedNow || hidden.includes("matches") ? null : mapWinRates(expRows),
       penalties: penalties.sort((a, b) => Number(b === activePenalty) - Number(a === activePenalty)).slice(0, 5),
       penaltyCount: penalties.length,
       loadout: loadout ? loadoutShowcase(loadout.entries as DbRow[]) : null,

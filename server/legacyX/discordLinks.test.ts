@@ -102,6 +102,8 @@ describe("Discord links", () => {
       "discord_pings.select": [{ data: [{ user_id: "u1", topic: "updates" }, { user_id: "u1", topic: "live" }, { user_id: "u1", topic: "bogus" }], error: null }],
       "competitive_player_profiles.select": [{ data: [{ user_id: "u1", rank_id: 12, rank_name: "Vanguard II", current_exp: 2400, matches_completed: 30 }], error: null }],
       "clan_members.select": [{ data: [{ user_id: "u2", role: "leader" }], error: null }],
+      // u2 has a ban that has not run out, u1 one that has: only u2 is banned now.
+      "penalties.select": [{ data: [{ user_id: "u1", is_permanent: false, expires_at: "2020-01-01T00:00:00Z" }, { user_id: "u2", is_permanent: true, expires_at: null }], error: null }],
       "staff.select": [{ data: [{ user_id: "u1", role: "MANAGER" }], error: null }],
       "content_creators.select": [{ data: [{ user_id: "u2", tier: "main" }], error: null }],
       "discord_community_stats.select": [{ data: [
@@ -111,8 +113,8 @@ describe("Discord links", () => {
       ], error: null }],
     });
     expect(await listLinks(db)).toEqual([
-      { discordId: "111111111111111111", discordName: "a", linkedAt: "t1", steamId: "76561198000000001", username: "Alpha", rankId: 12, rankName: "Vanguard II", currentExp: 2400, matchesCompleted: 30, clanRole: null, staffRole: "manager", creatorTier: null, boosterPlace: 2, pings: ["updates", "live"] },
-      { discordId: "222222222222222222", discordName: "b", linkedAt: "t2", steamId: "76561198000000002", username: "Bravo", rankId: null, rankName: null, currentExp: 0, matchesCompleted: 0, clanRole: "leader", staffRole: null, creatorTier: "main", boosterPlace: 1, pings: [] },
+      { discordId: "111111111111111111", discordName: "a", linkedAt: "t1", steamId: "76561198000000001", username: "Alpha", rankId: 12, rankName: "Vanguard II", currentExp: 2400, matchesCompleted: 30, clanRole: null, staffRole: "manager", creatorTier: null, boosterPlace: 2, banned: false, pings: ["updates", "live"] },
+      { discordId: "222222222222222222", discordName: "b", linkedAt: "t2", steamId: "76561198000000002", username: "Bravo", rankId: null, rankName: null, currentExp: 0, matchesCompleted: 0, clanRole: "leader", staffRole: null, creatorTier: "main", boosterPlace: 1, banned: true, pings: [] },
     ]);
   });
 
