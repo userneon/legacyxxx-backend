@@ -76,7 +76,7 @@ export const GAME_COMMANDS: GameCommand[] = [
   { name: "rename", flag: "@css/slay", group: "Fun", summary: "Rename a player", locked: false, stamina: 750 },
   { name: "respawn", flag: "@css/cheats", group: "Cheats", summary: "", locked: false, stamina: 1000 },
   { name: "revive", flag: "@css/cheats", group: "Cheats", summary: "", locked: false, stamina: 1000 },
-  { name: "rr", flag: "@css/generic", group: "Basics and votes", summary: "Restart round from console", locked: false, stamina: 500 },
+  { name: "rr", flag: "@css/generic", group: "Basics and votes", summary: "Send the server back to warmup", locked: false, stamina: 500 },
   { name: "sethp", flag: "@css/cheats", group: "Cheats", summary: "", locked: false, stamina: 1000 },
   { name: "shake", flag: "@css/slay", group: "Fun", summary: "", locked: false, stamina: 1000 },
   { name: "silence", flag: "@css/chat", group: "Chat and punishments", summary: "Mute+Gag a player from console", locked: false, stamina: 250 },
