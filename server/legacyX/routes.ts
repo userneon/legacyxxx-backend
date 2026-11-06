@@ -2601,7 +2601,7 @@ export function createLegacyXRouter() {
   }));
 
   // ---- Advanced studio crafts ---------------------------------------------------------------------------------------------------------------------------
-  const CRAFT_ITEM_COLUMNS = "id,external_key,category,weapon_class,display_name,weapon_defindex,paint_id,model,image_key,image_url,metadata";
+  const CRAFT_ITEM_COLUMNS = "id,external_key,category,weapon_class,display_name,weapon_defindex,paint_id,model,image_key,metadata";
   const craftView = (row: DbRow, items: Map<string, DbRow>) => {
     const options = recordValue(row.options);
     const accessoryIds = [...(Array.isArray(options.stickers) ? options.stickers : []).map((sticker: DbRow) => textValue(sticker.catalogItemId)), ...(options.charm ? [textValue(recordValue(options.charm).catalogItemId)] : [])];
@@ -2615,7 +2615,7 @@ export function createLegacyXRouter() {
       accessories: accessoryIds.map((id) => items.get(id)).filter((item): item is DbRow => Boolean(item)),
     };
   };
-  const loadCraftItems = async (rows: DbRow[]) => {
+  const loadCraftItems = async (req: Request, rows: DbRow[]) => {
     const ids = new Set<string>();
     for (const row of rows) {
       ids.add(textValue(row.catalog_item_id));
@@ -2627,7 +2627,7 @@ export function createLegacyXRouter() {
     if (ids.size === 0) return new Map<string, DbRow>();
     const { data, error } = await db().from("skinchanger_catalog_items").select(CRAFT_ITEM_COLUMNS).in("id", Array.from(ids));
     legacyXError(error, "Unable to load the crafts");
-    return new Map(((data ?? []) as DbRow[]).map((item) => [textValue(item.id), item]));
+    return new Map(((data ?? []) as DbRow[]).map((item) => [textValue(item.id), { ...item, image_url: staticStorageUrl(req, textValue(item.image_key) || null) }]));
   };
   /** The skin must be an active weapon skin; stickers and the charm are each an active item of its kind. Fills in the games' own ids. */
   const prepareCraft = async (input: z.infer<typeof skinCraftInputSchema>) => {
@@ -2658,11 +2658,11 @@ export function createLegacyXRouter() {
       },
     };
   };
-  router.get("/skinchanger/crafts", userRoute(async (_req, res, user) => {
+  router.get("/skinchanger/crafts", userRoute(async (req, res, user) => {
     const { data, error } = await db().from("skin_crafts").select("id,catalog_item_id,name,options,created_at,updated_at").eq("user_id", user.id).order("created_at", { ascending: false }).limit(MAX_SKIN_CRAFTS);
     legacyXError(error, "Unable to load your crafts");
     const rows = (data ?? []) as DbRow[];
-    const items = await loadCraftItems(rows);
+    const items = await loadCraftItems(req, rows);
     res.set("Cache-Control", "no-store");
     res.json({ crafts: rows.map((row) => craftView(row, items)).filter((craft) => craft.catalogItem !== null), limit: MAX_SKIN_CRAFTS });
   }));
@@ -2675,7 +2675,7 @@ export function createLegacyXRouter() {
     const { data, error } = await db().from("skin_crafts").insert({ user_id: user.id, ...prepared }).select("id,catalog_item_id,name,options,created_at,updated_at").single();
     legacyXError(error, "Unable to save the craft");
     if (!data) apiError(500, "The craft was not saved");
-    const items = await loadCraftItems([data as DbRow]);
+    const items = await loadCraftItems(req, [data as DbRow]);
     res.status(201).json(craftView(data as DbRow, items));
   }));
   router.put("/skinchanger/crafts/:craftId", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
@@ -2685,7 +2685,7 @@ export function createLegacyXRouter() {
     const { data, error } = await db().from("skin_crafts").update({ ...prepared, updated_at: new Date().toISOString() }).eq("id", craftId).eq("user_id", user.id).select("id,catalog_item_id,name,options,created_at,updated_at").maybeSingle();
     legacyXError(error, "Unable to save the craft");
     if (!data) apiError(404, "Craft not found");
-    const items = await loadCraftItems([data as DbRow]);
+    const items = await loadCraftItems(req, [data as DbRow]);
     res.json(craftView(data as DbRow, items));
   }));
   router.delete("/skinchanger/crafts/:craftId", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
