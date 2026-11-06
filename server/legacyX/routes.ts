@@ -6088,6 +6088,21 @@ export function createLegacyXRouter() {
   });
 
   /** Read on demand when a player types !rs. No queue and no session: the plugin applies what this returns. */
+  /** The knife a worn knife model needs under it for its animations (M9 or Bayonet), or null: nothing worn, switched off, run out, or no animation base. */
+  const wornKnifeAnimation = async (userId: string): Promise<{ defindex: number; designer: string } | null> => {
+    const { data: worn, error: wornError } = await db().from("cosmetic_equipped").select("item_id").eq("user_id", userId).eq("kind", "model_knife").maybeSingle();
+    if (wornError || !worn) return null;
+    const itemId = textValue((worn as DbRow).item_id);
+    const [itemRes, modelRes, ownedRes] = await Promise.all([
+      db().from("cosmetic_items").select("id,enabled").eq("id", itemId).maybeSingle(),
+      db().from("weapon_models").select("anim_base").eq("item_id", itemId).maybeSingle(),
+      db().from("cosmetic_owned").select("expires_at").eq("user_id", userId).eq("item_id", itemId).maybeSingle(),
+    ]);
+    if (itemRes.error || modelRes.error || ownedRes.error) return null;
+    if (!itemRes.data || (itemRes.data as DbRow).enabled !== true || !ownedRes.data || !stillRunning((ownedRes.data as DbRow).expires_at)) return null;
+    const base = textValue((modelRes.data as DbRow | null)?.anim_base);
+    return base === "m9" ? { defindex: 508, designer: "weapon_knife_m9_bayonet" } : base === "bayonet" ? { defindex: 500, designer: "weapon_bayonet" } : null;
+  };
   router.get("/plugin/skinchanger/loadout", skinchangerPluginLoadoutRateLimit, pluginRoute("skinchanger:read", async (req, res, plugin) => {
     const steamId = z.string().regex(/^\d{15,20}$/).parse(req.query.steam_id);
     const pluginId = req.header("x-plugin-id")?.trim() || plugin.name;
@@ -6117,6 +6132,15 @@ export function createLegacyXRouter() {
         options: recordValue(row.options),
       }];
     });
+    // A katana (or any knife model) made for the M9 or Bayonet animations (owner request 2026-11-06): the game plays the animations of the knife entity, so
+    // the player's knife is that knife. WeaponPaints already turns the knife into whatever the loadout says, so it is told here, and nothing is removed in game.
+    const animationKnife = await wornKnifeAnimation(textValue(user.id));
+    if (animationKnife) {
+      const withoutKnife = entries.filter((entry) => entry.category !== "knife");
+      withoutKnife.push({ slot: "knife", slotKey: `knife:${animationKnife.defindex}`, teamScope: "all", catalogItemId: null, category: "knife", weaponDefindex: animationKnife.defindex, paintId: null, model: animationKnife.designer, options: {} });
+      res.json({ entries: withoutKnife });
+      return;
+    }
     res.json({ entries });
   }));
   // The in-game menu's Skins tab (knives and gloves). Reading needs skinchanger:read; equipping needs skinchanger:write and a
