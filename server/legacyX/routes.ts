@@ -53,7 +53,6 @@ import { liftInfo } from "./penaltyLift";
 import { cleanPlayerConfig, playerConfigSchema } from "./playerConfig";
 import { menuLoadoutQuery, menuRarity, menuTiles, MENU_AGENT_TEAMS, MENU_SKIN_PAGE, MENU_SLOT_CATEGORY, entriesReplacedByEquip, menuAgentName, menuGunModel, menuSkinEquipBody, menuSkinOptionsBody, mergeMenuOptions, menuSkinUnequipBody, entriesRemovedByUnequip, menuSkinItemsQuery, menuSkinName, menuSkinSlotSchema, menuSkinTypesQuery, menuSlotKey, sharedGunEntryMovedTo, type LoadoutRow, type MenuSkinSlot } from "./menuSkins";
 import { PROFILE_NAME_MAX, PROFILE_SECTIONS, bestNameMatch, escapeLike, hiddenForViewer, loadoutShowcase, mapWinRates, normalizeHiddenSections, profileStats, buildBenchmark, BENCHMARK_MIN_MATCHES, staffCard, type ProfileSection } from "./profileOverview";
-import { anticheatFlagSchema, recordAnticheatFlag } from "./anticheat";
 import { activeBans, bannedPlayer, checkBansSchema, issueBan, issueBanSchema, issueIpBan, issueIpBanSchema, listActiveBans, revokeAllBans, revokeAllBansSchema, revokeBans, revokeBanSchema, revokeIpBans, revokeIpBanSchema } from "./bans";
 import { authorizationRequestSchema, loadGameRoles, resolveAuthorizations } from "./adminAuthorization";
 import { CREATOR_TIER_LABEL, cleanCreatorLinks, creatorApplicationSchema, creatorDecisionSchema, creatorTier, ownCreatorLinksSchema, sortCreators, upsertCreatorSchema } from "./creators";
@@ -5768,25 +5767,6 @@ export function createLegacyXRouter() {
     const { data, error } = await db().from("update_announcements").select("*").gt("id", after).gte("created_at", cutoff).order("id", { ascending: true }).limit(ANNOUNCEMENT_PAGE);
     legacyXError(error, "Unable to read announcements");
     res.json({ announcements: ((data ?? []) as AnnouncementRecord[]).map(announcementView), latestId });
-  }));
-  // A detection from the CS2AC anti-cheat (owner request 2026-11-06): the game server asks before it bans. The answer says "ban" or "flag" and why; either way the
-  // evidence is stored. A server that cannot reach this route decides for itself (see LegacyX-Admin css_cs2ac_flag).
-  router.post("/plugin/anticheat/flags", pluginRoute("bans:write", async (req, res) => {
-    const input = anticheatFlagSchema.parse(req.body);
-    const result = await recordAnticheatFlag(db(), input);
-    res.set("Cache-Control", "no-store");
-    res.status(201).json(result);
-  }));
-  // The latest detections for the staff who answer an appeal (Admin and above, like the penalties list).
-  router.get("/moderation/anticheat-flags", userRoute(async (req, res, user) => {
-    await requireModerator(user.id, "ban");
-    const input = z.object({ steamId: z.string().regex(/^7656119\d{10}$/).optional(), limit: z.coerce.number().int().min(1).max(200).default(50) }).parse(req.query);
-    let request = db().from("anticheat_flags").select("id,steam_id,detector,detail,server_id,map_name,server_mode,action,decision,context,created_at").order("created_at", { ascending: false }).limit(input.limit);
-    if (input.steamId) request = request.eq("steam_id", input.steamId);
-    const { data, error } = await request;
-    legacyXError(error, "Unable to load the anti-cheat detections");
-    res.set("Cache-Control", "no-store");
-    res.json({ flags: ((data ?? []) as DbRow[]).map((row) => ({ id: textValue(row.id), steamId: textValue(row.steam_id), detector: textValue(row.detector), detail: textValue(row.detail) || null, serverId: textValue(row.server_id) || null, map: textValue(row.map_name) || null, mode: textValue(row.server_mode) || null, action: textValue(row.action), decision: textValue(row.decision), context: row.context ?? {}, at: timestampValue(row.created_at) })) });
   }));
   // Central SteamID bans (Discord bot /ban, /unban). Game servers poll /plugin/bans/check and kick.
   router.post("/plugin/bans", pluginRoute("bans:write", async (req, res, plugin) => {
