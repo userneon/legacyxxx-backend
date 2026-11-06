@@ -80,7 +80,6 @@ export const GAME_COMMANDS: GameCommand[] = [
   { name: "sethp", flag: "@css/cheats", group: "Cheats", summary: "", locked: false, stamina: 1000 },
   { name: "shake", flag: "@css/slay", group: "Fun", summary: "", locked: false, stamina: 1000 },
   { name: "silence", flag: "@css/chat", group: "Chat and punishments", summary: "Mute+Gag a player from console", locked: false, stamina: 250 },
-  { name: "silentaim", flag: "@css/root", group: "Server", summary: "Shots hurt the nearest enemy in front", locked: true },
   { name: "blink", flag: "@css/slay", group: "Fun", summary: "Move a player forward", locked: false, stamina: 1000 },
   { name: "bounce", flag: "@css/slay", group: "Fun", summary: "Make a player spring, again to stop", locked: false, stamina: 1000 },
   { name: "burn", flag: "@css/slay", group: "Fun", summary: "Fire damage on a player, again to put out", locked: false, stamina: 1000 },

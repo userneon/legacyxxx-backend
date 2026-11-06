@@ -47,7 +47,7 @@ describe("in-game roles you can edit", () => {
   });
 
   it("keeps the dangerous commands out of reach", () => {
-    for (const name of ["rcon", "cvar", "addadmin", "removeadmin", "aimlock", "wh", "bhop", "silentaim", "cleanbans"]) expect(GAME_COMMANDS.find((command) => command.name === name)?.locked).toBe(true);
+    for (const name of ["rcon", "cvar", "addadmin", "removeadmin", "aimlock", "wh", "bhop", "cleanbans"]) expect(GAME_COMMANDS.find((command) => command.name === name)?.locked).toBe(true);
   });
 
   it("has one command for an effect and its undoing, and still reads roles saved with the twin", () => {
