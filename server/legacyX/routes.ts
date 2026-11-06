@@ -4979,15 +4979,35 @@ export function createLegacyXRouter() {
   // that waited more than two minutes is cancelled instead: a stop or a map change queued while the server was down must never
   // fire later by surprise.
   const STAFF_ACTION_MAX_WAIT_MS = 120_000;
+  // A game server may ask with `wait` (seconds, up to 20): when nothing is queued the answer is held until something is, so an action reaches
+  // the server the moment it is queued instead of at its next round of asking. A queued action wakes the waiting request at once; every 2 s it
+  // looks again anyway, in case the action was queued through another API process. Without `wait` the answer is immediate, as before.
+  const staffActionWaiters = new Map<string, Set<() => void>>();
+  const wakeStaffActionWaiters = (serverId: string) => { for (const wake of Array.from(staffActionWaiters.get(serverId) ?? [])) wake(); };
   router.post("/plugin/staffpanel/claim", pluginRoute("servers:write", async (req, res) => {
-    const { serverId } = z.object({ serverId: staffPanelServerSchema }).parse(req.body);
-    const now = new Date();
-    const cutoff = new Date(now.getTime() - STAFF_ACTION_MAX_WAIT_MS).toISOString();
-    await db().from("staff_panel_actions").update({ status: "cancelled", completed_at: now.toISOString(), result: { ok: false, message: "Cancelled: the server did not take it within two minutes." } }).eq("server_id", serverId).eq("status", "pending").lt("created_at", cutoff);
-    const { data, error } = await db().from("staff_panel_actions").update({ status: "claimed", claimed_at: now.toISOString() }).eq("server_id", serverId).eq("status", "pending").gte("created_at", cutoff).select("id,action_type,payload,created_at");
-    legacyXError(error, "Unable to claim server actions");
+    const { serverId, wait } = z.object({ serverId: staffPanelServerSchema, wait: z.number().int().min(0).max(20).default(0) }).parse(req.body);
+    let closed = false;
+    req.on("close", () => { closed = true; });
+    const deadline = Date.now() + wait * 1000;
+    let rows: DbRow[] = [];
+    for (;;) {
+      const now = new Date();
+      const cutoff = new Date(now.getTime() - STAFF_ACTION_MAX_WAIT_MS).toISOString();
+      await db().from("staff_panel_actions").update({ status: "cancelled", completed_at: now.toISOString(), result: { ok: false, message: "Cancelled: the server did not take it within two minutes." } }).eq("server_id", serverId).eq("status", "pending").lt("created_at", cutoff);
+      const { data, error } = await db().from("staff_panel_actions").update({ status: "claimed", claimed_at: now.toISOString() }).eq("server_id", serverId).eq("status", "pending").gte("created_at", cutoff).select("id,action_type,payload,created_at");
+      legacyXError(error, "Unable to claim server actions");
+      rows = (data ?? []) as DbRow[];
+      if (rows.length > 0 || closed || Date.now() >= deadline) break;
+      await new Promise<void>((resolve) => {
+        const waiters = staffActionWaiters.get(serverId) ?? new Set<() => void>();
+        staffActionWaiters.set(serverId, waiters);
+        const done = () => { clearTimeout(timer); waiters.delete(done); if (waiters.size === 0) staffActionWaiters.delete(serverId); resolve(); };
+        const timer = setTimeout(done, Math.min(2000, Math.max(100, deadline - Date.now())));
+        waiters.add(done);
+      });
+    }
     res.set("Cache-Control", "no-store");
-    res.json({ actions: ((data ?? []) as DbRow[]).sort((a, b) => Date.parse(textValue(a.created_at)) - Date.parse(textValue(b.created_at))).map((row) => ({ id: textValue(row.id), type: textValue(row.action_type), payload: recordValue(row.payload) })) });
+    res.json({ actions: rows.sort((a, b) => Date.parse(textValue(a.created_at)) - Date.parse(textValue(b.created_at))).map((row) => ({ id: textValue(row.id), type: textValue(row.action_type), payload: recordValue(row.payload) })) });
   }));
   router.post("/plugin/staffpanel/actions/:actionId/result", pluginRoute("servers:write", async (req, res) => {
     const actionId = userIdSchema.parse(req.params.actionId);
@@ -5525,6 +5545,7 @@ export function createLegacyXRouter() {
         console.error("Unable to ban the accounts on the same PC", failure instanceof Error ? failure.message : failure);
       }
     }
+    wakeStaffActionWaiters(input.serverId);
     res.status(202).json({ action: data, linkedBans: linked });
   }));
 
