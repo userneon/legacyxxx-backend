@@ -90,6 +90,7 @@ export const GAME_COMMANDS: GameCommand[] = [
   { name: "retakespawn", flag: "@css/root", group: "Server", summary: "Mark a retake spawn (T, CT or BOMB on A or B) where you stand", locked: true },
   { name: "retakespawnremove", flag: "@css/root", group: "Server", summary: "Remove the nearest retake spawn", locked: true },
   { name: "retakespawns", flag: "@css/root", group: "Server", summary: "Count and show this map's retake spawns", locked: true },
+  { name: "retakelearn", flag: "@css/root", group: "Server", summary: "How many retake places have been learned on this map", locked: true },
   { name: "blink", flag: "@css/slay", group: "Fun", summary: "Move a player forward", locked: false, stamina: 1000 },
   { name: "bounce", flag: "@css/slay", group: "Fun", summary: "Make a player spring, again to stop", locked: false, stamina: 1000 },
   { name: "burn", flag: "@css/slay", group: "Fun", summary: "Fire damage on a player, again to put out", locked: false, stamina: 1000 },
