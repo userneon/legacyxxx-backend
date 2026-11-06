@@ -26,10 +26,10 @@ describe("anti-cheat decisions", () => {
     expect(decideAnticheatAction(bhop, { ...calm, earlierDetections: 1 })).toMatchObject({ action: "ban", reason: "CS2AC: Bhop (x2)" });
   });
 
-  it("never bans staff, the already banned, cheat-toy holders, match modes, Fun servers or warmup", () => {
+  it("never bans staff, the already banned, cheat-toy holders, Fun servers or warmup", () => {
     expect(decideAnticheatAction(input(), { ...calm, isStaff: true }).action).toBe("flag");
     expect(decideAnticheatAction(input(), { ...calm, alreadyBanned: true }).action).toBe("flag");
-    for (const key of ["cheatToys", "gameMode", "funServer", "warmup"]) expect(decideAnticheatAction(input({ context: { [key]: true } }), calm).action).toBe("flag");
+    for (const key of ["cheatToys", "funServer", "warmup"]) expect(decideAnticheatAction(input({ context: { [key]: true } }), calm).action).toBe("flag");
   });
 
   it("treats the same detector firing on three other players within a minute as the server's fault", () => {
@@ -42,7 +42,7 @@ describe("anti-cheat decisions", () => {
   it("validates what the game server sends", () => {
     expect(anticheatFlagSchema.safeParse({ steamId: "123", detector: "Aimbot" }).success).toBe(false);
     expect(anticheatFlagSchema.safeParse({ steamId: "76561198000000001", detector: "" }).success).toBe(false);
-    expect(input().context).toEqual({ warmup: false, funServer: false, gameMode: false, cheatToys: false });
+    expect(input().context).toEqual({ warmup: false, funServer: false, cheatToys: false });
   });
 });
 

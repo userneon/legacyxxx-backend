@@ -8,8 +8,7 @@ import { legacyXError } from "./supabase";
  * detection is a ban or only a flag, writes the evidence, and says why. The server then runs the ordinary ban (LegacyX-Admin `css_ban`) only when told to.
  * The rules are plain and short so a wrong ban can be explained and a rule can be changed in one place:
  *   - never a ban for staff, or for someone who is banned already;
- *   - never a ban while the server is in warmup, is a Fun server, runs one of the owner's match modes, or the player holds one of our cheat toys (they would be
- *     "detected" by design);
+ *   - never a ban while the server is in warmup, is a Fun server, or the player holds one of our cheat toys (they would be "detected" by design);
  *   - never a ban when the same detector fired on three or more other players of that server within a minute (that is the server, not cheaters);
  *   - then by how sure the detector is: the heavy ones ban at once, the medium ones on the second detection within ten minutes, the rest never alone.
  */
@@ -29,9 +28,8 @@ export const anticheatFlagSchema = z.object({
   context: z.object({
     warmup: z.boolean().default(false),
     funServer: z.boolean().default(false),
-    gameMode: z.boolean().default(false),
     cheatToys: z.boolean().default(false),
-  }).default({ warmup: false, funServer: false, gameMode: false, cheatToys: false }),
+  }).default({ warmup: false, funServer: false, cheatToys: false }),
 });
 export type AnticheatFlagInput = z.infer<typeof anticheatFlagSchema>;
 
@@ -71,7 +69,6 @@ export function decideAnticheatAction(input: AnticheatFlagInput, state: Antichea
   if (state.isStaff) return flag("A staff member or owner is never banned automatically.");
   if (state.alreadyBanned) return flag("Already banned.");
   if (input.context.cheatToys) return flag("The player holds one of the server's own cheat toys.");
-  if (input.context.gameMode) return flag("A match mode with cheats is switched on.");
   if (input.context.funServer) return flag("A Fun server.");
   if (input.context.warmup) return flag("Warmup: a detection then is not reliable.");
   if (state.otherPlayersRecently >= MASS_DETECTION_PLAYERS) return flag(`The same detector fired on ${state.otherPlayersRecently} other players of this server within a minute: probably the server, not cheaters.`);
