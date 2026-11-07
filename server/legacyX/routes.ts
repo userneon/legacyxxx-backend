@@ -31,6 +31,7 @@ import { resolveSteamProfileMedia } from "./steamBackground";
 import { coreRoundScore, expRowAsResult, mapExpRecentMatch, mapMatchDetail, resultPlayersWithoutExp } from "./matchDetails";
 import { recordClanMatch } from "./clanMatch";
 import { headToHead } from "./compare";
+import { MARKET_LIMITS, cleanLine, imageUrl as marketImageUrl, marketListingSchema, marketQuerySchema, marketReportSchema, marketStatusSchema, processMarketImage } from "./market";
 import { KIT_DAILY_LIMIT, KIT_ITEMS, KIT_KEEP_HOURS, KitRenderQueue, kitExt, kitFilePath, kitRenderEnabled, kitRenderSchema, removeKitJobFiles } from "./kitRender";
 import { PICK_DEFAULT_2, isColourable, isTwoColour, itemColours } from "./cosmeticColours";
 import { NADES, NADE_KINDS, itemsByNade, slotOverrides, type NadeKind } from "./cosmeticNades";
@@ -5798,6 +5799,238 @@ export function createLegacyXRouter() {
       }),
     });
   }));
+  // The Market (owner request 2026-11-07, market.ts, supabase/legacy_x_market.sql): players post what they like to sell. Pictures are re-encoded and kept in the database
+  // (like clan pictures); phone and email are given only to signed-in players; three different reports hide a listing until staff look.
+  const marketStaffRole = async (userId: string) => {
+    const { data, error } = await db().from("staff").select("role").eq("user_id", userId).eq("status", "active").maybeSingle();
+    legacyXError(error, "Unable to verify staff access");
+    const role = data ? textValue((data as DbRow).role) : "";
+    return (CHECK_ROLES as readonly string[]).includes(role) ? role : null;
+  };
+  const marketSellers = async (userIds: string[]) => {
+    const unique = Array.from(new Set(userIds));
+    if (unique.length === 0) return new Map<string, DbRow>();
+    const { data } = await db().from("users").select("id,username,avatar,steam_id").in("id", unique);
+    return new Map(((data ?? []) as DbRow[]).map((row) => [textValue(row.id), row]));
+  };
+  const marketCard = (row: DbRow, sellers: Map<string, DbRow>, cover: string | null) => {
+    const seller = sellers.get(textValue(row.user_id));
+    return {
+      id: textValue(row.id),
+      title: textValue(row.title),
+      priceMnt: row.price_mnt === null || row.price_mnt === undefined ? null : numberValue(row.price_mnt),
+      cover: cover ? marketImageUrl(cover) : null,
+      status: textValue(row.status),
+      createdAt: textValue(row.created_at),
+      seller: { id: textValue(row.user_id), name: seller ? textValue(seller.username) : "Player", avatar: seller?.avatar ? textValue(seller.avatar) : null, steamId: seller ? textValue(seller.steam_id) : "" },
+    };
+  };
+  const marketCovers = async (listingIds: string[]) => {
+    const covers = new Map<string, string>();
+    if (listingIds.length === 0) return covers;
+    const { data } = await db().from("market_images").select("id,listing_id,position").in("listing_id", listingIds).order("position", { ascending: true });
+    for (const row of (data ?? []) as DbRow[]) if (!covers.has(textValue(row.listing_id))) covers.set(textValue(row.listing_id), textValue(row.id));
+    return covers;
+  };
+  const loadListing = async (id: string) => {
+    const { data, error } = await db().from("market_listings").select("*").eq("id", id).maybeSingle();
+    legacyXError(error, "Unable to load the listing");
+    return (data as DbRow | null) ?? null;
+  };
+  const ownListing = async (id: string, userId: string) => {
+    const row = await loadListing(id);
+    if (!row) apiError(404, "That listing was not found", "not_found");
+    if (textValue(row.user_id) !== userId) apiError(403, "This is not your listing", "forbidden");
+    if (textValue(row.status) === "removed") apiError(409, "Staff removed this listing", "listing_removed");
+    return row;
+  };
+  const marketDetail = async (row: DbRow, viewerId: string | null, staffRole: string | null) => {
+    const [sellers, images] = await Promise.all([marketSellers([textValue(row.user_id)]), db().from("market_images").select("id,position").eq("listing_id", textValue(row.id)).order("position", { ascending: true })]);
+    const card = marketCard(row, sellers, null);
+    const mine = viewerId !== null && viewerId === textValue(row.user_id);
+    return {
+      ...card,
+      description: textValue(row.description),
+      images: ((images.data ?? []) as DbRow[]).map((image) => ({ id: textValue(image.id), url: marketImageUrl(textValue(image.id)) })),
+      hasPhone: Boolean(row.phone),
+      hasEmail: Boolean(row.email),
+      expiresAt: textValue(row.expires_at),
+      mine,
+      /** Only the owner and staff see these. */
+      reportCount: mine || staffRole ? numberValue(row.report_count) : undefined,
+      hidden: numberValue(row.report_count) >= MARKET_LIMITS.hideAtReports,
+      removedReason: staffRole || mine ? (row.removed_reason ? textValue(row.removed_reason) : null) : undefined,
+      owner: mine ? { phone: row.phone ? textValue(row.phone) : "", email: row.email ? textValue(row.email) : "" } : undefined,
+    };
+  };
+
+  router.get("/public/market", asyncRoute(async (req, res) => {
+    const { q, page } = marketQuerySchema.parse(req.query);
+    let query = db().from("market_listings").select("*", { count: "exact" }).eq("status", "active").lt("report_count", MARKET_LIMITS.hideAtReports).gt("expires_at", new Date().toISOString());
+    if (q) query = query.ilike("title", `%${q.replace(/[%_\\]/g, " ")}%`);
+    const from = (page - 1) * MARKET_LIMITS.perPage;
+    const { data, error, count } = await query.order("created_at", { ascending: false }).range(from, from + MARKET_LIMITS.perPage - 1);
+    legacyXError(error, "Unable to load the market");
+    const rows = (data ?? []) as DbRow[];
+    const [sellers, covers] = await Promise.all([marketSellers(rows.map((row) => textValue(row.user_id))), marketCovers(rows.map((row) => textValue(row.id)))]);
+    res.set("Cache-Control", "public, max-age=15");
+    res.json({ items: rows.map((row) => marketCard(row, sellers, covers.get(textValue(row.id)) ?? null)), total: count ?? rows.length, page, pageSize: MARKET_LIMITS.perPage });
+  }));
+  router.get("/public/market/images/:imageId", asyncRoute(async (req, res) => {
+    const imageId = z.string().uuid().parse(req.params.imageId);
+    const { data, error } = await db().from("market_images").select("mime,data,market_listings!inner(status)").eq("id", imageId).maybeSingle();
+    legacyXError(error, "Unable to load the picture");
+    const listing = data ? (Array.isArray((data as DbRow).market_listings) ? ((data as DbRow).market_listings as DbRow[])[0] : ((data as DbRow).market_listings as DbRow)) : null;
+    if (!data || !listing || textValue(listing.status) === "removed") apiError(404, "No picture");
+    const hex = String((data as DbRow).data);
+    res.set({ "Content-Type": "image/webp", "Cache-Control": "public, max-age=31536000, immutable", "Content-Disposition": "inline", "X-Content-Type-Options": "nosniff" }).send(Buffer.from(hex.startsWith("\\x") ? hex.slice(2) : hex, "hex"));
+  }));
+  router.get("/public/market/:id", asyncRoute(async (req, res) => {
+    const id = z.string().uuid().parse(req.params.id);
+    const row = await loadListing(id);
+    // A removed listing is gone; a hidden or sold one can still be opened by its link, saying so.
+    if (!row || textValue(row.status) === "removed") apiError(404, "That listing was not found", "not_found");
+    res.set("Cache-Control", "no-store");
+    res.json(await marketDetail(row, null, null));
+  }));
+
+  router.get("/market/mine", userRoute(async (_req, res, user) => {
+    const { data, error } = await db().from("market_listings").select("*").eq("user_id", user.id).neq("status", "removed").order("created_at", { ascending: false }).limit(50);
+    legacyXError(error, "Unable to load your listings");
+    const rows = (data ?? []) as DbRow[];
+    const [sellers, covers] = await Promise.all([marketSellers([user.id]), marketCovers(rows.map((row) => textValue(row.id)))]);
+    res.set("Cache-Control", "no-store");
+    res.json({ items: rows.map((row) => ({ ...marketCard(row, sellers, covers.get(textValue(row.id)) ?? null), hidden: numberValue(row.report_count) >= MARKET_LIMITS.hideAtReports, expiresAt: textValue(row.expires_at) })) });
+  }));
+  router.get("/market/reported", userRoute(async (_req, res, user) => {
+    if (!(await marketStaffRole(user.id))) apiError(403, "Only staff can see reported listings", "forbidden");
+    const { data, error } = await db().from("market_listings").select("*").gt("report_count", 0).neq("status", "removed").order("report_count", { ascending: false }).limit(50);
+    legacyXError(error, "Unable to load the reported listings");
+    const rows = (data ?? []) as DbRow[];
+    const [sellers, covers] = await Promise.all([marketSellers(rows.map((row) => textValue(row.user_id))), marketCovers(rows.map((row) => textValue(row.id)))]);
+    res.set("Cache-Control", "no-store");
+    res.json({ items: rows.map((row) => ({ ...marketCard(row, sellers, covers.get(textValue(row.id)) ?? null), reportCount: numberValue(row.report_count), hidden: numberValue(row.report_count) >= MARKET_LIMITS.hideAtReports })) });
+  }));
+  router.get("/market/:id", userRoute(async (req, res, user) => {
+    const id = z.string().uuid().parse(req.params.id);
+    const row = await loadListing(id);
+    if (!row || textValue(row.status) === "removed") apiError(404, "That listing was not found", "not_found");
+    res.set("Cache-Control", "no-store");
+    res.json(await marketDetail(row, user.id, await marketStaffRole(user.id)));
+  }));
+  // The phone and email: only for a signed-in player, and not in bulk.
+  const marketContactLimit = rateLimit({ windowMs: 3_600_000, limit: process.env.NODE_ENV === "test" ? 1_000 : 60, standardHeaders: "draft-8", legacyHeaders: false, message: { error: "You looked at many contacts. Try again in a while." } });
+  router.get("/market/:id/contact", marketContactLimit, userRoute(async (req, res) => {
+    const id = z.string().uuid().parse(req.params.id);
+    const row = await loadListing(id);
+    if (!row || textValue(row.status) === "removed") apiError(404, "That listing was not found", "not_found");
+    res.set("Cache-Control", "no-store");
+    res.json({ phone: row.phone ? textValue(row.phone) : "", email: row.email ? textValue(row.email) : "" });
+  }));
+
+  const requireMarketPoster = async (userId: string) => {
+    const banned = await activeBannedUserIds(db(), [userId]).catch(() => new Set<string>());
+    if (banned.has(userId)) apiError(403, "A banned player cannot post in the Market", "banned");
+  };
+  router.post("/market", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
+    await requireMarketPoster(user.id);
+    const input = marketListingSchema.parse(req.body);
+    const since = new Date(Date.now() - 86_400_000).toISOString();
+    const { data: mine, error: mineError } = await db().from("market_listings").select("id,status,created_at,expires_at").eq("user_id", user.id).neq("status", "removed");
+    legacyXError(mineError, "Unable to check your listings");
+    const rows = (mine ?? []) as DbRow[];
+    if (rows.filter((row) => textValue(row.status) === "active" && Date.parse(textValue(row.expires_at)) > Date.now()).length >= MARKET_LIMITS.activeListings) apiError(409, `You can have ${MARKET_LIMITS.activeListings} listings at a time. Mark one as sold or delete it first.`, "market_limit");
+    if (rows.filter((row) => textValue(row.created_at) >= since).length >= MARKET_LIMITS.newPerDay) apiError(429, `You can post ${MARKET_LIMITS.newPerDay} listings a day.`, "market_daily_limit");
+    const { data, error } = await db().from("market_listings").insert({
+      user_id: user.id, title: input.title, description: input.description, price_mnt: input.priceMnt ?? null, phone: input.phone ?? null, email: input.email ?? null,
+      expires_at: new Date(Date.now() + MARKET_LIMITS.keepDays * 86_400_000).toISOString(),
+    }).select("id").single();
+    legacyXError(error, "Unable to post your listing");
+    res.status(201).json({ id: textValue((data as DbRow).id) });
+  }));
+  router.put("/market/:id", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
+    const id = z.string().uuid().parse(req.params.id);
+    await ownListing(id, user.id);
+    const input = marketListingSchema.parse(req.body);
+    const { error } = await db().from("market_listings").update({ title: input.title, description: input.description, price_mnt: input.priceMnt ?? null, phone: input.phone ?? null, email: input.email ?? null, updated_at: new Date().toISOString() }).eq("id", id);
+    legacyXError(error, "Unable to save your listing");
+    res.json({ id });
+  }));
+  router.post("/market/:id/images", sensitiveMutationRateLimit, express.raw({ type: () => true, limit: MARKET_LIMITS.sourceImageBytes + 1 }), userRoute(async (req, res, user) => {
+    const id = z.string().uuid().parse(req.params.id);
+    await ownListing(id, user.id);
+    const { data: existing, error: existingError } = await db().from("market_images").select("id,position").eq("listing_id", id);
+    legacyXError(existingError, "Unable to check the pictures");
+    const have = (existing ?? []) as DbRow[];
+    if (have.length >= MARKET_LIMITS.imagesPerListing) apiError(409, `A listing can have ${MARKET_LIMITS.imagesPerListing} pictures`, "market_images_limit");
+    const bytes = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+    let made: Awaited<ReturnType<typeof processMarketImage>>;
+    try { made = await processMarketImage(bytes); } catch (failure) { apiError(415, failure instanceof Error ? failure.message : "That picture cannot be used"); }
+    const position = have.reduce((top, row) => Math.max(top, numberValue(row.position) + 1), 0);
+    const { data, error } = await db().from("market_images").insert({ listing_id: id, position, mime: made.mime, data: `\\x${made.data.toString("hex")}` }).select("id").single();
+    legacyXError(error, "Unable to save the picture");
+    await db().from("market_listings").update({ updated_at: new Date().toISOString() }).eq("id", id);
+    res.status(201).json({ id: textValue((data as DbRow).id), url: marketImageUrl(textValue((data as DbRow).id)) });
+  }));
+  router.delete("/market/:id/images/:imageId", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
+    const id = z.string().uuid().parse(req.params.id);
+    const imageId = z.string().uuid().parse(req.params.imageId);
+    await ownListing(id, user.id);
+    const { error } = await db().from("market_images").delete().eq("id", imageId).eq("listing_id", id);
+    legacyXError(error, "Unable to remove the picture");
+    res.status(204).end();
+  }));
+  router.post("/market/:id/status", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
+    const id = z.string().uuid().parse(req.params.id);
+    await ownListing(id, user.id);
+    const { status } = marketStatusSchema.parse(req.body);
+    const { error } = await db().from("market_listings").update({ status, updated_at: new Date().toISOString() }).eq("id", id);
+    legacyXError(error, "Unable to change the listing");
+    res.json({ id, status });
+  }));
+  router.delete("/market/:id", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
+    const id = z.string().uuid().parse(req.params.id);
+    const row = await loadListing(id);
+    if (!row) apiError(404, "That listing was not found", "not_found");
+    if (textValue(row.user_id) === user.id) {
+      const { error } = await db().from("market_listings").delete().eq("id", id);
+      legacyXError(error, "Unable to delete the listing");
+      res.status(204).end();
+      return;
+    }
+    // Staff (Admin and above) take a listing down: it stays for the record with the reason, hidden from everyone.
+    if (!(await marketStaffRole(user.id))) apiError(403, "This is not your listing", "forbidden");
+    const reason = cleanLine(typeof req.query.reason === "string" ? req.query.reason : "", 200) || "Removed by staff";
+    const { error } = await db().from("market_listings").update({ status: "removed", removed_by: user.id, removed_reason: reason, updated_at: new Date().toISOString() }).eq("id", id);
+    legacyXError(error, "Unable to remove the listing");
+    await db().from("audit_logs").insert({ actor_type: "user", actor_id: user.id, action: "market.remove", target_type: "market_listings", target_id: id, metadata: { owner: textValue(row.user_id), reason } });
+    res.status(204).end();
+  }));
+  router.post("/market/:id/restore", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
+    const id = z.string().uuid().parse(req.params.id);
+    if (!(await marketStaffRole(user.id))) apiError(403, "Only staff can restore a listing", "forbidden");
+    const row = await loadListing(id);
+    if (!row) apiError(404, "That listing was not found", "not_found");
+    // Clearing the reports too: staff looked and it stays up.
+    await db().from("market_reports").delete().eq("listing_id", id);
+    const { error } = await db().from("market_listings").update({ status: "active", report_count: 0, removed_by: null, removed_reason: null, updated_at: new Date().toISOString() }).eq("id", id);
+    legacyXError(error, "Unable to restore the listing");
+    await db().from("audit_logs").insert({ actor_type: "user", actor_id: user.id, action: "market.restore", target_type: "market_listings", target_id: id, metadata: {} });
+    res.json({ id });
+  }));
+  router.post("/market/:id/report", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
+    const id = z.string().uuid().parse(req.params.id);
+    const { reason } = marketReportSchema.parse(req.body ?? {});
+    const row = await loadListing(id);
+    if (!row || textValue(row.status) === "removed") apiError(404, "That listing was not found", "not_found");
+    if (textValue(row.user_id) === user.id) apiError(409, "You cannot report your own listing", "own_listing");
+    const saved = await db().from("market_reports").upsert({ listing_id: id, reporter_id: user.id, reason }, { onConflict: "listing_id,reporter_id" });
+    legacyXError(saved.error, "Unable to send your report");
+    const { count } = await db().from("market_reports").select("listing_id", { count: "exact", head: true }).eq("listing_id", id);
+    await db().from("market_listings").update({ report_count: count ?? 0 }).eq("id", id);
+    res.json({ reported: true });
+  }));
+
   // The animated Creator kit (owner request 2026-11-07, kitRender.ts, backend/remotion): a creator or a staff member types a name (and a code) and the API renders the
   // animations with them, one render at a time. The files stay for a day and only their maker can download them.
   const kitQueue = new KitRenderQueue({
