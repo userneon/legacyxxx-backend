@@ -31,6 +31,7 @@ import { resolveSteamProfileMedia } from "./steamBackground";
 import { coreRoundScore, expRowAsResult, mapExpRecentMatch, mapMatchDetail, resultPlayersWithoutExp } from "./matchDetails";
 import { recordClanMatch } from "./clanMatch";
 import { headToHead } from "./compare";
+import { KIT_DAILY_LIMIT, KIT_ITEMS, KIT_KEEP_HOURS, KitRenderQueue, kitExt, kitFilePath, kitRenderEnabled, kitRenderSchema, removeKitJobFiles } from "./kitRender";
 import { PICK_DEFAULT_2, isColourable, isTwoColour, itemColours } from "./cosmeticColours";
 import { NADES, NADE_KINDS, itemsByNade, slotOverrides, type NadeKind } from "./cosmeticNades";
 import { LEVEL_PERKS, clanAchievements, clanStats, levelFor } from "./clanProgress";
@@ -5795,6 +5796,98 @@ export function createLegacyXRouter() {
         const who = byId.get(textValue(row.referred_id));
         return { id: textValue(row.referred_id), name: textValue(who?.username) || "Player", steamId: textValue(who?.steam_id), avatar: who?.avatar ? textValue(who.avatar) : null, at: textValue(row.created_at) };
       }),
+    });
+  }));
+  // The animated Creator kit (owner request 2026-11-07, kitRender.ts, backend/remotion): a creator or a staff member types a name (and a code) and the API renders the
+  // animations with them, one render at a time. The files stay for a day and only their maker can download them.
+  const kitQueue = new KitRenderQueue({
+    onStart: async (job) => { await db().from("kit_renders").update({ status: "rendering" }).eq("id", job.id); },
+    onFinish: async (job, files) => {
+      await db().from("kit_renders").update({ status: "done", files, finished_at: new Date().toISOString() }).eq("id", job.id);
+    },
+    onFail: async (job, reason) => {
+      await db().from("kit_renders").update({ status: "failed", error: reason, finished_at: new Date().toISOString() }).eq("id", job.id);
+    },
+  });
+  let kitHousekeeping = false;
+  const kitCleanup = async () => {
+    const cutoff = new Date(Date.now() - KIT_KEEP_HOURS * 3_600_000).toISOString();
+    const { data } = await db().from("kit_renders").select("id").lt("created_at", cutoff).limit(200);
+    for (const row of (data ?? []) as DbRow[]) {
+      await removeKitJobFiles(textValue(row.id)).catch(() => undefined);
+      await db().from("kit_renders").delete().eq("id", textValue(row.id));
+    }
+  };
+  // On the first request after a start: what was still waiting or rendering died with the old process, and old files are cleared (then every hour).
+  const kitHouse = async () => {
+    if (kitHousekeeping) return;
+    kitHousekeeping = true;
+    await db().from("kit_renders").update({ status: "failed", error: "The server restarted while it was rendering. Try again.", finished_at: new Date().toISOString() }).in("status", ["queued", "rendering"]);
+    await kitCleanup().catch(() => undefined);
+    setInterval(() => { void kitCleanup().catch(() => undefined); }, 3_600_000).unref();
+  };
+  const requireKitUser = async (userId: string) => {
+    const [creator, staff] = await Promise.all([
+      db().from("content_creators").select("user_id").eq("user_id", userId).maybeSingle(),
+      db().from("staff").select("role").eq("user_id", userId).eq("status", "active").maybeSingle(),
+    ]);
+    legacyXError(creator.error || staff.error, "Unable to verify your access");
+    if (!creator.data && !staff.data) apiError(403, "Only content creators and staff can make the animated kit", "creator_required");
+  };
+  const mapKitRender = (row: DbRow) => ({
+    id: textValue(row.id),
+    status: textValue(row.status),
+    error: row.error ? textValue(row.error) : null,
+    createdAt: textValue(row.created_at),
+    files: (Array.isArray(row.files) ? (row.files as DbRow[]) : []).map((file) => {
+      const item = KIT_ITEMS.find((candidate) => candidate.id === textValue(file.id));
+      return { id: textValue(file.id), label: item?.label ?? textValue(file.id), ext: textValue(file.ext), bytes: numberValue(file.bytes), url: `/api/v1/creators/kit-renders/${textValue(row.id)}/files/${textValue(file.id)}` };
+    }),
+  });
+  router.get("/creators/kit-renders/config", userRoute(async (_req, res, user) => {
+    await requireKitUser(user.id);
+    await kitHouse().catch(() => undefined);
+    res.set("Cache-Control", "no-store");
+    res.json({ enabled: kitRenderEnabled(), items: KIT_ITEMS.map(({ id, label, ext, needs }) => ({ id, label, ext, needs })), dailyLimit: KIT_DAILY_LIMIT, keepHours: KIT_KEEP_HOURS, queue: kitQueue.length });
+  }));
+  router.post("/creators/kit-renders", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
+    await requireKitUser(user.id);
+    if (!kitRenderEnabled()) apiError(503, "The animated kit is not set up on the server yet", "kit_render_off");
+    await kitHouse().catch(() => undefined);
+    const input = kitRenderSchema.parse(req.body);
+    const since = new Date(Date.now() - 24 * 3_600_000).toISOString();
+    const { data: recent, error: recentError } = await db().from("kit_renders").select("id,status").eq("user_id", user.id).gte("created_at", since);
+    legacyXError(recentError, "Unable to check your renders");
+    const rows = (recent ?? []) as DbRow[];
+    if (rows.some((row) => ["queued", "rendering"].includes(textValue(row.status)))) apiError(409, "Your last animation is still rendering. Wait for it to finish.", "kit_render_busy");
+    if (rows.length >= KIT_DAILY_LIMIT) apiError(429, `You can make ${KIT_DAILY_LIMIT} animated kits a day. Try again tomorrow.`, "kit_render_limit");
+    if (kitQueue.length >= 15) apiError(503, "Many animations are being made right now. Try again in a few minutes.", "kit_render_full");
+    const { data, error } = await db().from("kit_renders").insert({ user_id: user.id, name: input.name, code: input.code, items: input.items }).select("id").single();
+    legacyXError(error, "Unable to queue your animations");
+    const id = textValue((data as DbRow).id);
+    kitQueue.push({ id, name: input.name, code: input.code, items: input.items });
+    res.set("Cache-Control", "no-store");
+    res.status(202).json({ id, status: "queued", position: kitQueue.length });
+  }));
+  router.get("/creators/kit-renders/:id", userRoute(async (req, res, user) => {
+    const id = z.string().uuid().parse(req.params.id);
+    const { data, error } = await db().from("kit_renders").select("id,status,error,files,created_at").eq("id", id).eq("user_id", user.id).maybeSingle();
+    legacyXError(error, "Unable to load your animations");
+    if (!data) apiError(404, "That render was not found", "not_found");
+    res.set("Cache-Control", "no-store");
+    res.json({ ...mapKitRender(data as DbRow), position: kitQueue.length });
+  }));
+  router.get("/creators/kit-renders/:id/files/:fileId", userRoute(async (req, res, user) => {
+    const id = z.string().uuid().parse(req.params.id);
+    const fileId = textValue(req.params.fileId);
+    const { data, error } = await db().from("kit_renders").select("id,status,name").eq("id", id).eq("user_id", user.id).maybeSingle();
+    legacyXError(error, "Unable to load your animations");
+    const filePath = kitFilePath(id, fileId);
+    if (!data || textValue((data as DbRow).status) !== "done" || !filePath) apiError(404, "That file was not found", "not_found");
+    const label = textValue((data as DbRow).name).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 24);
+    res.set("Cache-Control", "no-store");
+    res.download(filePath, `legacyx-${fileId}${label ? `-${label}` : ""}.${kitExt(fileId)}`, (failure) => {
+      if (failure && !res.headersSent) res.status(410).json({ error: "The file is gone. Make it again." });
     });
   }));
   // ... and a new player says whether they can enter one and what it gives.

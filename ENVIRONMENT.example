@@ -38,3 +38,13 @@ STATIC_ASSET_BASE_URL=https://static.legacyx.cc
 # https://<PUBLIC_API_ORIGIN>/api/v1/public/wire/webhook is created in the Wire dashboard (then press "Баталгаажуулах").
 WIRE_API_KEY=
 WIRE_WEBHOOK_SECRET=
+
+# Animated Creator kit (owner request 2026-11-07; backend/remotion renders the animations a creator asks for on the Creator kit page, one at a time).
+# On the server: (cd remotion && npm ci), then KIT_RENDER_ENABLED=true and restart. Remotion fetches its own headless Chrome the first time;
+# KIT_RENDER_BROWSER points it at a Chrome you already have, KIT_RENDER_DIR is where the files wait for a day (default: the system temp folder),
+# KIT_RENDER_CONCURRENCY the frames drawn at once (default 2), KIT_RENDER_DAILY_LIMIT the kits a creator may make a day (default 6).
+# KIT_RENDER_ENABLED=true
+# KIT_RENDER_BROWSER=
+# KIT_RENDER_DIR=/var/lib/legacyx/kit-renders
+# KIT_RENDER_CONCURRENCY=2
+# KIT_RENDER_DAILY_LIMIT=6
