@@ -4237,7 +4237,7 @@ export function createLegacyXRouter() {
     const orderId = textValue(row.id);
     try {
       const intent = await createWireIntent(config, { amount: price, description: `LEGACY-X ${textValue(tier.name)} ${input.days} days`, topupId: orderId, key: `perk-${orderId}-intent` });
-      const checkoutUrl = await createWireCheckout(config, { intentId: intent.id, successUrl: site ? `${site}/shop?perk=${orderId}` : null, cancelUrl: site ? `${site}/shop` : null, key: `perk-${orderId}-checkout` });
+      const checkoutUrl = await createWireCheckout(config, { intentId: intent.id, successUrl: site ? `${site}/shop/ranks?perk=${orderId}` : null, cancelUrl: site ? `${site}/shop/ranks` : null, key: `perk-${orderId}-checkout` });
       const { error: saveError } = await db().from("perk_orders").update({ provider_ref: intent.id, checkout_url: checkoutUrl }).eq("id", orderId);
       legacyXError(saveError, "Unable to save the purchase");
       res.status(201).json(perkOrderView(row as DbRow, { name: textValue(tier.name), checkoutUrl, expiresInMinutes: TOPUP_MINUTES }));
