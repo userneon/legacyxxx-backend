@@ -1537,7 +1537,7 @@ export function createLegacyXRouter() {
 
     // Everything that is left is independent of each other, so it is asked together instead of one after the other.
     const session = sessionResult.data as DbRow | null;
-    const [presence, ownerExtras, creatorResult, mine, founder, discordLinked, discordBoosting, boosterPlace, clanTag, benchmark, penalties] = await Promise.all([
+    const [presence, ownerExtras, creatorResult, mine, founder, discordLinked, discordBoosting, boosterPlace, clanTag, benchmark, penalties, perkRank] = await Promise.all([
       (async () => {
         // Playing now: an open session on a server whose heartbeat is fresh.
         if (!session) return null;
@@ -1555,6 +1555,8 @@ export function createLegacyXRouter() {
       clanTagsFor([userId]).then((map) => map.get(userId) ?? null),
       hidden.includes("stats") ? Promise.resolve(null) : statBenchmark(),
       mapPenaltiesWithProfileIdentities((penaltiesResult.data ?? []) as DbRow[], db()),
+      // A paid rank that is running (the Shop's Ranks): its tier and name, shown as a badge on the profile. Best effort.
+      perkGrantOf(userId).then((grant) => (grant && perkActive(grant) ? { tier: grant.tier, name: grant.tierName } : null)).catch(() => null),
     ]);
     const creatorRow = creatorResult.error ? null : (creatorResult.data as DbRow | null);
     const creatorTierValue = creatorTier(creatorRow?.tier);
@@ -1611,6 +1613,7 @@ export function createLegacyXRouter() {
       discordLinked,
       discordBoosting,
       boosterPlace,
+      perk: perkRank,
       clan: clanTag,
       ...ownerExtras,
     });
