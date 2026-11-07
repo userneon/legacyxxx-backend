@@ -384,3 +384,48 @@ export async function loadWalletSummary(db: Db, userId: string, now = new Date()
     return null;
   }
 }
+
+
+/**
+ * LX between players (owner request 2026-11-07: "make LX transferable, with a fee"). The sender pays `amount`, the receiver gets `amount` less the fee,
+ * and the fee is gone from the economy (nobody gets it). Small limits keep a throwaway account from gathering a farm's LX into one wallet.
+ */
+export const TRANSFER_RULES = {
+  /** Share of every transfer that is not passed on (rounded up, so the smallest transfer still pays 1 LX). */
+  feePercent: 5,
+  min: 10,
+  max: 5_000,
+  /** What one player may send in one Ulaanbaatar day, and in any one hour (how many transfers). */
+  dailyMax: 20_000,
+  perHour: 5,
+  /** An account must have played this many ranked matches before it can send (a new account only receives). */
+  minRankedMatches: 1,
+} as const;
+
+export function transferFee(amount: number): number {
+  return Math.ceil((amount * TRANSFER_RULES.feePercent) / 100);
+}
+
+export function planTransfer(amount: number): { amount: number; fee: number; received: number } {
+  const fee = transferFee(amount);
+  return { amount, fee, received: amount - fee };
+}
+
+/** Why a transfer cannot go ahead, in a line for the sender; null when it can. */
+export function transferProblem(input: { amount: number; sentToday: number; sentLastHour: number; rankedMatches: number }): string | null {
+  if (input.rankedMatches < TRANSFER_RULES.minRankedMatches) return "Play a ranked match first: new accounts can receive LX but not send it.";
+  if (input.amount < TRANSFER_RULES.min) return `The smallest transfer is ${TRANSFER_RULES.min} LX.`;
+  if (input.amount > TRANSFER_RULES.max) return `One transfer can be at most ${TRANSFER_RULES.max.toLocaleString("en-US")} LX.`;
+  if (input.sentLastHour >= TRANSFER_RULES.perHour) return `You can make ${TRANSFER_RULES.perHour} transfers an hour. Try again later.`;
+  if (input.sentToday + input.amount > TRANSFER_RULES.dailyMax) {
+    const left = Math.max(0, TRANSFER_RULES.dailyMax - input.sentToday);
+    return `You can send ${TRANSFER_RULES.dailyMax.toLocaleString("en-US")} LX a day. ${left.toLocaleString("en-US")} LX left today.`;
+  }
+  return null;
+}
+
+export const walletTransferSchema = z.object({
+  userId: z.string().uuid().optional(),
+  steamId: z.string().regex(/^\d{15,20}$/, "SteamID64 expected").optional(),
+  amount: z.number().int().min(1).max(1_000_000),
+}).strict().refine((value) => Boolean(value.userId) !== Boolean(value.steamId), "Send either userId or steamId");

@@ -1,6 +1,7 @@
 import express, { Router, type NextFunction, type Request, type Response } from "express";
 import { randomBytes } from "node:crypto";
 import rateLimit, { ipKeyGenerator } from "express-rate-limit";
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { authorizeUrl, consumeOAuthState, createOAuthState, discordOAuthConfig, fetchDiscordIdentity, isOAuthState, linkDiscordAccount, ownDiscordLink, removeOwnDiscordLink } from "./discordOAuth";
 import { isReaction, tallyReactions } from "./reactions";
@@ -47,7 +48,7 @@ import { frameLookSchema, readFrameLook, type FrameLook } from "./frameLook";
 import { backgroundLookSchema, isBackgroundItem, readBackgroundLook } from "./backgroundLook";
 import { ANNOUNCEMENT_MAX_AGE_HOURS, ANNOUNCEMENT_PAGE, announcementRow, announcementSchema, announcementView, type AnnouncementRecord } from "./announcements";
 import { ADMIN_CALL_COOLDOWN_SECONDS, ADMIN_CALL_MAX_AGE_HOURS, ADMIN_CALL_PAGE, adminCallRow, adminCallSchema, adminCallView, parseAfter, type AdminCallRecord } from "./adminCalls";
-import { COIN_RULES, NotEnoughCoinsError, applyWalletChange, awardDiscordLink, awardMatchBonuses, awardMatchCoins, clanPrices, earnRules, loadWallet, loadWalletSummary, penalizeWallet, walletGrantSchema, walletPenaltySchema } from "./wallet";
+import { TRANSFER_RULES, planTransfer, transferProblem, walletTransferSchema, COIN_RULES, NotEnoughCoinsError, applyWalletChange, awardDiscordLink, awardMatchBonuses, awardMatchCoins, clanPrices, earnRules, loadWallet, loadWalletSummary, penalizeWallet, walletGrantSchema, walletPenaltySchema } from "./wallet";
 import { isMissingTableError, ownerLinks, ownerProfileSchema, ownerTeam, ownerUpdates } from "./ownerProfile";
 import { liftInfo } from "./penaltyLift";
 import { cleanPlayerConfig, playerConfigSchema } from "./playerConfig";
@@ -4099,6 +4100,76 @@ export function createLegacyXRouter() {
     }
     return "pending";
   };
+  // LX between players, with a fee (owner request 2026-11-07). The sender is charged first, the receiver credited second; if the credit fails the sender is given everything back.
+  const transferUsage = async (userId: string) => {
+    const now = Date.now();
+    const windows = limitWindows(now);
+    const [today, hour, ranked] = await Promise.all([
+      db().from("wallet_transactions").select("amount").eq("user_id", userId).like("ref", "transfer:%:out").gte("created_at", new Date(windows.dayStart).toISOString()).limit(500),
+      db().from("wallet_transactions").select("id", { count: "exact", head: true }).eq("user_id", userId).like("ref", "transfer:%:out").gte("created_at", new Date(now - 3_600_000).toISOString()),
+      db().from("competitive_player_progression").select("matches_completed").eq("user_id", userId).maybeSingle(),
+    ]);
+    legacyXError(today.error || hour.error || ranked.error, "Unable to check your transfers");
+    return {
+      sentToday: ((today.data ?? []) as DbRow[]).reduce((total, row) => total + Math.abs(numberValue(row.amount)), 0),
+      sentLastHour: hour.count ?? 0,
+      rankedMatches: numberValue((ranked.data as DbRow | null)?.matches_completed),
+    };
+  };
+  router.get("/wallet/transfer/rules", userRoute(async (_req, res, user) => {
+    res.set("Cache-Control", "no-store");
+    const usage = await transferUsage(user.id);
+    res.json({
+      ...TRANSFER_RULES,
+      ...usage,
+      remainingToday: Math.max(0, TRANSFER_RULES.dailyMax - usage.sentToday),
+      /** Null when this player may send; otherwise the line to show. */
+      blocked: usage.rankedMatches < TRANSFER_RULES.minRankedMatches ? transferProblem({ amount: TRANSFER_RULES.min, ...usage }) : null,
+    });
+  }));
+  router.post("/wallet/transfer", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
+    const input = walletTransferSchema.parse(req.body);
+    let targetId = input.userId ?? "";
+    if (!targetId) {
+      const { data, error } = await db().from("users").select("id").eq("steam_id", input.steamId ?? "").maybeSingle();
+      legacyXError(error, "Unable to find the player");
+      if (!data) apiError(404, "Player was not found");
+      targetId = textValue((data as DbRow).id);
+    }
+    if (targetId === user.id) apiError(400, "You cannot send LX to yourself", "transfer_self");
+    const [target, sender] = await Promise.all([
+      db().from("users").select("id,username").eq("id", targetId).maybeSingle(),
+      db().from("users").select("id,username").eq("id", user.id).maybeSingle(),
+    ]);
+    legacyXError(target.error || sender.error, "Unable to find the player");
+    if (!target.data) apiError(404, "Player was not found");
+    // A banned player neither sends nor receives LX (no way to move it out of or into a banned account).
+    const banned = await activeBannedUserIds(db(), [user.id, targetId]).catch(() => new Set<string>());
+    if (banned.has(user.id) || banned.has(targetId)) apiError(403, "LX cannot be sent to or from a player with an active ban", "transfer_banned");
+    const usage = await transferUsage(user.id);
+    const problem = transferProblem({ amount: input.amount, ...usage });
+    if (problem) apiError(422, problem, "transfer_refused");
+    const plan = planTransfer(input.amount);
+    const id = randomUUID();
+    const senderName = textValue((sender.data as DbRow | null)?.username) || "a player";
+    const targetName = textValue((target.data as DbRow).username) || "a player";
+    try {
+      const charged = await applyWalletChange(db(), { userId: user.id, amount: -plan.amount, kind: "spend", reason: `Sent ${plan.received} LX to ${targetName} (fee ${plan.fee})`.slice(0, 200), ref: `transfer:${id}:out`, actor: user.id });
+      try {
+        await applyWalletChange(db(), { userId: targetId, amount: plan.received, kind: "grant", reason: `Received from ${senderName}`.slice(0, 200), ref: `transfer:${id}:in`, actor: user.id });
+      } catch (creditError) {
+        await applyWalletChange(db(), { userId: user.id, amount: plan.amount, kind: "refund", reason: "Transfer failed", ref: `transfer:${id}:refund`, actor: user.id }).catch((refundError) => console.error("[legacy-x-api] transfer refund failed", refundError));
+        throw creditError;
+      }
+      await db().from("audit_logs").insert({ actor_type: "user", actor_id: user.id, action: "wallet.transfer", target_type: "wallet", target_id: targetId, metadata: { transfer: id, amount: plan.amount, fee: plan.fee, received: plan.received } }).then((result) => { if (result.error) console.error("Unable to audit wallet transfer", result.error); });
+      await db().from("notifications").insert({ user_id: targetId, kind: "system", title: `You received ${plan.received.toLocaleString("en-US")} LX`, body: `${senderName} sent you ${plan.received.toLocaleString("en-US")} LX.`, metadata: { kind: "lx_transfer" } }).then((result) => { if (result.error) console.error("Unable to tell the receiver", result.error); });
+      res.status(201).json({ id, sent: plan.amount, fee: plan.fee, received: plan.received, balance: charged.balance, to: targetName });
+    } catch (error) {
+      if (error instanceof NotEnoughCoinsError) apiError(402, "Not enough LX", "transfer_not_enough");
+      if (isMissingTableError(error)) apiError(503, "The wallet is not available yet");
+      throw error;
+    }
+  }));
   router.get("/wallet/topup/status", (_req, res) => {
     res.set("Cache-Control", "no-store");
     res.json({ available: wireConfig() !== null, custom: { minMnt: CUSTOM_TOPUP_MIN_MNT, maxMnt: CUSTOM_TOPUP_MAX_MNT, stepMnt: CUSTOM_TOPUP_STEP_MNT } });

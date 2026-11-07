@@ -222,3 +222,25 @@ describe("LX is not earned by playing (owner decision 2026-10-21)", () => {
     }
   });
 });
+
+
+import { TRANSFER_RULES, planTransfer, transferFee, transferProblem } from "./wallet";
+describe("LX transfers", () => {
+  const ok = { amount: 100, sentToday: 0, sentLastHour: 0, rankedMatches: 3 };
+  it("takes the fee out of what the receiver gets, rounded up", () => {
+    expect(planTransfer(100)).toEqual({ amount: 100, fee: 5, received: 95 });
+    expect(transferFee(10)).toBe(1);
+    expect(planTransfer(5_000).received).toBe(5_000 - 250);
+  });
+  it("lets an ordinary transfer through", () => expect(transferProblem(ok)).toBeNull());
+  it("keeps a new account from sending", () => expect(transferProblem({ ...ok, rankedMatches: 0 })).toMatch(/ranked match/));
+  it("keeps to the smallest and the largest transfer", () => {
+    expect(transferProblem({ ...ok, amount: TRANSFER_RULES.min - 1 })).toMatch(/smallest/);
+    expect(transferProblem({ ...ok, amount: TRANSFER_RULES.max + 1 })).toMatch(/at most/);
+  });
+  it("keeps to the hour and the day", () => {
+    expect(transferProblem({ ...ok, sentLastHour: TRANSFER_RULES.perHour })).toMatch(/an hour/);
+    expect(transferProblem({ ...ok, sentToday: TRANSFER_RULES.dailyMax - 50 })).toMatch(/50 LX left today/);
+    expect(transferProblem({ ...ok, amount: 50, sentToday: TRANSFER_RULES.dailyMax - 50 })).toBeNull();
+  });
+});
