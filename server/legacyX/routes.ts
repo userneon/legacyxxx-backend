@@ -1194,7 +1194,7 @@ export function createLegacyXRouter() {
     })();
     // These four only need the ladder's user IDs: they run side by side.
     const [linked, clanTags, worn, expChanges] = await Promise.all([discordLinkedUserIds(db(), userIds.filter(Boolean)), clanTagsFor(userIds), equippedCosmeticsFor(userIds), expChangesPromise]);
-    const rows = ((data ?? []) as DbRow[]).map((row): DbRow => ({ ...row, exp_change: expChanges.get(textValue(row.user_id)) ?? null, discord_linked: linked.has(textValue(row.user_id)), clan_tag: clanTags.get(textValue(row.user_id))?.tag ?? null, clan_look: clanTags.get(textValue(row.user_id))?.look ?? null, frame: worn.get(textValue(row.user_id))?.frame ?? null, frame_look: worn.get(textValue(row.user_id))?.frameLook ?? null, name_style: worn.get(textValue(row.user_id))?.nameStyle ?? null }));
+    const rows = ((data ?? []) as DbRow[]).map((row): DbRow => ({ ...row, exp_change: expChanges.get(textValue(row.user_id)) ?? null, discord_linked: linked.has(textValue(row.user_id)), clan_tag: clanTags.get(textValue(row.user_id))?.tag ?? null, clan_look: clanTags.get(textValue(row.user_id))?.look ?? null, frame: worn.get(textValue(row.user_id))?.frame ?? null, frame_look: worn.get(textValue(row.user_id))?.frameLook ?? null, name_style: worn.get(textValue(row.user_id))?.nameStyle ?? null, perk: worn.get(textValue(row.user_id))?.perk ?? null }));
     if (sort === "exp") return { sort, minimumMatches: 0, entries: rows };
     // K/D and win rate are only meaningful with a sample: 10 completed matches minimum.
     const metric = (row: DbRow) => Number(sort === "kd" ? row.kd_ratio : row.win_rate) || 0;
@@ -2016,7 +2016,7 @@ export function createLegacyXRouter() {
   /** What each of these players wears: their frame (item id) and name style (plain colours); players with nothing are left out. */
   const equippedCosmeticsFor = async (userIds: string[]) => {
     const ids = Array.from(new Set(userIds.filter(Boolean)));
-    const worn = new Map<string, { frame: string | null; frameLook?: FrameLook | null; background?: string | null; banner: string | null; title: string | null; nameStyle: { color: string | null; glow: string | null; colorFx: string | null; glowFx: string | null } | null }>();
+    const worn = new Map<string, { frame: string | null; frameLook?: FrameLook | null; background?: string | null; banner: string | null; title: string | null; nameStyle: { color: string | null; glow: string | null; colorFx: string | null; glowFx: string | null } | null; perk?: { tier: string; name: string } | null }>();
     if (!ids.length) return worn;
     // The colour each player picked for each design (name colours and glows are coloured by their wearer).
     const customRows = await db().from("cosmetic_custom").select("user_id,item_id,color,color2").in("user_id", ids);
@@ -2053,10 +2053,22 @@ export function createLegacyXRouter() {
       const looks = await db().from("frame_looks").select("user_id,look").in("user_id", orbWearers);
       if (!looks.error) for (const row of (looks.data ?? []) as DbRow[]) { const entry = worn.get(textValue(row.user_id)); if (entry) entry.frameLook = readFrameLook(row.look); }
     }
+    // A paid rank that is running (the Shop's Ranks) shows its emblem wherever the player's name does. Best effort: a missing table never breaks the lists.
+    const grants = await db().from("perk_grants").select("user_id,tier").in("user_id", ids).gt("ends_at", new Date().toISOString());
+    if (!grants.error && (grants.data ?? []).length) {
+      const tiers = await db().from("perk_tiers").select("key,name");
+      const names = new Map<string, string>(((tiers.error ? [] : tiers.data ?? []) as DbRow[]).map((row) => [textValue(row.key), textValue(row.name)]));
+      for (const row of (grants.data ?? []) as DbRow[]) {
+        const userId = textValue(row.user_id);
+        const entry = worn.get(userId) ?? { frame: null, banner: null, title: null, nameStyle: null };
+        entry.perk = names.get(textValue(row.tier)) ? { tier: textValue(row.tier), name: names.get(textValue(row.tier))! } : null;
+        worn.set(userId, entry);
+      }
+    }
     return worn;
   };
   /** The frame and name style fields every player card carries (null when nothing is worn). */
-  const lookOf = (worn: Awaited<ReturnType<typeof equippedCosmeticsFor>>, userId: string) => ({ frame: worn.get(userId)?.frame ?? null, frameLook: worn.get(userId)?.frameLook ?? null, nameStyle: worn.get(userId)?.nameStyle ?? null });
+  const lookOf = (worn: Awaited<ReturnType<typeof equippedCosmeticsFor>>, userId: string) => ({ frame: worn.get(userId)?.frame ?? null, frameLook: worn.get(userId)?.frameLook ?? null, nameStyle: worn.get(userId)?.nameStyle ?? null, perk: worn.get(userId)?.perk ?? null });
   const cosmeticView = (item: DbRow, ownedIds: Set<string>, owners: Map<string, number>, endsAt: Map<string, string | null>) => ({
     id: textValue(item.id),
     name: textValue(item.name_en),
@@ -4996,6 +5008,7 @@ export function createLegacyXRouter() {
         frame: worn.get(textValue(row.user_id))?.frame ?? null,
         frameLook: worn.get(textValue(row.user_id))?.frameLook ?? null,
         nameStyle: worn.get(textValue(row.user_id))?.nameStyle ?? null,
+        perk: worn.get(textValue(row.user_id))?.perk ?? null,
         sort: numberValue(row.sort),
         createdAt: textValue(row.created_at),
       }];
