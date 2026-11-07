@@ -1246,15 +1246,18 @@ export function createLegacyXRouter() {
     // Steam avatars for the players who have a LEGACY-X account; anyone else has none and shows their initials.
     const steamIds = Array.from(new Set([...teams.t, ...teams.ct, ...spectators, ...connectedPlayers].map(player => player.steamId).filter(Boolean))).slice(0, 64);
     const avatarBySteamId = new Map<string, string>();
+    // The rank on the site, for a player whose game server did not report one.
+    const rankBySteamId = new Map<string, { rankId: number; rankName: string | null; rankImageKey: string | null }>();
     if (steamIds.length > 0) {
-      const { data: avatarRows, error: avatarError } = await db().from("competitive_player_profiles").select("steam_id,avatar").in("steam_id", steamIds);
+      const { data: avatarRows, error: avatarError } = await db().from("competitive_player_profiles").select("steam_id,avatar,rank_id,rank_name,rank_image_key").in("steam_id", steamIds);
       if (avatarError) console.error("Unable to load live match avatars", avatarError);
       for (const row of (avatarRows ?? []) as DbRow[]) {
         const avatar = textValue(row.avatar);
         if (avatar.startsWith("https://")) avatarBySteamId.set(textValue(row.steam_id), avatar);
+        if (numberValue(row.rank_id)) rankBySteamId.set(textValue(row.steam_id), { rankId: numberValue(row.rank_id), rankName: textValue(row.rank_name) || null, rankImageKey: textValue(row.rank_image_key) || null });
       }
     }
-    const withAvatar = <T extends { steamId: string }>(players: T[]) => players.map(player => ({ ...player, avatar: avatarBySteamId.get(player.steamId) ?? null }));
+    const withAvatar = <T extends { steamId: string; rankId?: number | null }>(players: T[]) => players.map(player => ({ ...player, ...(player.rankId == null ? rankBySteamId.get(player.steamId) : null), avatar: avatarBySteamId.get(player.steamId) ?? null }));
     res.json({
       liveMatch: {
         serverId,
