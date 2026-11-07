@@ -3,6 +3,8 @@
  * rank_match_results rows (one per player per map), match_rounds rows (one per round_end) and the
  * original map_result payload (team names).
  */
+import { rankForExp } from "./ranking";
+
 type Row = Record<string, unknown>;
 type TeamKey = "team1" | "team2";
 
@@ -11,6 +13,7 @@ const str = (value: unknown) => (typeof value === "string" ? value : value == nu
 const obj = (value: unknown): Row => (value && typeof value === "object" && !Array.isArray(value) ? (value as Row) : {});
 const first = (value: unknown): Row => obj(Array.isArray(value) ? value[0] : value);
 const round1 = (value: number) => Math.round(value * 10) / 10;
+const rankSummary = (exp: number) => { const { id, name, imageKey } = rankForExp(exp); return { id, name, imageKey }; };
 
 export type RoundOutcome = "elimination" | "bomb_exploded" | "bomb_defused" | "time_expired" | "surrender" | "other";
 
@@ -157,7 +160,11 @@ export function mapExpRecentMatch(row: Row) {
     mapNumber: num(core.map_number),
     playedAt: str(core.finished_at) || str(row.created_at) || null,
     expDelta: num(row.exp_delta),
+    expBefore: row.exp_before == null ? null : num(row.exp_before),
     expAfter: num(row.exp_after),
+    // The ranks the player stood at before and after this match, by the one ladder in ranking.ts (the site never works a rank out itself).
+    rankBefore: row.exp_before == null ? null : rankSummary(num(row.exp_before)),
+    rankAfter: row.exp_after == null ? null : rankSummary(num(row.exp_after)),
     expBreakdown: obj(row.exp_breakdown),
   };
 }
