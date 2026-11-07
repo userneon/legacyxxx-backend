@@ -10,12 +10,32 @@ import { z } from "zod";
  * with execFile (no shell). The key is a FILE named in the environment, never a value in a table or in the repo.
  */
 /** `target` names what to act on (a game server's port, or api / bot / site / admin / nginx on the web VPS); the host script checks it again. */
-export type HostAction = { action: "status" } | { action: "deploy"; target?: string } | { action: "restart"; target: string };
+export type NewServer = { port: number; gslt: string; mode: "competitive" | "wingman" | "casual" | "deathmatch"; map: string; maxPlayers: number; siteMode: string };
+export type HostAction =
+  | { action: "status" }
+  | { action: "deploy"; target?: string }
+  | { action: "restart"; target: string }
+  | { action: "add"; server: NewServer }
+  | { action: "remove"; target: string };
 
 const targetSchema = z.string().regex(/^[A-Za-z0-9_-]{1,24}$/);
 export const hostActionSchema = z.discriminatedUnion("action", [
   z.object({ hostId: z.string().regex(/^[a-z0-9-]{1,24}$/), action: z.literal("deploy"), target: targetSchema.optional() }).strict(),
   z.object({ hostId: z.string().regex(/^[a-z0-9-]{1,24}$/), action: z.literal("restart"), target: targetSchema }).strict(),
+  z.object({ hostId: z.string().regex(/^[a-z0-9-]{1,24}$/), action: z.literal("remove"), target: z.string().regex(/^\d{4,5}$/) }).strict(),
+  // A new game server on a port (owner request 2026-11-07: "add a new port from the Host tab"). The GSLT is a secret: it goes to the host and nowhere else.
+  z.object({
+    hostId: z.string().regex(/^[a-z0-9-]{1,24}$/),
+    action: z.literal("add"),
+    server: z.object({
+      port: z.number().int().min(1024).max(65535),
+      gslt: z.string().regex(/^[A-Fa-f0-9]{32}$/),
+      mode: z.enum(["competitive", "wingman", "casual", "deathmatch"]),
+      map: z.string().regex(/^[a-z0-9_]{2,64}$/),
+      maxPlayers: z.number().int().min(2).max(64),
+      siteMode: z.string().regex(/^[a-z0-9_]{0,40}$/),
+    }).strict(),
+  }).strict(),
 ]);
 
 export type HostConfig = { id: string; label: string; kind: "game" | "web"; host: string; user: string; port: number; keyFile: string; knownHosts: string | null };
@@ -56,6 +76,11 @@ export function hostConfigs(env: NodeJS.ProcessEnv = process.env): HostConfig[] 
 /** The one word (and port) sent as the SSH command. */
 export function hostCommand(action: HostAction) {
   if (action.action === "status") return "status";
+  if (action.action === "add") {
+    const { port, gslt, mode, map, maxPlayers, siteMode } = action.server;
+    if (![port, maxPlayers].every(Number.isInteger) || !/^[A-Fa-f0-9]{32}$/.test(gslt) || !/^[a-z0-9_]{2,64}$/.test(map) || !/^[a-z0-9_]{0,40}$/.test(siteMode) || !["competitive", "wingman", "casual", "deathmatch"].includes(mode)) throw new Error("Bad server");
+    return `add ${port} ${gslt} ${mode} ${map} ${maxPlayers}${siteMode ? ` ${siteMode}` : ""}`;
+  }
   const target = action.target;
   if (target !== undefined && !/^[A-Za-z0-9_-]{1,24}$/.test(target)) throw new Error("Bad target");
   return target ? `${action.action} ${target}` : action.action;
@@ -80,7 +105,7 @@ export function sshArguments(config: HostConfig, command: string) {
 export type HostRun = { ok: boolean; body: Record<string, unknown> | null; error: string | null };
 
 export function runHost(config: HostConfig, action: HostAction, run: typeof execFile = execFile): Promise<HostRun> {
-  const timeout = action.action === "status" ? 60_000 : action.action === "deploy" ? 10 * 60_000 : 60_000;
+  const timeout = action.action === "status" ? 60_000 : action.action === "deploy" ? 10 * 60_000 : action.action === "add" ? 120_000 : 60_000;
   return new Promise((resolve) => {
     run("ssh", sshArguments(config, hostCommand(action)), { timeout, maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {
       const text = String(stdout ?? "").trim();

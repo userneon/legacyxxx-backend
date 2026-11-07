@@ -5676,8 +5676,11 @@ export function createLegacyXRouter() {
     const { hostId, ...action } = hostActionSchema.parse(req.body);
     const config = hostConfigs().find((candidate) => candidate.id === hostId);
     if (!config) apiError(409, "That host is not set up");
+    if ((action.action === "add" || action.action === "remove") && config.kind !== "game") apiError(409, "Servers are added on a game host");
     const result = await runHost(config, action);
-    await db().from("audit_logs").insert({ actor_type: "user", actor_id: user.id, action: `host.${action.action}`, target_type: "host", metadata: { host: hostId, target: action.target ?? null, ok: result.ok } });
+    // The audit line never carries the GSLT: only the port, mode and map.
+    const audited = action.action === "add" ? { target: String(action.server.port), mode: action.server.mode, map: action.server.map } : { target: "target" in action ? action.target ?? null : null };
+    await db().from("audit_logs").insert({ actor_type: "user", actor_id: user.id, action: `host.${action.action}`, target_type: "host", metadata: { host: hostId, ...audited, ok: result.ok } });
     res.set("Cache-Control", "no-store");
     res.json({ ok: result.ok, log: typeof result.body?.log === "string" ? result.body.log : null, error: result.error });
   }));

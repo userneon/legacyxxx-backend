@@ -5,13 +5,15 @@ The API reaches the host over SSH with a key that can run **one script only**.
 
 ## What the key can do
 
-`legacyxxx-plugins/scripts/legacyx-host.sh` accepts three words and nothing else:
+`legacyxxx-plugins/scripts/legacyx-host.sh` accepts five words and nothing else:
 
 | Word | Does |
 | --- | --- |
 | `status` | read only: repository, deployed commit, each server, each plugin loaded or not, Metamod / CounterStrikeSharp / MultiAddonManager / .NET, the Workshop addon, the plugin `.env` (names only), disk |
 | `deploy` | `git pull --ff-only` and `scripts/deploy.sh` (does not restart a server) |
 | `restart <port>` | `systemctl restart cs2@<port>`, only for a port that has `/etc/legacyx/cs2/<port>.conf` |
+| `add <port> <GSLT> <mode> <map> <players> [site-mode]` | a new server on that port: `cs2-host.sh add` (config, firewall TCP+UDP, systemd service, started). Every word is checked by the API, by this script and by `cs2-host.sh`; the GSLT is replaced by `<token>` in any answer and never stored by the API |
+| `remove <port>` | `cs2-host.sh remove`: stops the service and deletes its config (only a port that has one) |
 
 Because `authorized_keys` forces the script (`restrict,command=…`), a stolen key still cannot open a shell, forward a port or run anything else.
 

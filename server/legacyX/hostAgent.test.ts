@@ -45,4 +45,15 @@ describe("host agent", () => {
     expect(await runHost(config, { action: "deploy" }, call([null, '{"ok":false,"error":"another action is running"}', ""]))).toMatchObject({ ok: false, error: "another action is running" });
     expect(await runHost(config, { action: "status" }, call([new Error("x"), "", "Permission denied (publickey) /root/.ssh"]))).toMatchObject({ ok: false, error: "Could not reach the host over SSH" });
   });
+  it("builds the add and remove commands from checked words only", () => {
+    const server = { port: 27020, gslt: "0123456789abcdef0123456789abcdef", mode: "competitive" as const, map: "de_mirage", maxPlayers: 10, siteMode: "fun" };
+    expect(hostCommand({ action: "add", server })).toBe("add 27020 0123456789abcdef0123456789abcdef competitive de_mirage 10 fun");
+    expect(hostCommand({ action: "add", server: { ...server, siteMode: "" } })).toBe("add 27020 0123456789abcdef0123456789abcdef competitive de_mirage 10");
+    expect(() => hostCommand({ action: "add", server: { ...server, map: "de_mirage; rm -rf /" } })).toThrow();
+    expect(() => hostCommand({ action: "add", server: { ...server, gslt: "short" } })).toThrow();
+    expect(hostCommand({ action: "remove", target: "27020" })).toBe("remove 27020");
+    expect(hostActionSchema.safeParse({ hostId: "game1", action: "add", server }).success).toBe(true);
+    expect(hostActionSchema.safeParse({ hostId: "game1", action: "add", server: { ...server, port: 80 } }).success).toBe(false);
+    expect(hostActionSchema.safeParse({ hostId: "game1", action: "remove", target: "abc" }).success).toBe(false);
+  });
 });
