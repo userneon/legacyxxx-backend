@@ -879,6 +879,8 @@ async function applyRankedMatchResult(pluginId: string, eventId: string, matchId
       exp_before: player.expBefore,
       exp_delta: player.expDelta,
       exp_after: player.expAfter,
+      rank_before: player.rankBefore.id,
+      rank_after: player.rankAfter.id,
       breakdown: player.breakdown,
     }));
     return { ...recordValue(applied.data), ...summary, players: finalPlayers };
@@ -925,6 +927,8 @@ async function previewRankedMatch(matchId: string, rawResult: unknown) {
       exp_before: player.expBefore,
       exp_delta: player.expDelta,
       exp_after: player.expAfter,
+      rank_before: player.rankBefore.id,
+      rank_after: player.rankAfter.id,
       breakdown: player.breakdown,
     })),
   };
