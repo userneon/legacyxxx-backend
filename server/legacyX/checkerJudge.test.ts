@@ -11,6 +11,15 @@ describe("judging what the checker reports", () => {
     expect(found?.confidence).toBe("detection");
     expect(found?.note).toContain("random-looking name");
   });
+  it("counts where a program was hidden: hidden, renamed to look like another file, or thrown in the Recycle Bin", () => {
+    const base = fact({ apis: ["openprocess", "readprocessmemory"], game: ["cs2.exe"] });
+    const plain = judgeFact(base, rules);
+    const hiding = judgeFact({ ...base, hidden: true, disguised: true, deleted: true }, rules);
+    expect(hiding?.note).toContain("hidden or system file");
+    expect(hiding?.note).toContain("another kind of file's name");
+    expect(hiding?.note).toContain("Recycle Bin");
+    expect(Number(hiding?.note.match(/(\d+) points/)?.[1])).toBe(Number(plain?.note.match(/(\d+) points/)?.[1]) + 4);
+  });
   it("leaves a signed program alone", () => {
     expect(judgeFact(fact({ signed: true, apis: ["openprocess", "readprocessmemory"], game: ["cs2.exe"], offsets: ["dwEntityList", "dwViewMatrix"] }), rules)).toBeNull();
   });

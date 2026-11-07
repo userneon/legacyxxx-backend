@@ -9,6 +9,10 @@ export type CheckFact = {
   managed: boolean;
   running?: boolean;
   protector?: string;
+  /** Where the program was found: a hidden or system file, a program renamed to look like another file, thrown into the Recycle Bin. */
+  hidden?: boolean;
+  disguised?: boolean;
+  deleted?: boolean;
   apis: string[];
   game: string[];
   offsets: string[];
@@ -62,6 +66,9 @@ export function judgeFact(fact: CheckFact, rules: CheckerRules): JudgedFinding |
   if (has(rules.apis.input)) signals.push(["can send mouse or keyboard input", rules.points.input]);
   if (fact.protector) signals.push([`is packed with a protector (${fact.protector})`, rules.points.protector]);
   if (looksRandom(stemOf(fact.name))) signals.push(["has a random-looking name", rules.points.randomName]);
+  if (fact.hidden) signals.push(["is a hidden or system file", rules.points.hidden]);
+  if (fact.disguised) signals.push(["is a program with another kind of file's name", rules.points.disguised]);
+  if (fact.deleted) signals.push(["was thrown into the Recycle Bin", rules.points.deleted]);
   if (fact.path && /[\\/](Downloads|Desktop|Temp|AppData)[\\/]/i.test(fact.path)) signals.push(["sits in Downloads, Desktop, Temp or AppData", rules.points.userFolder]);
 
   if (fact.game.length > 0) signals.push([`names ${fact.game.slice(0, 3).join(", ")}`, rules.points.game]);

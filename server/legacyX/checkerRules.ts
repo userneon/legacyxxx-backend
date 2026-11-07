@@ -21,7 +21,7 @@ export type CheckerRules = {
   knownFileNames: string[];
   sha256: string[];
   cheatHosts: string[];
-  points: { memory: number; injection: number; kernel: number; findProgram: number; overlay: number; input: number; protector: number; randomName: number; userFolder: number; game: number; offsets: number };
+  points: { memory: number; injection: number; kernel: number; findProgram: number; overlay: number; input: number; protector: number; randomName: number; userFolder: number; hidden: number; disguised: number; deleted: number; game: number; offsets: number };
   thresholds: { detection: number; detectionHinted: number; suspicionWithCs2: number; suspicionWithoutCs2: number; hintedBonus: number };
 };
 
@@ -44,7 +44,7 @@ export const DEFAULT_CHECKER_RULES: CheckerRules = {
   knownFileNames: [],
   sha256: [],
   cheatHosts: [],
-  points: { memory: 3, injection: 3, kernel: 3, findProgram: 1, overlay: 1, input: 1, protector: 1, randomName: 1, userFolder: 1, game: 2, offsets: 4 },
+  points: { memory: 3, injection: 3, kernel: 3, findProgram: 1, overlay: 1, input: 1, protector: 1, randomName: 1, userFolder: 1, hidden: 1, disguised: 2, deleted: 1, game: 2, offsets: 4 },
   thresholds: { detection: 7, detectionHinted: 6, suspicionWithCs2: 5, suspicionWithoutCs2: 6, hintedBonus: 1 },
 };
 
