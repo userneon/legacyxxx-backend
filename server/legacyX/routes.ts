@@ -56,7 +56,7 @@ import { PROFILE_NAME_MAX, PROFILE_SECTIONS, bestNameMatch, escapeLike, hiddenFo
 import { PERK_DAYS, PERK_QUOTAS, grantAfterPurchase, isPerkTier, perkActive, perkCheckoutProblem, perkPool, savePicks, type PerkGrant, type PerkTier } from "./perks";
 import { ADMIN_LEVEL_KEYS, ADMIN_LEVELS, extraCommandChoices, extraCommandsProblem, isAdminLevel } from "./adminLevels";
 import { hostActionSchema, hostConfigs, runHost } from "./hostAgent";
-import { activeBans, bannedPlayer, checkBansSchema, issueBan, issueBanSchema, issueIpBan, issueIpBanSchema, listActiveBans, revokeAllBans, revokeAllBansSchema, revokeBans, revokeBanSchema, revokeIpBans, revokeIpBanSchema } from "./bans";
+import { activeBannedUserIds, activeBans, bannedPlayer, checkBansSchema, issueBan, issueBanSchema, issueIpBan, issueIpBanSchema, listActiveBans, revokeAllBans, revokeAllBansSchema, revokeBans, revokeBanSchema, revokeIpBans, revokeIpBanSchema } from "./bans";
 import { authorizationRequestSchema, loadGameRoles, resolveAuthorizations } from "./adminAuthorization";
 import { CREATOR_TIER_LABEL, cleanCreatorLinks, creatorApplicationSchema, creatorDecisionSchema, creatorTier, ownCreatorLinksSchema, sortCreators, upsertCreatorSchema } from "./creators";
 import { boosterPlaceOf, endBoosterFrames, grantBoosterFrames, isBoostingNow, syncBoosterPodium } from "./boosterRewards";
@@ -1316,8 +1316,15 @@ export function createLegacyXRouter() {
       rounds: rounds.error ? [] : ((rounds.data ?? []) as DbRow[]),
       receiptPayload: recordValue(core.data.result).rank_result,
     });
+    const userIds = detail.teams.flatMap((team) => team.players.map((player) => player.userId)).filter((id): id is string => Boolean(id));
     const worn = await equippedCosmeticsFor(rows.map((row) => textValue(firstRow(row.users)?.id)));
-    res.json({ ...detail, teams: detail.teams.map((team) => ({ ...team, players: team.players.map((player) => ({ ...player, ...lookOf(worn, player.userId ?? "") })) })) });
+    // Each player's rank as it is now (a missing row, or a failed read, only leaves the rank off the line; the scoreboard never waits on it).
+    const ranks = userIds.length ? await db().from("competitive_player_profiles").select("user_id,rank_id,rank_name,rank_image_key,current_exp").in("user_id", userIds) : { data: [] as DbRow[], error: null };
+    if (ranks.error) console.warn("[legacy-x-api] match ranks unavailable", ranks.error.message);
+    // A banned player's rank is withheld here as it is on their profile.
+    const bannedHere = userIds.length ? await activeBannedUserIds(db(), userIds).catch(() => new Set<string>()) : new Set<string>();
+    const rankOf = new Map(((ranks.data ?? []) as DbRow[]).filter((profile) => !bannedHere.has(textValue(profile.user_id))).map((profile) => [textValue(profile.user_id), { rankId: numberValue(profile.rank_id), rankName: textValue(profile.rank_name), rankImageKey: textValue(profile.rank_image_key) || null, currentExp: numberValue(profile.current_exp) }]));
+    res.json({ ...detail, teams: detail.teams.map((team) => ({ ...team, players: team.players.map((player) => ({ ...player, ...lookOf(worn, player.userId ?? ""), ...(rankOf.get(player.userId ?? "") ?? {}) })) })) });
   }));
   router.get("/public/servers", asyncRoute(async (_req, res) => {
     // Heartbeats arrive every few seconds: 5 seconds of memory costs nothing and spares the database a call per visitor.
