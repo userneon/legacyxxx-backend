@@ -3,6 +3,7 @@ import { z } from "zod";
 import { legacyXError } from "./supabase";
 import { playModeFromServerMode } from "./play";
 import { effectiveExtras, isAdminLevel } from "./adminLevels";
+import { effectivePerkCommands } from "./perks";
 import { GAME_ROLES, defaultGameRole, flagsFor, isGameRole, parseGameRole, type GameRoleConfig, type GameRoleKey } from "./gameRoles";
 
 /**
@@ -18,7 +19,7 @@ type Db = SupabaseClient<any, any, any, any, any>;
 
 export const GAME_STAFF_ROLES = ["owner", "manager", "admin", "staff"] as const;
 /** "creator" and "main_creator" are the content creators (owner request 2026-11-02): fun commands on fun servers, and nothing that punishes. */
-export type GameStaffRole = (typeof GAME_STAFF_ROLES)[number] | "creator" | "main_creator" | "player";
+export type GameStaffRole = (typeof GAME_STAFF_ROLES)[number] | "creator" | "main_creator" | "perk" | "player";
 
 const steamId64 = z.string().regex(/^7656119\d{10}$/, "SteamID64 is required");
 
@@ -40,6 +41,8 @@ export type PlayerAuthorization = {
   /** The staff member's website clan tag (shown in Tab as [CLAN | ROLE]); null when they have none. Cosmetic only. */
   clanTag: string | null;
   /** What the plugin gives this player, from the role as edited on the staff site (absent for an Owner: that role is built into the plugin). */
+  /** The name shown in Tab instead of the role's own (a paid rank's name, chosen by the Owner). */
+  label?: string;
   grant?: { flags: string[]; commands: string[]; immunity: number; limits?: Record<string, { cooldown: number; perMap: number }> } | null;
 };
 
@@ -72,6 +75,26 @@ async function creatorRolesFor(db: Db, steamIds: string[]): Promise<Map<string, 
     console.warn("[legacy-x-api] creator roles unavailable", error instanceof Error ? error.message : error);
   }
   return roles;
+}
+
+/** Players with a paid rank running: their tier, its name, the picked commands. Fail closed: any error gives nobody a rank. */
+async function perkRanksFor(db: Db, steamIds: string[], now: Date): Promise<Map<string, { tier: string; name: string; endsAt: string; commands: unknown }>> {
+  const ranks = new Map<string, { tier: string; name: string; endsAt: string; commands: unknown }>();
+  if (steamIds.length === 0) return ranks;
+  try {
+    const { data, error } = await db.from("perk_grants").select("tier,ends_at,commands,users!inner(steam_id)").gt("ends_at", now.toISOString()).in("users.steam_id", steamIds);
+    if (error || !Array.isArray(data) || data.length === 0) return ranks;
+    const tiers = await db.from("perk_tiers").select("key,name");
+    const names = new Map<string, string>(((tiers.data ?? []) as Array<{ key: string; name: string }>).map((row) => [row.key, row.name]));
+    for (const row of data as Array<{ tier?: unknown; ends_at?: unknown; commands?: unknown; users?: unknown }>) {
+      const user = Array.isArray(row.users) ? row.users[0] : row.users;
+      const steamId = typeof (user as { steam_id?: unknown } | undefined)?.steam_id === "string" ? (user as { steam_id: string }).steam_id : "";
+      if (steamId && typeof row.tier === "string" && typeof row.ends_at === "string") ranks.set(steamId, { tier: row.tier, name: names.get(row.tier) ?? "", endsAt: row.ends_at, commands: row.commands });
+    }
+  } catch (error) {
+    console.warn("[legacy-x-api] paid ranks unavailable", error instanceof Error ? error.message : error);
+  }
+  return ranks;
 }
 
 /** Every editable role as it stands: the stored version, or the built-in one when nothing valid is stored or the table cannot be read. */
@@ -153,6 +176,9 @@ export async function resolveAuthorizations(db: Db, input: z.infer<typeof author
   // Anyone the staff records do not vouch for may still be a content creator.
   const creators = await creatorRolesFor(db, steamIds.filter((steamId) => !bySteamId.get(steamId)?.authorized));
   creators.forEach((role, steamId) => bySteamId.set(steamId, { steamId, authorized: true, role, status: "active", source: "creator", expiresAt: null, clanTag: null }));
+  // Anyone still without a role may have a paid rank running (the Shop's): the plugin knows it as a creator-style role with its own name in Tab.
+  const ranks = await perkRanksFor(db, steamIds.filter((steamId) => !bySteamId.get(steamId)?.authorized), now);
+  ranks.forEach((rank, steamId) => bySteamId.set(steamId, { steamId, authorized: true, role: "perk", status: "active", source: "perk", expiresAt: rank.endsAt, clanTag: null, ...(rank.name ? { label: rank.name } : {}) }));
   // Each editable role is what the Owner set on the staff site: its commands, its immunity, and the kinds of server it works on.
   // A role limited to some kinds of server gets nothing on another (or on one whose kind is not known): fail closed.
   const configs = await loadGameRoles(db);
@@ -173,10 +199,15 @@ export async function resolveAuthorizations(db: Db, input: z.infer<typeof author
       bySteamId.set(entry.steamId, unauthorized(entry.steamId, "mode", entry.source));
       continue;
     }
+    const rank = entry.role === "perk" ? ranks.get(entry.steamId) : undefined;
     const picked = entry.role === "admin" ? effectiveExtras(extras.get(entry.steamId)?.level, extras.get(entry.steamId)?.commands, config.commands) : [];
-    const given: GameRoleConfig = picked.length ? { ...config, commands: [...config.commands, ...picked].sort() } : config;
+    const perkPicks = rank ? effectivePerkCommands({ tier: rank.tier, endsAt: rank.endsAt, commands: rank.commands }, now) : [];
+    const added = picked.length ? picked : perkPicks;
+    const given: GameRoleConfig = added.length ? { ...config, commands: Array.from(new Set([...config.commands, ...added])).sort() } : config;
     entry.grant = { flags: flagsFor(given), commands: given.commands, immunity: config.immunity, limits: config.limits };
   }
   await addClanTags(db, Array.from(bySteamId.values()).filter((entry) => entry.authorized));
+  // The plugin knows a paid rank as a creator (fun commands, nothing that punishes); its own commands and name come in the grant and the label.
+  Array.from(bySteamId.values()).forEach((entry) => { if (entry.role === "perk") entry.role = "creator"; });
   return steamIds.map((steamId) => bySteamId.get(steamId) ?? unauthorized(steamId));
 }

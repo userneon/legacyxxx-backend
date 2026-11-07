@@ -154,3 +154,26 @@ describe("in-game staff authorization", () => {
     expect(fallback[0].grant?.commands).not.toContain("unban");
   });
 });
+
+describe("paid ranks in game", () => {
+  it("gives a player with a running rank the picked commands under their rank's name, as a creator-style role", async () => {
+    const query = (data: unknown): any => Object.assign(Promise.resolve({ data, error: null }), { eq: () => query(data), in: () => query(data), gt: () => query(data), maybeSingle: async () => ({ data, error: null }) });
+    const rankRows = [{ tier: "tier1", ends_at: "2026-12-01T00:00:00.000Z", commands: ["freeze", "blind", "ban", "bury", "drug"], users: { steam_id: "76561198000000009" } }];
+    const db = {
+      rpc: async () => ({ data: [], error: null }),
+      from: (table: string) => ({ select: () => query(table === "perk_grants" ? rankRows : table === "perk_tiers" ? [{ key: "tier1", name: "Warden" }] : table === "reconnect_servers" ? { current_mode: "fun" } : []) }),
+    };
+    const [result] = await resolveAuthorizations(db as any, { serverId: "srv-1", steamIds: ["76561198000000009"] }, now);
+    expect(result).toMatchObject({ authorized: true, role: "creator", source: "perk", label: "Warden" });
+    // Three picks at most for this tier, and never a punishing command.
+    expect(result.grant?.commands).toEqual(expect.arrayContaining(["freeze", "blind"]));
+    expect(result.grant?.commands).not.toContain("ban");
+    expect(result.grant?.commands.length).toBeLessThanOrEqual(3);
+    expect(result.grant?.flags).toContain("@css/slay");
+  });
+  it("gives nothing when the rank has ended or the table cannot be read", async () => {
+    const db = { rpc: async () => ({ data: [], error: null }), from: () => ({ select: () => ({ gt: () => ({ in: async () => ({ data: null, error: { message: "x" } }) }) }) }) };
+    const [result] = await resolveAuthorizations(db as any, { serverId: "srv-1", steamIds: ["76561198000000009"] }, now);
+    expect(result.authorized).toBe(false);
+  });
+});

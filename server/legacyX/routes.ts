@@ -53,6 +53,7 @@ import { liftInfo } from "./penaltyLift";
 import { cleanPlayerConfig, playerConfigSchema } from "./playerConfig";
 import { menuLoadoutQuery, menuRarity, menuTiles, MENU_AGENT_TEAMS, MENU_SKIN_PAGE, MENU_SLOT_CATEGORY, entriesReplacedByEquip, menuAgentName, menuGunModel, menuSkinEquipBody, menuSkinOptionsBody, mergeMenuOptions, menuSkinUnequipBody, entriesRemovedByUnequip, menuSkinItemsQuery, menuSkinName, menuSkinSlotSchema, menuSkinTypesQuery, menuSlotKey, sharedGunEntryMovedTo, type LoadoutRow, type MenuSkinSlot } from "./menuSkins";
 import { PROFILE_NAME_MAX, PROFILE_SECTIONS, bestNameMatch, escapeLike, hiddenForViewer, loadoutShowcase, mapWinRates, normalizeHiddenSections, profileStats, buildBenchmark, BENCHMARK_MIN_MATCHES, staffCard, type ProfileSection } from "./profileOverview";
+import { PERK_DAYS, PERK_QUOTAS, grantAfterPurchase, isPerkTier, perkActive, perkCheckoutProblem, perkPool, savePicks, type PerkGrant, type PerkTier } from "./perks";
 import { ADMIN_LEVEL_KEYS, ADMIN_LEVELS, extraCommandChoices, extraCommandsProblem, isAdminLevel } from "./adminLevels";
 import { hostActionSchema, hostConfigs, runHost } from "./hostAgent";
 import { activeBans, bannedPlayer, checkBansSchema, issueBan, issueBanSchema, issueIpBan, issueIpBanSchema, listActiveBans, revokeAllBans, revokeAllBansSchema, revokeBans, revokeBanSchema, revokeIpBans, revokeIpBanSchema } from "./bans";
@@ -4136,6 +4137,146 @@ export function createLegacyXRouter() {
     res.set("Cache-Control", "no-store");
     res.json({ topups: ((data ?? []) as DbRow[]).map((row) => topupView(row, { status: textValue(row.status) === "pending" && topupExpired(row) ? "expired" : textValue(row.status) })) });
   }));
+  // Paid in-game ranks (owner request 2026-11-07, perks.ts): three tiers for 14, 30 or 90 days, paid straight through Wire like a top-up. The rank
+  // is given once, when Wire says the intent succeeded for the whole price; the buyer then picks commands (any time while they are not all picked).
+  const perkTiersOpen = async () => {
+    const { data, error } = await db().from("perk_tiers").select("key,name,sort,price_14,price_30,price_90,enabled").eq("enabled", true).order("sort");
+    legacyXError(error, "Unable to read the ranks");
+    return ((data ?? []) as DbRow[]).filter((row) => isPerkTier(textValue(row.key)) && [row.price_14, row.price_30, row.price_90].some((price) => numberValue(price) > 0));
+  };
+  const perkPrice = (row: DbRow, days: number) => numberValue(row[`price_${days}`]);
+  const perkGrantOf = async (userId: string): Promise<(PerkGrant & { tierName: string }) | null> => {
+    const { data, error } = await db().from("perk_grants").select("tier,ends_at,commands,locked").eq("user_id", userId).maybeSingle();
+    legacyXError(error, "Unable to read your rank");
+    if (!data || !isPerkTier(textValue(data.tier))) return null;
+    const { data: tier } = await db().from("perk_tiers").select("name").eq("key", textValue(data.tier)).maybeSingle();
+    return { tier: textValue(data.tier) as PerkTier, tierName: textValue(tier?.name), endsAt: textValue(data.ends_at), commands: Array.isArray(data.commands) ? (data.commands as unknown[]).filter((value): value is string => typeof value === "string") : [], locked: data.locked === true };
+  };
+  const perkGrantView = (grant: (PerkGrant & { tierName: string }) | null, now = new Date()) => grant && perkActive(grant, now)
+    ? { tier: grant.tier, name: grant.tierName, quota: PERK_QUOTAS[grant.tier], endsAt: grant.endsAt, commands: grant.commands, locked: grant.locked }
+    : null;
+  const PERK_COLUMNS = "id,user_id,tier,days,amount_mnt,provider_ref,checkout_url,status,created_at,paid_at";
+  const perkOrderView = (row: DbRow, extra: Record<string, unknown> = {}) => ({ id: textValue(row.id), tier: textValue(row.tier), days: numberValue(row.days), amountMnt: numberValue(row.amount_mnt), status: textValue(row.status), createdAt: textValue(row.created_at), paidAt: row.paid_at ? textValue(row.paid_at) : null, ...extra });
+  /** Asks Wire about one pending purchase and, if it is paid in full, gives (or extends) the rank once. Returns the row's current status. */
+  const settlePerkOrder = async (row: DbRow): Promise<string> => {
+    if (textValue(row.status) !== "pending") return textValue(row.status);
+    const config = wireConfig();
+    const intentId = textValue(row.provider_ref);
+    if (config && intentId) {
+      const intent = await getWireIntent(config, intentId);
+      if (intentIsPaid(intent, numberValue(row.amount_mnt))) {
+        // Whoever flips pending to paid first gives the rank; a repeat (the poll and the webhook together) finds it already paid. A failed grant puts it back.
+        const { data: won, error: wonError } = await db().from("perk_orders").update({ status: "paid", paid_at: new Date().toISOString() }).eq("id", textValue(row.id)).eq("status", "pending").select("id");
+        legacyXError(wonError, "Unable to save the payment");
+        if ((won ?? []).length > 0) {
+          try {
+            const userId = textValue(row.user_id);
+            const tier = textValue(row.tier) as PerkTier;
+            const next = grantAfterPurchase(await perkGrantOf(userId), tier, numberValue(row.days));
+            const { error: grantError } = await db().from("perk_grants").upsert({ user_id: userId, tier: next.tier, ends_at: next.endsAt, commands: next.commands, locked: next.locked, updated_at: new Date().toISOString() }, { onConflict: "user_id" });
+            legacyXError(grantError, "Unable to give the rank");
+            const { data: named } = await db().from("perk_tiers").select("name").eq("key", tier).maybeSingle();
+            await db().from("notifications").insert({ user_id: userId, kind: "system", title: `${textValue(named?.name) || "Your rank"} is active`, body: `It runs until ${next.endsAt.slice(0, 10)}. Choose your commands in the Shop.`, metadata: { kind: "perk" } });
+            await db().from("audit_logs").insert({ actor_type: "user", actor_id: userId, action: "perk.buy", target_type: "perk_orders", target_id: textValue(row.id), metadata: { tier, days: numberValue(row.days), amountMnt: numberValue(row.amount_mnt) } });
+          } catch (grantFailure) {
+            await db().from("perk_orders").update({ status: "pending", paid_at: null }).eq("id", textValue(row.id));
+            throw grantFailure;
+          }
+        }
+        return "paid";
+      }
+      if (intent.status === "canceled") {
+        await db().from("perk_orders").update({ status: "expired" }).eq("id", textValue(row.id)).eq("status", "pending");
+        return "expired";
+      }
+    }
+    if (Date.now() - Date.parse(textValue(row.created_at)) > TOPUP_MINUTES * 60_000) {
+      await db().from("perk_orders").update({ status: "expired" }).eq("id", textValue(row.id)).eq("status", "pending");
+      return "expired";
+    }
+    return "pending";
+  };
+  // What the Shop shows: the tiers on sale with their prices, what they allow, and the commands a buyer may pick from.
+  router.get("/public/perks", asyncRoute(async (_req, res) => {
+    const [tiers, roles] = await Promise.all([perkTiersOpen(), loadGameRoles(db())]);
+    res.set("Cache-Control", "no-store");
+    res.json({
+      available: wireConfig() !== null,
+      days: PERK_DAYS,
+      modes: roles.get("perk")?.modes ?? [],
+      tiers: tiers.map((row) => ({ key: textValue(row.key), name: textValue(row.name), quota: PERK_QUOTAS[textValue(row.key) as PerkTier], prices: Object.fromEntries(PERK_DAYS.map((days) => [String(days), perkPrice(row, days) > 0 ? perkPrice(row, days) : null])) })),
+      pool: perkPool(),
+    });
+  }));
+  router.get("/perks/me", userRoute(async (_req, res, user) => {
+    res.set("Cache-Control", "no-store");
+    const grant = await perkGrantOf(user.id);
+    // A purchase still open (Wire's page may be open in another tab): the Shop shows it as waiting.
+    const since = new Date(Date.now() - TOPUP_MINUTES * 60_000).toISOString();
+    const { data: pending } = await db().from("perk_orders").select(PERK_COLUMNS).eq("user_id", user.id).eq("status", "pending").gte("created_at", since).order("created_at", { ascending: false }).limit(1);
+    res.json({ grant: perkGrantView(grant), pending: pending?.[0] ? perkOrderView(pending[0] as DbRow, { checkoutUrl: textValue((pending[0] as DbRow).checkout_url) }) : null });
+  }));
+  router.post("/perks/checkout", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
+    const input = z.object({ tier: z.enum(["tier1", "tier2", "tier3"]), days: z.union([z.literal(14), z.literal(30), z.literal(90)]) }).strict().parse(req.body);
+    const config = wireConfig();
+    if (!config) apiError(503, "Payment is not set up yet", "perk_unavailable");
+    const tiers = await perkTiersOpen();
+    const tier = tiers.find((row) => textValue(row.key) === input.tier);
+    const price = tier ? perkPrice(tier, input.days) : 0;
+    if (!tier || price <= 0) apiError(404, "That rank is not for sale");
+    const problem = perkCheckoutProblem(await perkGrantOf(user.id), input.tier);
+    if (problem) apiError(409, problem, "perk_other_rank");
+    const since = new Date(Date.now() - TOPUP_MINUTES * 60_000).toISOString();
+    const { count, error: countError } = await db().from("perk_orders").select("id", { count: "exact", head: true }).eq("user_id", user.id).eq("status", "pending").gte("created_at", since);
+    legacyXError(countError, "Unable to check your purchases");
+    if ((count ?? 0) >= 5) apiError(429, "You have several unpaid purchases. Pay one or wait a few minutes.", "perk_too_many");
+    const { data: row, error } = await db().from("perk_orders").insert({ user_id: user.id, tier: input.tier, days: input.days, amount_mnt: price }).select(PERK_COLUMNS).single();
+    legacyXError(error, "Unable to start the purchase");
+    if (!row) apiError(500, "The purchase was not saved");
+    const site = (process.env.FRONTEND_ORIGIN?.trim() || "").replace(/\/$/, "");
+    const orderId = textValue(row.id);
+    try {
+      const intent = await createWireIntent(config, { amount: price, description: `LEGACY-X ${textValue(tier.name)} ${input.days} days`, topupId: orderId, key: `perk-${orderId}-intent` });
+      const checkoutUrl = await createWireCheckout(config, { intentId: intent.id, successUrl: site ? `${site}/shop?perk=${orderId}` : null, cancelUrl: site ? `${site}/shop` : null, key: `perk-${orderId}-checkout` });
+      const { error: saveError } = await db().from("perk_orders").update({ provider_ref: intent.id, checkout_url: checkoutUrl }).eq("id", orderId);
+      legacyXError(saveError, "Unable to save the purchase");
+      res.status(201).json(perkOrderView(row as DbRow, { name: textValue(tier.name), checkoutUrl, expiresInMinutes: TOPUP_MINUTES }));
+    } catch (error) {
+      await db().from("perk_orders").update({ status: "failed" }).eq("id", orderId);
+      if (error instanceof WireError) {
+        console.error("[legacy-x-api] wire payment failed", error.message);
+        apiError(424, `The payment service refused it${error.code ? ` (${error.code})` : ""}. Try again in a moment.`, "perk_failed");
+      }
+      throw error;
+    }
+  }));
+  router.get("/perks/orders/:orderId", userRoute(async (req, res, user) => {
+    const orderId = z.string().uuid().parse(req.params.orderId);
+    const { data: row, error } = await db().from("perk_orders").select(PERK_COLUMNS).eq("id", orderId).eq("user_id", user.id).maybeSingle();
+    legacyXError(error, "Unable to read the purchase");
+    if (!row) apiError(404, "Purchase not found");
+    let status: string;
+    try {
+      status = await settlePerkOrder(row as DbRow);
+    } catch (settleError) {
+      if (!(settleError instanceof WireError)) throw settleError;
+      console.error("[legacy-x-api] wire check failed", settleError.message);
+      status = textValue(row.status);
+    }
+    res.set("Cache-Control", "no-store");
+    res.json(perkOrderView({ ...(row as DbRow), status }));
+  }));
+  router.put("/perks/me/commands", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
+    const input = z.object({ commands: z.array(z.string().max(30)).max(10) }).strict().parse(req.body);
+    const grant = await perkGrantOf(user.id);
+    if (!grant) apiError(404, "You have no rank");
+    const saved = savePicks(grant, input.commands);
+    if ("error" in saved) apiError(saved.status, saved.error, "perk_commands");
+    const { error } = await db().from("perk_grants").update({ commands: saved.grant.commands, locked: saved.grant.locked, updated_at: new Date().toISOString() }).eq("user_id", user.id);
+    legacyXError(error, "Unable to save your commands");
+    res.set("Cache-Control", "no-store");
+    res.json({ grant: perkGrantView({ ...saved.grant, tierName: grant.tierName }) });
+  }));
   // Wire's webhook (signed with WIRE_WEBHOOK_SECRET, from 65.109.117.186). A good signature is answered with 200 for every event type, which also
   // lets Wire verify the endpoint; a payment_intent.succeeded only makes us look at that top-up in Wire's API.
   router.post("/public/wire/webhook", asyncRoute(async (req, res) => {
@@ -4147,6 +4288,8 @@ export function createLegacyXRouter() {
     if (event.success && event.data.type === "payment_intent.succeeded" && event.data.data?.id) {
       const { data: row } = await db().from("wallet_topups").select(TOPUP_COLUMNS).eq("provider_ref", event.data.data.id).maybeSingle();
       if (row) await settleTopup(row as DbRow).catch((error) => console.error("[legacy-x-api] wire webhook check failed", error instanceof Error ? error.message : error));
+      const { data: perkRow } = await db().from("perk_orders").select(PERK_COLUMNS).eq("provider_ref", event.data.data.id).maybeSingle();
+      if (perkRow) await settlePerkOrder(perkRow as DbRow).catch((error) => console.error("[legacy-x-api] wire webhook perk check failed", error instanceof Error ? error.message : error));
     }
     res.status(200).json({ received: true });
   }));

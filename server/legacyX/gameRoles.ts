@@ -6,11 +6,11 @@ import { z } from "zod";
  * (plugins/LegacyX-Admin/AdminPlus.Stamina.cs, AddPermCmd); a command the plugin does not know can never be granted.
  * Commands that change the server itself or the permissions are `locked`: shown, never grantable.
  */
-export const GAME_ROLES = ["creator", "main_creator", "staff", "admin", "manager"] as const;
+export const GAME_ROLES = ["creator", "main_creator", "staff", "admin", "manager", "perk"] as const;
 export type GameRoleKey = (typeof GAME_ROLES)[number];
 export const isGameRole = (value: string): value is GameRoleKey => (GAME_ROLES as readonly string[]).includes(value);
 
-export const GAME_ROLE_LABELS: Record<GameRoleKey, string> = { creator: "Content Creator", main_creator: "Main Content Creator", staff: "Staff", admin: "Admin", manager: "Manager" };
+export const GAME_ROLE_LABELS: Record<GameRoleKey, string> = { creator: "Content Creator", main_creator: "Main Content Creator", staff: "Staff", admin: "Admin", manager: "Manager", perk: "Shop rank" };
 
 /** The kinds of server a role may work on (the Play modes). An empty list means every kind. */
 export const GAME_MODES = ["5x5", "pro", "fun"] as const;
@@ -172,6 +172,8 @@ const BUILT_IN: Record<GameRoleKey, { flags: string[]; stamina: number; extraFla
   staff: { flags: ["@css/generic", "@css/chat", "@css/vote"], stamina: 250, extraFlags: [], modes: [], immunity: 250 },
   admin: { flags: ["@css/generic", "@css/kick", "@css/ban", "@css/slay", "@css/chat", "@css/vote"], stamina: 500, extraFlags: ["@css/changemap", "@legacyx/match"], modes: [], immunity: 500 },
   manager: { flags: ["@css/generic", "@css/kick", "@css/ban", "@css/unban", "@css/slay", "@css/chat", "@css/vote"], stamina: 750, extraFlags: ["@css/changemap", "@css/config", "@legacyx/match"], modes: [], immunity: 750 },
+  // The ranks sold in the Shop (perks.ts): no commands of their own, the buyer picks them; fun servers only until the Owner widens it here.
+  perk: { flags: [], stamina: 1000, extraFlags: [], modes: ["fun"], immunity: 50 },
 };
 
 export function defaultGameRole(role: GameRoleKey): GameRoleConfig {
