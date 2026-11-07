@@ -4,6 +4,7 @@ import { z } from "zod";
 import { sha256 } from "./auth";
 import { activeBannedUserIds } from "./bans";
 import { legacyXError } from "./supabase";
+import { artUrl } from "./clanArt";
 
 /**
  * Discord ↔ Steam links for the Discord bot's /link command and rank roles.
@@ -106,6 +107,8 @@ export type DiscordLink = {
   matchesCompleted: number;
   /** The member's role in their clan ("leader", "co-leader", "member"), or null when they are in no clan. Gives the Clan Member role. */
   clanRole: string | null;
+  /** The clan the member is in (id, name, tag, and the logo's path on this API, `/api/v1/clans/<id>/logo?v=…`, null without an uploaded logo), or null. Gives the clan's own role and channel. */
+  clan: { id: string; name: string; tag: string; logo: string | null } | null;
   /** The player's active staff role on the site ("owner", "manager", "admin", "developer", "designer"), or null. Gives the same-named Discord role. */
   staffRole: string | null;
   /** "main" or "creator" for a content creator, or null. Gives Main Content Creator / Content Creator. */
@@ -163,10 +166,21 @@ export async function listLinks(db: Db, discordId?: string): Promise<DiscordLink
 
   // A failed read must fail the call: the bot treats no answer as "no change" and never strips roles because of it.
   const clanRoles = new Map<string, string>();
+  const memberClan = new Map<string, string>();
   for (let index = 0; index < userIds.length; index += 200) {
-    const { data: rows, error: clanError } = await db.from("clan_members").select("user_id,role").in("user_id", userIds.slice(index, index + 200));
+    const { data: rows, error: clanError } = await db.from("clan_members").select("user_id,clan_id,role").in("user_id", userIds.slice(index, index + 200));
     legacyXError(clanError, "Unable to load linked players' clans");
-    for (const row of (rows ?? []) as Row[]) clanRoles.set(text(row.user_id), text(row.role) || "member");
+    for (const row of (rows ?? []) as Row[]) {
+      clanRoles.set(text(row.user_id), text(row.role) || "member");
+      if (text(row.clan_id)) memberClan.set(text(row.user_id), text(row.clan_id));
+    }
+  }
+  const clanInfo = new Map<string, { id: string; name: string; tag: string; logo: string | null }>();
+  const clanIds = Array.from(new Set(memberClan.values()));
+  for (let index = 0; index < clanIds.length; index += 200) {
+    const { data: rows, error: clanError } = await db.from("clans").select("id,name,tag,logo").in("id", clanIds.slice(index, index + 200));
+    legacyXError(clanError, "Unable to load linked players' clan names");
+    for (const row of (rows ?? []) as Row[]) clanInfo.set(text(row.id), { id: text(row.id), name: text(row.name), tag: text(row.tag), logo: artUrl(text(row.id), "logo", row.logo) });
   }
 
   const staffRoles = new Map<string, string>();
@@ -207,6 +221,7 @@ export async function listLinks(db: Db, discordId?: string): Promise<DiscordLink
       currentExp: profile ? num(profile.current_exp) : 0,
       matchesCompleted: profile ? num(profile.matches_completed) : 0,
       clanRole: clanRoles.get(text(link.user_id)) ?? null,
+      clan: clanInfo.get(memberClan.get(text(link.user_id)) ?? "") ?? null,
       staffRole: staffRoles.get(text(link.user_id)) || null,
       creatorTier: creatorTiers.get(text(link.user_id)) || null,
       boosterPlace: places.get(text(link.discord_id)) ?? null,
