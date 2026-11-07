@@ -1194,7 +1194,7 @@ export function createLegacyXRouter() {
     })();
     // These four only need the ladder's user IDs: they run side by side.
     const [linked, clanTags, worn, expChanges] = await Promise.all([discordLinkedUserIds(db(), userIds.filter(Boolean)), clanTagsFor(userIds), equippedCosmeticsFor(userIds), expChangesPromise]);
-    const rows = ((data ?? []) as DbRow[]).map((row): DbRow => ({ ...row, exp_change: expChanges.get(textValue(row.user_id)) ?? null, discord_linked: linked.has(textValue(row.user_id)), clan_tag: clanTags.get(textValue(row.user_id))?.tag ?? null, clan_look: clanTags.get(textValue(row.user_id))?.look ?? null, frame: worn.get(textValue(row.user_id))?.frame ?? null, frame_look: worn.get(textValue(row.user_id))?.frameLook ?? null, name_style: worn.get(textValue(row.user_id))?.nameStyle ?? null, perk: worn.get(textValue(row.user_id))?.perk ?? null }));
+    const rows = ((data ?? []) as DbRow[]).map((row): DbRow => ({ ...row, exp_change: expChanges.get(textValue(row.user_id)) ?? null, discord_linked: linked.has(textValue(row.user_id)), clan_tag: clanTags.get(textValue(row.user_id))?.tag ?? null, clan_look: clanTags.get(textValue(row.user_id))?.look ?? null, frame: worn.get(textValue(row.user_id))?.frame ?? null, frame_look: worn.get(textValue(row.user_id))?.frameLook ?? null, name_style: worn.get(textValue(row.user_id))?.nameStyle ?? null, perk: worn.get(textValue(row.user_id))?.perk ?? null, banner: bannerOf(worn, textValue(row.user_id)) }));
     if (sort === "exp") return { sort, minimumMatches: 0, entries: rows };
     // K/D and win rate are only meaningful with a sample: 10 completed matches minimum.
     const metric = (row: DbRow) => Number(sort === "kd" ? row.kd_ratio : row.win_rate) || 0;
@@ -2067,8 +2067,10 @@ export function createLegacyXRouter() {
     }
     return worn;
   };
+  /** The banner shown behind a player's card in lists: the one they wear, else their paid rank's own (owner request 2026-11-07), else none. */
+  const bannerOf = (worn: Awaited<ReturnType<typeof equippedCosmeticsFor>>, userId: string) => worn.get(userId)?.banner ?? (worn.get(userId)?.perk ? `perk-${worn.get(userId)!.perk!.tier}` : null);
   /** The frame and name style fields every player card carries (null when nothing is worn). */
-  const lookOf = (worn: Awaited<ReturnType<typeof equippedCosmeticsFor>>, userId: string) => ({ frame: worn.get(userId)?.frame ?? null, frameLook: worn.get(userId)?.frameLook ?? null, nameStyle: worn.get(userId)?.nameStyle ?? null, perk: worn.get(userId)?.perk ?? null });
+  const lookOf = (worn: Awaited<ReturnType<typeof equippedCosmeticsFor>>, userId: string) => ({ frame: worn.get(userId)?.frame ?? null, frameLook: worn.get(userId)?.frameLook ?? null, nameStyle: worn.get(userId)?.nameStyle ?? null, perk: worn.get(userId)?.perk ?? null, banner: bannerOf(worn, userId) });
   const cosmeticView = (item: DbRow, ownedIds: Set<string>, owners: Map<string, number>, endsAt: Map<string, string | null>) => ({
     id: textValue(item.id),
     name: textValue(item.name_en),
