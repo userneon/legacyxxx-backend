@@ -127,4 +127,30 @@ describe("in-game staff authorization", () => {
       expect(other.map((entry) => entry.role)).toEqual(["admin", "player", "player", "player"]);
     }
   });
+
+  it("gives an Admin the extra commands of their level, never more than the level allows", async () => {
+    const query = (data: unknown): any => Object.assign(Promise.resolve({ data, error: null }), { eq: () => query(data), in: () => query(data) });
+    const staffRows = [
+      { admin_level: "admin", extra_commands: ["unban", "map", "rename", "bring", "goto"], users: { steam_id: "76561198000000003" } },
+      { admin_level: "plus", extra_commands: ["unban", "map", "rcon"], users: { steam_id: "76561198000000004" } },
+    ];
+    const db = {
+      rpc: async () => ({ data: [row("76561198000000003", "admin", "active", "global"), row("76561198000000004", "admin", "active", "global"), row("76561198000000005", "manager", "active", "global")], error: null }),
+      from: (table: string) => ({ select: () => query(table === "staff" ? staffRows : []) }),
+    };
+    const result = await resolveAuthorizations(db as any, { serverId: "srv-1", steamIds: ["76561198000000003", "76561198000000004", "76561198000000005"] }, now);
+    // Admin level: 3 of the 5 picks, in the order picked.
+    expect(result[0].grant?.commands).toEqual(expect.arrayContaining(["ban", "unban", "map", "rename"]));
+    expect(result[0].grant?.commands).not.toContain("bring");
+    expect(result[0].grant?.flags).toContain("@css/unban");
+    // +Admin level: both valid picks; the locked command is dropped.
+    expect(result[1].grant?.commands).toEqual(expect.arrayContaining(["unban", "map"]));
+    expect(result[1].grant?.commands).not.toContain("rcon");
+    // A Manager gets no extras.
+    expect(result[2].grant?.commands).not.toContain("bring");
+    // The extras are read once; an unreadable answer gives none.
+    const broken = { rpc: db.rpc, from: (table: string) => (table === "staff" ? { select: () => ({ eq: () => ({ in: async () => ({ data: null, error: { message: "x" } }) }) }) } : { select: () => query([]) }) };
+    const fallback = await resolveAuthorizations(broken as any, { serverId: "srv-1", steamIds: ["76561198000000003"] }, now);
+    expect(fallback[0].grant?.commands).not.toContain("unban");
+  });
 });

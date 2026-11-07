@@ -2,6 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { z } from "zod";
 import { legacyXError } from "./supabase";
 import { playModeFromServerMode } from "./play";
+import { effectiveExtras, isAdminLevel } from "./adminLevels";
 import { GAME_ROLES, defaultGameRole, flagsFor, isGameRole, parseGameRole, type GameRoleConfig, type GameRoleKey } from "./gameRoles";
 
 /**
@@ -91,6 +92,24 @@ export async function loadGameRoles(db: Db): Promise<Map<GameRoleKey, GameRoleCo
   return roles;
 }
 
+/** The extra commands and the level of these Admins (the staff rows). Fail closed: an unreadable answer gives nobody an extra command. */
+async function adminExtrasFor(db: Db, steamIds: string[]): Promise<Map<string, { level: string; commands: unknown }>> {
+  const extras = new Map<string, { level: string; commands: unknown }>();
+  if (steamIds.length === 0) return extras;
+  try {
+    const { data, error } = await db.from("staff").select("admin_level,extra_commands,users!inner(steam_id)").eq("status", "active").in("users.steam_id", steamIds);
+    if (error) return extras;
+    for (const row of (Array.isArray(data) ? data : []) as Array<{ admin_level?: unknown; extra_commands?: unknown; users?: unknown }>) {
+      const user = Array.isArray(row.users) ? row.users[0] : row.users;
+      const steamId = typeof (user as { steam_id?: unknown } | undefined)?.steam_id === "string" ? (user as { steam_id: string }).steam_id : "";
+      if (steamId) extras.set(steamId, { level: isAdminLevel(row.admin_level) ? row.admin_level : "admin", commands: row.extra_commands });
+    }
+  } catch (error) {
+    console.warn("[legacy-x-api] admin extra commands unavailable", error instanceof Error ? error.message : error);
+  }
+  return extras;
+}
+
 /** Staff show their clan before their role in Tab. Purely cosmetic: any failure just leaves the tag out. */
 async function addClanTags(db: Db, staff: PlayerAuthorization[]) {
   if (staff.length === 0) return;
@@ -146,13 +165,17 @@ export async function resolveAuthorizations(db: Db, input: z.infer<typeof author
       serverMode = server.error ? null : playModeFromServerMode(server.data?.current_mode);
     } catch { serverMode = null; }
   }
+  // An Admin's extra commands (owner request 2026-11-07), by their level: read once for all the Admins asked about.
+  const extras = await adminExtrasFor(db, authorized.filter((entry) => entry.role === "admin").map((entry) => entry.steamId));
   for (const entry of authorized) {
     const config = configs.get(entry.role as GameRoleKey) ?? defaultGameRole(entry.role as GameRoleKey);
     if (config.modes.length > 0 && (!serverMode || !(config.modes as string[]).includes(serverMode))) {
       bySteamId.set(entry.steamId, unauthorized(entry.steamId, "mode", entry.source));
       continue;
     }
-    entry.grant = { flags: flagsFor(config), commands: config.commands, immunity: config.immunity, limits: config.limits };
+    const picked = entry.role === "admin" ? effectiveExtras(extras.get(entry.steamId)?.level, extras.get(entry.steamId)?.commands, config.commands) : [];
+    const given: GameRoleConfig = picked.length ? { ...config, commands: [...config.commands, ...picked].sort() } : config;
+    entry.grant = { flags: flagsFor(given), commands: given.commands, immunity: config.immunity, limits: config.limits };
   }
   await addClanTags(db, Array.from(bySteamId.values()).filter((entry) => entry.authorized));
   return steamIds.map((steamId) => bySteamId.get(steamId) ?? unauthorized(steamId));

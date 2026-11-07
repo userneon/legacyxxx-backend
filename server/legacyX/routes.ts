@@ -53,6 +53,7 @@ import { liftInfo } from "./penaltyLift";
 import { cleanPlayerConfig, playerConfigSchema } from "./playerConfig";
 import { menuLoadoutQuery, menuRarity, menuTiles, MENU_AGENT_TEAMS, MENU_SKIN_PAGE, MENU_SLOT_CATEGORY, entriesReplacedByEquip, menuAgentName, menuGunModel, menuSkinEquipBody, menuSkinOptionsBody, mergeMenuOptions, menuSkinUnequipBody, entriesRemovedByUnequip, menuSkinItemsQuery, menuSkinName, menuSkinSlotSchema, menuSkinTypesQuery, menuSlotKey, sharedGunEntryMovedTo, type LoadoutRow, type MenuSkinSlot } from "./menuSkins";
 import { PROFILE_NAME_MAX, PROFILE_SECTIONS, bestNameMatch, escapeLike, hiddenForViewer, loadoutShowcase, mapWinRates, normalizeHiddenSections, profileStats, buildBenchmark, BENCHMARK_MIN_MATCHES, staffCard, type ProfileSection } from "./profileOverview";
+import { ADMIN_LEVEL_KEYS, ADMIN_LEVELS, extraCommandChoices, extraCommandsProblem, isAdminLevel } from "./adminLevels";
 import { hostActionSchema, hostConfigs, runHost } from "./hostAgent";
 import { activeBans, bannedPlayer, checkBansSchema, issueBan, issueBanSchema, issueIpBan, issueIpBanSchema, listActiveBans, revokeAllBans, revokeAllBansSchema, revokeBans, revokeBanSchema, revokeIpBans, revokeIpBanSchema } from "./bans";
 import { authorizationRequestSchema, loadGameRoles, resolveAuthorizations } from "./adminAuthorization";
@@ -167,8 +168,8 @@ const inGameAdminStaminaSchema = z.number().int().min(0).max(1000);
 const staffRoleNumericDefaults = { OWNER: 1000, MANAGER: 750, ADMIN: 500, DEVELOPER: 0, DESIGNER: 0 } as const;
 /** When a staff grant ends: an ISO date in the future, or null for no end. */
 const staffExpirySchema = z.string().datetime({ offset: true }).nullable().refine((value) => value === null || Date.parse(value) > Date.now(), "The end date must be in the future");
-const staffMemberCreateSchema = z.object({ userId: z.string().uuid().optional(), steamId: z.string().regex(/^7656119\d{10}$/, "Enter a SteamID64").optional(), role: staffDirectoryRoleSchema, permissions: staffPermissionListSchema.default([]), gamePermissions: inGameAdminPermissionsSchema.default([]), stamina: inGameAdminStaminaSchema.optional(), immunity: inGameAdminImmunitySchema.optional(), status: staffDirectoryStatusSchema.default("active"), expiresAt: staffExpirySchema.optional() }).strict().refine((value) => Boolean(value.userId || value.steamId), "Give the player's SteamID64");
-const staffMemberUpdateSchema = z.object({ expiresAt: staffExpirySchema.optional(), role: staffDirectoryRoleSchema.optional(), permissions: staffPermissionListSchema.optional(), gamePermissions: inGameAdminPermissionsSchema.optional(), stamina: inGameAdminStaminaSchema.optional(), immunity: inGameAdminImmunitySchema.optional(), status: staffDirectoryStatusSchema.optional() }).strict().refine((value) => Object.keys(value).length > 0, "At least one staff field is required");
+const staffMemberCreateSchema = z.object({ userId: z.string().uuid().optional(), steamId: z.string().regex(/^7656119\d{10}$/, "Enter a SteamID64").optional(), role: staffDirectoryRoleSchema, permissions: staffPermissionListSchema.default([]), gamePermissions: inGameAdminPermissionsSchema.default([]), stamina: inGameAdminStaminaSchema.optional(), immunity: inGameAdminImmunitySchema.optional(), status: staffDirectoryStatusSchema.default("active"), expiresAt: staffExpirySchema.optional(), adminLevel: z.enum(ADMIN_LEVEL_KEYS).optional(), extraCommands: z.array(z.string().max(30)).max(10).optional() }).strict().refine((value) => Boolean(value.userId || value.steamId), "Give the player's SteamID64");
+const staffMemberUpdateSchema = z.object({ expiresAt: staffExpirySchema.optional(), role: staffDirectoryRoleSchema.optional(), permissions: staffPermissionListSchema.optional(), gamePermissions: inGameAdminPermissionsSchema.optional(), stamina: inGameAdminStaminaSchema.optional(), immunity: inGameAdminImmunitySchema.optional(), status: staffDirectoryStatusSchema.optional(), adminLevel: z.enum(ADMIN_LEVEL_KEYS).optional(), extraCommands: z.array(z.string().max(30)).max(10).optional() }).strict().refine((value) => Object.keys(value).length > 0, "At least one staff field is required");
 
 const managerStaffCapabilities = new Set([
   "overview", "ban", "unban", "kick", "rename", "map_change", "match_announcement", "hud_announcement", "player_hud_alert", "mute", "player_message",
@@ -5078,12 +5079,16 @@ export function createLegacyXRouter() {
     ] });
   }));
 
+  // What the Team page offers when the Owner picks an Admin's extra commands: the levels with their allowances, and the commands that may be picked.
+  router.get("/staffpanel/admin-levels", ownerPanelRoute(async (_req, res) => {
+    res.json({ levels: ADMIN_LEVEL_KEYS.map((key) => ({ key, label: ADMIN_LEVELS[key].label, quota: ADMIN_LEVELS[key].quota })), commands: extraCommandChoices() });
+  }));
   router.get("/staffpanel/staff", ownerPanelRoute(async (_req, res) => {
-    const { data, error } = await db().from("staff").select("id,user_id,role,permissions,game_permissions,stamina,immunity,status,expires_at,created_at,updated_at,users(username,steam_id,avatar)").order("created_at", { ascending: false });
+    const { data, error } = await db().from("staff").select("id,user_id,role,permissions,game_permissions,stamina,immunity,status,expires_at,admin_level,extra_commands,created_at,updated_at,users(username,steam_id,avatar)").order("created_at", { ascending: false });
     legacyXError(error, "Unable to load staff directory");
     res.json(((data ?? []) as DbRow[]).map((member) => {
       const user = firstRow(member.users) ?? {};
-      return { id: textValue(member.id), userId: textValue(member.user_id), username: textValue(user.username), steamId: textValue(user.steam_id), avatar: textValue(user.avatar), role: textValue(member.role), permissions: Array.isArray(member.permissions) ? member.permissions.filter((value): value is string => typeof value === "string") : [], gamePermissions: Array.isArray(member.game_permissions) ? member.game_permissions.filter((value): value is string => typeof value === "string") : [], stamina: Math.max(0, Math.min(1000, numberValue(member.stamina) ?? staffRoleNumericDefaults[member.role as keyof typeof staffRoleNumericDefaults] ?? 0)), immunity: Math.max(0, Math.min(1000, numberValue(member.immunity) ?? staffRoleNumericDefaults[member.role as keyof typeof staffRoleNumericDefaults] ?? 0)), status: textValue(member.status), expiresAt: timestampValue(member.expires_at) || null, createdAt: timestampValue(member.created_at), updatedAt: timestampValue(member.updated_at) };
+      return { id: textValue(member.id), userId: textValue(member.user_id), username: textValue(user.username), steamId: textValue(user.steam_id), avatar: textValue(user.avatar), role: textValue(member.role), permissions: Array.isArray(member.permissions) ? member.permissions.filter((value): value is string => typeof value === "string") : [], gamePermissions: Array.isArray(member.game_permissions) ? member.game_permissions.filter((value): value is string => typeof value === "string") : [], stamina: Math.max(0, Math.min(1000, numberValue(member.stamina) ?? staffRoleNumericDefaults[member.role as keyof typeof staffRoleNumericDefaults] ?? 0)), immunity: Math.max(0, Math.min(1000, numberValue(member.immunity) ?? staffRoleNumericDefaults[member.role as keyof typeof staffRoleNumericDefaults] ?? 0)), status: textValue(member.status), expiresAt: timestampValue(member.expires_at) || null, adminLevel: isAdminLevel(member.admin_level) ? member.admin_level : "admin", extraCommands: Array.isArray(member.extra_commands) ? member.extra_commands.filter((value): value is string => typeof value === "string") : [], createdAt: timestampValue(member.created_at), updatedAt: timestampValue(member.updated_at) };
     }));
   }));
   router.post("/staffpanel/staff", ownerPanelRoute(async (req, res, staff) => {
@@ -5099,10 +5104,15 @@ export function createLegacyXRouter() {
     const { data: existing } = await db().from("staff").select("id").eq("user_id", userId).maybeSingle();
     if (existing) apiError(409, "This player is already on the staff list. Edit them there instead");
     const input = { ...parsed, userId };
+    // Admin levels apply to the ADMIN role only.
+    const adminLevel = input.role === "ADMIN" ? input.adminLevel ?? "admin" : "admin";
+    const extraCommands = input.role === "ADMIN" ? input.extraCommands ?? [] : [];
+    const extraProblem = extraCommandsProblem(adminLevel, extraCommands, (await loadGameRoles(db())).get("admin")?.commands);
+    if (extraProblem) apiError(400, extraProblem);
     const numericDefault = staffRoleNumericDefaults[input.role];
     const stamina = input.stamina ?? numericDefault;
     const immunity = input.immunity ?? numericDefault;
-    const { data, error } = await db().from("staff").insert({ user_id: input.userId, role: input.role, permissions: input.permissions, game_permissions: input.gamePermissions, stamina, immunity, status: input.status, expires_at: input.expiresAt ?? null }).select("id,user_id,role,permissions,game_permissions,stamina,immunity,status,created_at,updated_at").single();
+    const { data, error } = await db().from("staff").insert({ user_id: input.userId, role: input.role, permissions: input.permissions, game_permissions: input.gamePermissions, stamina, immunity, status: input.status, expires_at: input.expiresAt ?? null, admin_level: adminLevel, extra_commands: extraCommands }).select("id,user_id,role,permissions,game_permissions,stamina,immunity,status,admin_level,extra_commands,created_at,updated_at").single();
     legacyXError(error, "Unable to create staff record");
     const audit = await db().from("staff_audit_logs").insert({ staff_id: staff.staffId, event_type: "staff_member_created", target_type: "staff", target_id: textValue((data as DbRow).id), metadata: { user_id: input.userId, role: input.role, permissions: input.permissions, game_permissions: input.gamePermissions, stamina, immunity, status: input.status } });
     legacyXError(audit.error, "Unable to audit staff record creation");
@@ -5111,16 +5121,26 @@ export function createLegacyXRouter() {
   router.patch("/staffpanel/staff/:staffId", ownerPanelRoute(async (req, res, staff) => {
     const staffId = userIdSchema.parse(req.params.staffId);
     const input = staffMemberUpdateSchema.parse(req.body);
-    const { data: current, error: currentError } = await db().from("staff").select("id,role,status").eq("id", staffId).maybeSingle();
+    const { data: current, error: currentError } = await db().from("staff").select("id,role,status,admin_level,extra_commands").eq("id", staffId).maybeSingle();
     legacyXError(currentError, "Unable to resolve staff record");
     if (!current) apiError(404, "Staff record was not found");
+    // Admin levels apply to the ADMIN role only: another role has none, and a level lowered below the picks asks for fewer picks first.
+    const finalRole = input.role ?? current.role;
+    const currentLevel = isAdminLevel(current.admin_level) ? current.admin_level : "admin";
+    const finalLevel = finalRole === "ADMIN" ? input.adminLevel ?? currentLevel : "admin";
+    const finalExtras = finalRole === "ADMIN" ? input.extraCommands ?? (Array.isArray(current.extra_commands) ? (current.extra_commands as unknown[]).filter((value): value is string => typeof value === "string") : []) : [];
+    const levelTouched = input.adminLevel !== undefined || input.extraCommands !== undefined || input.role !== undefined;
+    if (levelTouched) {
+      const extraProblem = extraCommandsProblem(finalLevel, finalExtras, (await loadGameRoles(db())).get("admin")?.commands);
+      if (extraProblem) apiError(400, input.extraCommands === undefined && input.adminLevel !== undefined ? `${extraProblem}. Remove some extra commands first` : extraProblem);
+    }
     const removesActiveOwner = current.role === "OWNER" && current.status === "active" && ((input.role !== undefined && input.role !== "OWNER") || (input.status !== undefined && input.status !== "active"));
     if (removesActiveOwner) {
       const { count, error } = await db().from("staff").select("id", { count: "exact", head: true }).eq("role", "OWNER").eq("status", "active");
       legacyXError(error, "Unable to verify active Owner count");
       if ((count ?? 0) <= 1) apiError(409, "The last active Owner cannot be changed or deactivated");
     }
-    const { data, error } = await db().from("staff").update({ ...(input.role === undefined ? {} : { role: input.role }), ...(input.permissions === undefined ? {} : { permissions: input.permissions }), ...(input.gamePermissions === undefined ? {} : { game_permissions: input.gamePermissions }), ...(input.stamina === undefined ? {} : { stamina: input.stamina }), ...(input.immunity === undefined ? {} : { immunity: input.immunity }), ...(input.status === undefined ? {} : { status: input.status }), ...(input.expiresAt === undefined ? {} : { expires_at: input.expiresAt }), updated_at: new Date().toISOString() }).eq("id", staffId).select("id,user_id,role,permissions,game_permissions,stamina,immunity,status,created_at,updated_at").single();
+    const { data, error } = await db().from("staff").update({ ...(input.role === undefined ? {} : { role: input.role }), ...(input.permissions === undefined ? {} : { permissions: input.permissions }), ...(input.gamePermissions === undefined ? {} : { game_permissions: input.gamePermissions }), ...(input.stamina === undefined ? {} : { stamina: input.stamina }), ...(input.immunity === undefined ? {} : { immunity: input.immunity }), ...(input.status === undefined ? {} : { status: input.status }), ...(input.expiresAt === undefined ? {} : { expires_at: input.expiresAt }), ...(levelTouched ? { admin_level: finalLevel, extra_commands: finalExtras } : {}), updated_at: new Date().toISOString() }).eq("id", staffId).select("id,user_id,role,permissions,game_permissions,stamina,immunity,status,admin_level,extra_commands,created_at,updated_at").single();
     legacyXError(error, "Unable to update staff record");
     const audit = await db().from("staff_audit_logs").insert({ staff_id: staff.staffId, event_type: "staff_member_updated", target_type: "staff", target_id: staffId, metadata: input });
     legacyXError(audit.error, "Unable to audit staff record update");
