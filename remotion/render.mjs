@@ -12,7 +12,7 @@ const props = JSON.parse(rawProps)
 const browserExecutable = process.env.REMOTION_BROWSER || undefined
 const serveUrl = await bundle({ entryPoint: join(here, "src", "index.ts"), onProgress: () => undefined })
 const composition = await selectComposition({ serveUrl, id, inputProps: props, browserExecutable })
-const transparent = id === "LowerThird" || id === "CodeBar"
+const transparent = ["LowerThird", "CodeBar", "CommunityIntro", "LogoSting", "Wipe", "CommunityBug"].includes(id)
 const gif = id.endsWith("Gif")
 await renderMedia({
   composition, serveUrl, outputLocation: out, inputProps: props, browserExecutable,
