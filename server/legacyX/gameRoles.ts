@@ -60,6 +60,8 @@ export const GAME_COMMANDS: GameCommand[] = [
   { name: "hrespawn", flag: "@css/slay", group: "Fun", summary: "Respawn at last pos", locked: false, stamina: 1000 },
   { name: "hsay", flag: "@css/chat", group: "Chat and punishments", summary: "HUD say (console)", locked: false, stamina: 500 },
   { name: "ipban", flag: "@css/ban", group: "Bans", summary: "IP ban a player from console", locked: false, stamina: 750 },
+  { name: "kickbots", flag: "@css/kick", group: "Basics and votes", summary: "Remove every bot from the server at once", locked: false, stamina: 500 },
+  { name: "chatlock", flag: "@css/chat", group: "Chat and punishments", summary: "Only staff can write in chat, again to unlock", locked: false, stamina: 500 },
   { name: "kick", flag: "@css/generic", group: "Basics and votes", summary: "Kick a player from console", locked: false, stamina: 500 },
   { name: "lastban", flag: "@css/ban", group: "Bans", summary: "Show last disconnected players", locked: false, stamina: 500 },
   { name: "launch", flag: "@css/slay", group: "Fun", summary: "Throw a player up in the air", locked: false },
