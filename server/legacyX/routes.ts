@@ -5316,16 +5316,25 @@ export function createLegacyXRouter() {
   // Staff → Roles (Owner only): which commands each in-game role may run, on which kinds of server, and its immunity (gameRoles.ts, table game_roles).
   // The plugin reads the result with the next staff check (within a minute); no row means the built-in role.
   // The game host: what is installed and loaded, and a locked-down deploy / restart over SSH (owner request 2026-11-07, hostAgent.ts).
-  router.get("/staff/host/status", sensitiveMutationRateLimit, userRoute(async (_req, res, user) => {
-    await requireOwnerStaffRole(user.id);
-    res.set("Cache-Control", "no-store");
+  const loadHostStatus = async () => {
     const configs = hostConfigs();
     const hosts = await Promise.all(configs.map(async (config) => {
       const result = await runHost(config, { action: "status" });
       const head = { id: config.id, label: config.label, kind: config.kind };
       return result.body && result.ok ? { ...head, reachable: true, ...result.body } : { ...head, reachable: false, error: result.error };
     }));
-    res.json({ configured: configs.length > 0, hosts });
+    return { configured: configs.length > 0, hosts };
+  };
+  router.get("/staff/host/status", sensitiveMutationRateLimit, userRoute(async (_req, res, user) => {
+    await requireOwnerStaffRole(user.id);
+    res.set("Cache-Control", "no-store");
+    res.json(await loadHostStatus());
+  }));
+  // The Discord bot watches the same checks (checks only, no details) and posts to the staff when one turns red.
+  router.get("/plugin/host/status", pluginRoute("discord:link", async (_req, res) => {
+    res.set("Cache-Control", "no-store");
+    const { configured, hosts } = await loadHostStatus();
+    res.json({ configured, hosts: hosts.map((host) => ({ id: host.id, label: host.label, kind: host.kind, reachable: host.reachable, error: "error" in host ? host.error : null, checks: "checks" in host && Array.isArray(host.checks) ? host.checks : [] })) });
   }));
   router.post("/staff/host/actions", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
     await requireOwnerStaffRole(user.id);
