@@ -176,6 +176,7 @@ const staffMemberUpdateSchema = z.object({ expiresAt: staffExpirySchema.optional
 
 const managerStaffCapabilities = new Set([
   "overview", "ban", "unban", "kick", "rename", "map_change", "match_announcement", "hud_announcement", "player_hud_alert", "mute", "player_message",
+  "match_set_score", "match_end", "match_force_start", "match_swap_sides", "match_move_player",
 ]);
 
 function requireStaffCapability(staff: StaffPrincipal, capability: string) {
@@ -458,7 +459,7 @@ const staffPanelServerSchema = z.string().trim().min(1).max(80).regex(/^[A-Za-z0
 const staffPanelMapSchema = z.enum(["de_ancient", "de_anubis", "de_cache", "de_dust2", "de_inferno", "de_mirage", "de_nuke", "de_overpass", "de_train", "de_vertigo"]);
 const staffPanelActionSchema = z.object({
   serverId: staffPanelServerSchema,
-  type: z.enum(["ban", "unban", "kick", "mute", "rename", "map_change", "server_announcement", "match_announcement", "hud_announcement", "player_hud_alert", "player_message", "restart_all", "restart_server", "start_server", "stop_server", "timeout", "unpause", "round_restart", "round_restore", "player_ip_lookup"]),
+  type: z.enum(["ban", "unban", "kick", "mute", "rename", "map_change", "server_announcement", "match_announcement", "hud_announcement", "player_hud_alert", "player_message", "restart_all", "restart_server", "start_server", "stop_server", "timeout", "unpause", "round_restart", "round_restore", "player_ip_lookup", "match_set_score", "match_end", "match_force_start", "match_swap_sides", "match_move_player"]),
   playerSteamId: z.string().regex(/^\d{17}$/).optional(),
   playerName: z.string().trim().min(1).max(64).optional(),
   map: z.string().trim().min(1).max(64).regex(/^[A-Za-z0-9_/-]+$/).optional(),
@@ -471,8 +472,11 @@ const staffPanelActionSchema = z.object({
   countdownSeconds: z.number().int().min(0).max(600).optional(),
   newName: z.string().trim().min(2).max(64).optional(),
   mapImpactAcknowledged: z.literal(true).optional(),
+  scoreT: z.number().int().min(0).max(60).optional(),
+  scoreCt: z.number().int().min(0).max(60).optional(),
+  team: z.enum(["t", "ct", "spec"]).optional(),
 }).strict().superRefine((input, context) => {
-  const playerActions = new Set(["ban", "unban", "kick", "mute", "rename", "player_hud_alert", "player_message", "player_ip_lookup"]);
+  const playerActions = new Set(["ban", "unban", "kick", "mute", "rename", "player_hud_alert", "player_message", "player_ip_lookup", "match_move_player"]);
   const messageActions = new Set(["ban", "unban", "kick", "mute", "server_announcement", "match_announcement", "hud_announcement", "player_hud_alert", "player_message", "timeout"]);
   if (playerActions.has(input.type) && !input.playerSteamId) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ["playerSteamId"], message: "A 17-digit SteamID is required for this action" });
@@ -484,6 +488,12 @@ const staffPanelActionSchema = z.object({
   }
   if (messageActions.has(input.type) && !input.message) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ["message"], message: "A reason or announcement is required for this action" });
+  }
+  if (input.type === "match_set_score" && (input.scoreT === undefined || input.scoreCt === undefined)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["scoreT"], message: "Both scores are required" });
+  }
+  if (input.type === "match_move_player" && !input.team) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["team"], message: "A team is required" });
   }
   if (input.type === "ban" && !input.banTerm) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ["banTerm"], message: "A ban term is required" });
@@ -5275,8 +5285,8 @@ export function createLegacyXRouter() {
       role: staff.role,
       username: staff.username,
       capabilities: staff.role === "OWNER"
-        ? ["database_overview", "products", "repository_downloads", "restart_all", "restart_server", "start_server", "stop_server", "ban", "unban", "kick", "mute", "timeout", "unpause", "round_restart", "round_restore", "map_change", "server_announcement", "match_announcement", "hud_announcement", "player_hud_alert", "player_message", "player_ip_lookup", "rename", "staff_governance"]
-        : ["ban", "unban", "kick", "mute", "map_change", "match_announcement", "hud_announcement", "player_hud_alert", "player_message", "rename"],
+        ? ["database_overview", "products", "repository_downloads", "restart_all", "restart_server", "start_server", "stop_server", "ban", "unban", "kick", "mute", "timeout", "unpause", "round_restart", "round_restore", "map_change", "server_announcement", "match_announcement", "hud_announcement", "player_hud_alert", "player_message", "player_ip_lookup", "rename", "match_set_score", "match_end", "match_force_start", "match_swap_sides", "match_move_player", "staff_governance"]
+        : ["ban", "unban", "kick", "mute", "map_change", "match_announcement", "hud_announcement", "player_hud_alert", "player_message", "rename", "match_set_score", "match_end", "match_force_start", "match_swap_sides", "match_move_player"],
     });
   }));
 

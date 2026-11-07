@@ -1,0 +1,4 @@
+-- Match controls on the staff site's server console (owner request 2026-11-07): set the score, end a match without a result, force-start it, swap the sides
+-- and move a player to a team. The action types are listed in a CHECK constraint, so the new ones must be added. Safe to re-run.
+ALTER TABLE legacy_x.staff_panel_actions DROP CONSTRAINT IF EXISTS staff_panel_actions_action_type_check;
+ALTER TABLE legacy_x.staff_panel_actions ADD CONSTRAINT staff_panel_actions_action_type_check CHECK (action_type IN ('ban','unban','kick','mute','rename','map_change','server_announcement','match_announcement','hud_announcement','player_hud_alert','player_message','restart_all','restart_server','start_server','stop_server','timeout','unpause','round_restart','round_restore','player_ip_lookup','match_set_score','match_end','match_force_start','match_swap_sides','match_move_player'));
