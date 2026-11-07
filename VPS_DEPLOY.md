@@ -153,3 +153,16 @@ The VPS `.env` must include `STEAM_WEB_API_KEY`. The callback uses this key only
 ## Supabase security boundary
 
 The VPS API is the **only** component that receives `SUPABASE_SERVICE_ROLE_KEY`. Direct browser access to Supabase is intentionally not used. The verified database posture is that `service_role` bypasses RLS and holds the required `legacy_x` grants, while `anon` and `authenticated` have no direct table grants on that schema. Keep the service-role key only in the VPS `.env` file and never return it, log it, or include it in frontend bundles.
+
+## Animated Creator kit (Remotion), 2026-11-07
+
+The Creator kit page lets creators and staff render animations with their name and code (`remotion/`, `server/legacyX/kitRender.ts`). On the API server:
+
+```bash
+cd ~/legacyxxx-backend/remotion && npm ci            # Remotion, React and the fonts' loader (about 200 MB)
+# libraries headless Chrome needs (once): sudo apt-get install -y libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1 libasound2 libpango-1.0-0 libcairo2
+# in the API's .env: KIT_RENDER_ENABLED=true   (optional: KIT_RENDER_DIR, KIT_RENDER_CONCURRENCY, KIT_RENDER_DAILY_LIMIT, KIT_RENDER_BROWSER)
+pm2 reload legacy-x-api --update-env
+```
+
+Remotion downloads its own headless Chrome on the first render (the server needs internet for that and for Google Fonts). One render of a 1080p clip takes about 20-35 seconds on 2 cores and uses that much CPU, so it shares the machine with the API: keep `KIT_RENDER_CONCURRENCY` at 2 or lower. The `kit_renders` table is `supabase/legacy_x_kit_renders.sql` (already applied to the project).
