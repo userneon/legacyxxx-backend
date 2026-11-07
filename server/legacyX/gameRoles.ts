@@ -47,6 +47,7 @@ export const GAME_COMMANDS: GameCommand[] = [
   { name: "csay", flag: "@css/chat", group: "Chat and punishments", summary: "Center say (console)", locked: false, stamina: 500 },
   { name: "cvar", flag: "@css/cvar", group: "Server", summary: "Get/Set cvar value from console", locked: true, stamina: 1000 },
   { name: "drug", flag: "@css/slay", group: "Fun", summary: "Wobbling, swirling screen for a player, again to stop", locked: false, stamina: 1000 },
+  { name: "fup", flag: "@css/pause", group: "Basics and votes", summary: "Force a paused match to resume (!fup)", locked: false, stamina: 500 },
   { name: "freeze", flag: "@css/slay", group: "Fun", summary: "Hold a player still, again to release them", locked: false, stamina: 1000 },
   { name: "gag", flag: "@css/chat", group: "Chat and punishments", summary: "Gag a player from console", locked: false, stamina: 250 },
   { name: "gaglist", flag: "@css/chat", group: "Chat and punishments", summary: "List gagged players from console", locked: false, stamina: 250 },
@@ -166,8 +167,8 @@ const BUILT_IN: Record<GameRoleKey, { flags: string[]; stamina: number; extraFla
   creator: { flags: ["@css/slay", "@css/cheats"], stamina: 1000, extraFlags: [], modes: ["fun"], immunity: 100, without: ["rename"] },
   main_creator: { flags: ["@css/slay", "@css/cheats"], stamina: 1000, extraFlags: [], modes: ["fun"], immunity: 200, without: ["rename"] },
   staff: { flags: ["@css/generic", "@css/chat", "@css/vote"], stamina: 250, extraFlags: [], modes: [], immunity: 250 },
-  admin: { flags: ["@css/generic", "@css/kick", "@css/ban", "@css/slay", "@css/chat", "@css/vote"], stamina: 500, extraFlags: ["@css/changemap", "@legacyx/match"], modes: [], immunity: 500 },
-  manager: { flags: ["@css/generic", "@css/kick", "@css/ban", "@css/unban", "@css/slay", "@css/chat", "@css/vote"], stamina: 750, extraFlags: ["@css/changemap", "@css/config", "@legacyx/match"], modes: [], immunity: 750 },
+  admin: { flags: ["@css/generic", "@css/kick", "@css/ban", "@css/slay", "@css/chat", "@css/vote", "@css/pause"], stamina: 500, extraFlags: ["@css/changemap", "@legacyx/match"], modes: [], immunity: 500 },
+  manager: { flags: ["@css/generic", "@css/kick", "@css/ban", "@css/unban", "@css/slay", "@css/chat", "@css/vote", "@css/pause"], stamina: 750, extraFlags: ["@css/changemap", "@css/config", "@legacyx/match"], modes: [], immunity: 750 },
   // The ranks sold in the Shop (perks.ts): no commands of their own, the buyer picks them; fun servers only until the Owner widens it here.
   perk: { flags: [], stamina: 1000, extraFlags: [], modes: ["fun"], immunity: 50 },
 };
