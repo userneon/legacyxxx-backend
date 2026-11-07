@@ -18,7 +18,18 @@ export const isPerkDays = (value: unknown): value is PerkDays => typeof value ==
 
 /** What may be picked: the fun and cheat commands. Nothing that punishes (ban, kick, mute, gag), runs a vote or the server, or opens the admin menu. */
 const POOL_GROUPS = new Set(["Fun", "Cheats"]);
-const POOL = GAME_COMMANDS.filter((command) => !command.locked && POOL_GROUPS.has(command.group));
+/** Fun or cheat commands that still do not belong to a buyer: they change the whole server (gravity, clean), a player's name (rename) or take what others hold (strip). Staff only (owner request 2026-11-07). */
+export const PERK_BLOCKED = new Set(["gravity", "rename", "clean", "strip"]);
+/**
+ * Limits every paid rank carries on the commands that can spoil a match when they are used again and again (seconds between two uses, uses per map).
+ * They hold whether or not the Owner saved the rank's role; a limit the Owner sets on a command wins.
+ */
+export const PERK_DEFAULT_LIMITS: Record<string, { cooldown: number; perMap: number }> = {
+  explode: { cooldown: 30, perMap: 5 }, rocket: { cooldown: 30, perMap: 5 }, shockwave: { cooldown: 30, perMap: 5 }, chaos: { cooldown: 60, perMap: 2 },
+  roulette: { cooldown: 20, perMap: 6 }, scare: { cooldown: 60, perMap: 3 }, fakeban: { cooldown: 60, perMap: 3 }, fakevac: { cooldown: 60, perMap: 3 },
+  fakecrash: { cooldown: 60, perMap: 3 }, fakehack: { cooldown: 60, perMap: 3 }, launch: { cooldown: 10, perMap: 10 }, sky: { cooldown: 15, perMap: 8 }, fling: { cooldown: 10, perMap: 10 },
+};
+const POOL = GAME_COMMANDS.filter((command) => !command.locked && POOL_GROUPS.has(command.group) && !PERK_BLOCKED.has(command.name));
 const POOL_NAMES = new Set(POOL.map((command) => command.name));
 export const perkPool = () => POOL.map(({ name, group, summary }) => ({ name, group, summary }));
 

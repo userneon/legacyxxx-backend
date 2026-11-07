@@ -3,7 +3,7 @@ import { z } from "zod";
 import { legacyXError } from "./supabase";
 import { playModeFromServerMode } from "./play";
 import { effectiveExtras, isAdminLevel } from "./adminLevels";
-import { effectivePerkCommands } from "./perks";
+import { PERK_DEFAULT_LIMITS, effectivePerkCommands } from "./perks";
 import { GAME_ROLES, defaultGameRole, flagsFor, isGameRole, mergeGameRoles, parseGameRole, type GameRoleConfig, type GameRoleKey } from "./gameRoles";
 
 /**
@@ -210,7 +210,9 @@ export async function resolveAuthorizations(db: Db, input: z.infer<typeof author
     const picked = role === "admin" ? effectiveExtras(extras.get(steamId)?.level, extras.get(steamId)?.commands, config.commands) : [];
     const perkPicks = rank ? effectivePerkCommands({ tier: rank.tier, endsAt: rank.endsAt, commands: rank.commands }, now) : [];
     const added = picked.length ? picked : perkPicks;
-    return added.length ? { ...config, commands: Array.from(new Set([...config.commands, ...added])).sort() } : config;
+    // A paid rank's heavy commands carry a limit of their own (the Owner's own limit on a command wins).
+    const withLimits = role === "perk" ? { ...config, limits: { ...PERK_DEFAULT_LIMITS, ...config.limits } } : config;
+    return added.length ? { ...withLimits, commands: Array.from(new Set([...config.commands, ...added])).sort() } : withLimits;
   };
   for (const entry of authorized) {
     let given = roleGrant(entry.role as GameRoleKey, entry.steamId);

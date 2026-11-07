@@ -56,3 +56,19 @@ describe("paid ranks", () => {
     expect(effectivePerkCommands(null, now)).toEqual([]);
   });
 });
+
+import { GAME_COMMANDS as ALL_COMMANDS } from "./gameRoles";
+import { PERK_BLOCKED, PERK_DEFAULT_LIMITS, perkPool as pool } from "./perks";
+describe("what a paid rank can pick", () => {
+  it("leaves out the commands that change the whole server, a player's name or what others hold", () => {
+    const names = pool().map((command) => command.name);
+    for (const blocked of PERK_BLOCKED) expect(names).not.toContain(blocked);
+  });
+  it("only limits commands that exist and can be picked", () => {
+    const names = new Set(pool().map((command) => command.name));
+    for (const name of Object.keys(PERK_DEFAULT_LIMITS)) { expect(ALL_COMMANDS.some((command) => command.name === name)).toBe(true); expect(names.has(name)).toBe(true); }
+  });
+  it("describes every command a buyer can pick", () => {
+    for (const command of pool()) expect(command.summary.length).toBeGreaterThan(3);
+  });
+});
