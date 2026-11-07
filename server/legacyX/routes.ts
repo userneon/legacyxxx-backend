@@ -53,7 +53,7 @@ import { liftInfo } from "./penaltyLift";
 import { cleanPlayerConfig, playerConfigSchema } from "./playerConfig";
 import { menuLoadoutQuery, menuRarity, menuTiles, MENU_AGENT_TEAMS, MENU_SKIN_PAGE, MENU_SLOT_CATEGORY, entriesReplacedByEquip, menuAgentName, menuGunModel, menuSkinEquipBody, menuSkinOptionsBody, mergeMenuOptions, menuSkinUnequipBody, entriesRemovedByUnequip, menuSkinItemsQuery, menuSkinName, menuSkinSlotSchema, menuSkinTypesQuery, menuSlotKey, sharedGunEntryMovedTo, type LoadoutRow, type MenuSkinSlot } from "./menuSkins";
 import { PROFILE_NAME_MAX, PROFILE_SECTIONS, bestNameMatch, escapeLike, hiddenForViewer, loadoutShowcase, mapWinRates, normalizeHiddenSections, profileStats, buildBenchmark, BENCHMARK_MIN_MATCHES, staffCard, type ProfileSection } from "./profileOverview";
-import { hostActionSchema, hostConfig, runHost } from "./hostAgent";
+import { hostActionSchema, hostConfigs, runHost } from "./hostAgent";
 import { activeBans, bannedPlayer, checkBansSchema, issueBan, issueBanSchema, issueIpBan, issueIpBanSchema, listActiveBans, revokeAllBans, revokeAllBansSchema, revokeBans, revokeBanSchema, revokeIpBans, revokeIpBanSchema } from "./bans";
 import { authorizationRequestSchema, loadGameRoles, resolveAuthorizations } from "./adminAuthorization";
 import { CREATOR_TIER_LABEL, cleanCreatorLinks, creatorApplicationSchema, creatorDecisionSchema, creatorTier, ownCreatorLinksSchema, sortCreators, upsertCreatorSchema } from "./creators";
@@ -5319,19 +5319,21 @@ export function createLegacyXRouter() {
   router.get("/staff/host/status", sensitiveMutationRateLimit, userRoute(async (_req, res, user) => {
     await requireOwnerStaffRole(user.id);
     res.set("Cache-Control", "no-store");
-    const config = hostConfig();
-    if (!config) { res.json({ configured: false }); return; }
-    const result = await runHost(config, { action: "status" });
-    if (!result.body || !result.ok) { res.json({ configured: true, reachable: false, error: result.error }); return; }
-    res.json({ configured: true, reachable: true, ...result.body });
+    const configs = hostConfigs();
+    const hosts = await Promise.all(configs.map(async (config) => {
+      const result = await runHost(config, { action: "status" });
+      const head = { id: config.id, label: config.label, kind: config.kind };
+      return result.body && result.ok ? { ...head, reachable: true, ...result.body } : { ...head, reachable: false, error: result.error };
+    }));
+    res.json({ configured: configs.length > 0, hosts });
   }));
   router.post("/staff/host/actions", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
     await requireOwnerStaffRole(user.id);
-    const action = hostActionSchema.parse(req.body);
-    const config = hostConfig();
-    if (!config) apiError(409, "The host connection is not set up");
+    const { hostId, ...action } = hostActionSchema.parse(req.body);
+    const config = hostConfigs().find((candidate) => candidate.id === hostId);
+    if (!config) apiError(409, "That host is not set up");
     const result = await runHost(config, action);
-    await db().from("audit_logs").insert({ actor_type: "user", actor_id: user.id, action: `host.${action.action}`, target_type: "host", metadata: { port: action.action === "restart" ? action.port : null, ok: result.ok } });
+    await db().from("audit_logs").insert({ actor_type: "user", actor_id: user.id, action: `host.${action.action}`, target_type: "host", metadata: { host: hostId, target: action.target ?? null, ok: result.ok } });
     res.set("Cache-Control", "no-store");
     res.json({ ok: result.ok, log: typeof result.body?.log === "string" ? result.body.log : null, error: result.error });
   }));

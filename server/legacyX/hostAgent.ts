@@ -9,35 +9,56 @@ import { z } from "zod";
  * Only the three words below are ever sent, the port is a number checked here and again on the host, and ssh is started
  * with execFile (no shell). The key is a FILE named in the environment, never a value in a table or in the repo.
  */
-export type HostAction = { action: "status" } | { action: "deploy" } | { action: "restart"; port: number };
+/** `target` names what to act on (a game server's port, or api / bot / site / admin / nginx on the web VPS); the host script checks it again. */
+export type HostAction = { action: "status" } | { action: "deploy"; target?: string } | { action: "restart"; target: string };
 
+const targetSchema = z.string().regex(/^[A-Za-z0-9_-]{1,24}$/);
 export const hostActionSchema = z.discriminatedUnion("action", [
-  z.object({ action: z.literal("deploy") }).strict(),
-  z.object({ action: z.literal("restart"), port: z.number().int().min(1024).max(65535) }).strict(),
+  z.object({ hostId: z.string().regex(/^[a-z0-9-]{1,24}$/), action: z.literal("deploy"), target: targetSchema.optional() }).strict(),
+  z.object({ hostId: z.string().regex(/^[a-z0-9-]{1,24}$/), action: z.literal("restart"), target: targetSchema }).strict(),
 ]);
 
-export type HostConfig = { host: string; user: string; port: number; keyFile: string; knownHosts: string | null };
+export type HostConfig = { id: string; label: string; kind: "game" | "web"; host: string; user: string; port: number; keyFile: string; knownHosts: string | null };
 
-/** Null while the host is not set up (the Host tab then says how to set it up). */
-export function hostConfig(env: NodeJS.ProcessEnv = process.env): HostConfig | null {
-  const host = env.HOST_SSH_HOST?.trim();
-  const keyFile = env.HOST_SSH_KEY?.trim();
-  if (!host || !keyFile) return null;
-  if (!/^[A-Za-z0-9.-]+$/.test(host) || host.startsWith("-")) return null;
-  const user = env.HOST_SSH_USER?.trim() || "root";
+function oneHost(raw: { id?: unknown; label?: unknown; kind?: unknown; host?: unknown; user?: unknown; port?: unknown; key?: unknown; knownHosts?: unknown }, env: NodeJS.ProcessEnv): HostConfig | null {
+  const host = String(raw.host ?? "").trim();
+  const keyFile = String(raw.key ?? env.HOST_SSH_KEY ?? "").trim();
+  if (!host || !keyFile || !/^[A-Za-z0-9.-]+$/.test(host) || host.startsWith("-")) return null;
+  const user = String(raw.user ?? env.HOST_SSH_USER ?? "root").trim() || "root";
   if (!/^[a-z_][a-z0-9_-]{0,31}$/i.test(user)) return null;
-  const port = Number(env.HOST_SSH_PORT?.trim() || 22);
+  const port = Number(raw.port ?? env.HOST_SSH_PORT ?? 22);
   if (!Number.isInteger(port) || port < 1 || port > 65535) return null;
-  return { host, user, port, keyFile, knownHosts: env.HOST_SSH_KNOWN_HOSTS?.trim() || null };
+  const id = String(raw.id ?? "").trim();
+  if (!/^[a-z0-9-]{1,24}$/.test(id)) return null;
+  const kind = raw.kind === "web" ? "web" : "game";
+  const knownHosts = String(raw.knownHosts ?? env.HOST_SSH_KNOWN_HOSTS ?? "").trim() || null;
+  return { id, label: String(raw.label ?? "").trim().slice(0, 40) || (kind === "web" ? "Web" : id), kind, host, user, port, keyFile, knownHosts };
+}
+
+/**
+ * The hosts the site manages. HOST_SSH_HOSTS is a JSON list, e.g.
+ * [{"id":"web","kind":"web","label":"Web","host":"127.0.0.1"},{"id":"game1","kind":"game","label":"Game 1","host":"203.0.113.20"}]
+ * (each may carry its own user, port, key, knownHosts; HOST_SSH_KEY / _USER / _PORT / _KNOWN_HOSTS are the shared defaults).
+ * The older HOST_SSH_HOST alone is one game host. Empty while nothing is set up.
+ */
+export function hostConfigs(env: NodeJS.ProcessEnv = process.env): HostConfig[] {
+  const list = env.HOST_SSH_HOSTS?.trim();
+  let raws: Array<Record<string, unknown>> = [];
+  if (list) {
+    try { const parsed: unknown = JSON.parse(list); if (Array.isArray(parsed)) raws = parsed.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object").slice(0, 20); } catch { raws = []; }
+  } else if (env.HOST_SSH_HOST?.trim()) {
+    raws = [{ id: "game", kind: "game", label: "Game host", host: env.HOST_SSH_HOST }];
+  }
+  const seen = new Set<string>();
+  return raws.map((raw) => oneHost(raw, env)).filter((config): config is HostConfig => config !== null && !seen.has(config.id) && Boolean(seen.add(config.id)));
 }
 
 /** The one word (and port) sent as the SSH command. */
 export function hostCommand(action: HostAction) {
-  if (action.action === "restart") {
-    if (!Number.isInteger(action.port) || action.port < 1024 || action.port > 65535) throw new Error("Bad port");
-    return `restart ${action.port}`;
-  }
-  return action.action;
+  if (action.action === "status") return "status";
+  const target = action.target;
+  if (target !== undefined && !/^[A-Za-z0-9_-]{1,24}$/.test(target)) throw new Error("Bad target");
+  return target ? `${action.action} ${target}` : action.action;
 }
 
 export function sshArguments(config: HostConfig, command: string) {
