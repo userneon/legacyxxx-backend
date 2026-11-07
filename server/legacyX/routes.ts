@@ -2151,6 +2151,8 @@ export function createLegacyXRouter() {
       return { ...rest, ...(colours.color ? { color: colours.color } : {}), ...(colours.color2 ? { color2: colours.color2 } : {}), ...(colours.glow ? { glow: colours.glow } : {}) };
     });
     res.json({
+      /** True for a QA tester: everything is theirs, and the ranks switch on for free. */
+      qa: qaTester,
       players: players.error ? null : players.count ?? 0,
       equippedFrame: user ? worn.get(user.id)?.frame ?? null : null,
       equippedBackground: wearing.get("background") ?? null,
@@ -4207,7 +4209,7 @@ export function createLegacyXRouter() {
             const userId = textValue(row.user_id);
             const tier = textValue(row.tier) as PerkTier;
             const next = grantAfterPurchase(await perkGrantOf(userId), tier, numberValue(row.days));
-            const { error: grantError } = await db().from("perk_grants").upsert({ user_id: userId, tier: next.tier, ends_at: next.endsAt, commands: next.commands, locked: next.locked, updated_at: new Date().toISOString() }, { onConflict: "user_id" });
+            const { error: grantError } = await db().from("perk_grants").upsert({ user_id: userId, tier: next.tier, ends_at: next.endsAt, commands: next.commands, locked: next.locked, qa: false, updated_at: new Date().toISOString() }, { onConflict: "user_id" });
             legacyXError(grantError, "Unable to give the rank");
             const { data: named } = await db().from("perk_tiers").select("name").eq("key", tier).maybeSingle();
             await db().from("notifications").insert({ user_id: userId, kind: "system", title: `${textValue(named?.name) || "Your rank"} is active`, body: `It runs until ${next.endsAt.slice(0, 10)}. Choose your commands in the Shop.`, metadata: { kind: "perk" } });
@@ -4249,6 +4251,19 @@ export function createLegacyXRouter() {
     const since = new Date(Date.now() - TOPUP_MINUTES * 60_000).toISOString();
     const { data: pending } = await db().from("perk_orders").select(PERK_COLUMNS).eq("user_id", user.id).eq("status", "pending").gte("created_at", since).order("created_at", { ascending: false }).limit(1);
     res.json({ grant: perkGrantView(grant), pending: pending?.[0] ? perkOrderView(pending[0] as DbRow, { checkoutUrl: textValue((pending[0] as DbRow).checkout_url) }) : null });
+  }));
+  // A QA tester switches on any rank for free, to try it (owner request 2026-11-07). It lasts while they are a tester; leaving QA takes it back.
+  router.post("/perks/qa-activate", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
+    const input = z.object({ tier: z.enum(["tier1", "tier2", "tier3"]) }).strict().parse(req.body);
+    if (!(await isActiveQa(db(), user.id))) apiError(403, "Only a QA tester can switch a rank on for free", "perk_not_qa");
+    const current = await perkGrantOf(user.id);
+    // A rank bought with money is not swapped out from under its owner.
+    const bought = await db().from("perk_grants").select("qa").eq("user_id", user.id).maybeSingle();
+    if (current && bought.data && (bought.data as DbRow).qa !== true && perkActive(current, new Date())) apiError(409, "You have a paid rank running. It must end first.", "perk_other_rank");
+    const endsAt = new Date(Date.now() + 365 * 86_400_000).toISOString();
+    const { error } = await db().from("perk_grants").upsert({ user_id: user.id, tier: input.tier, ends_at: endsAt, commands: current && current.tier === input.tier ? current.commands : [], locked: false, qa: true, updated_at: new Date().toISOString() }, { onConflict: "user_id" });
+    legacyXError(error, "Unable to switch the rank on");
+    res.json({ grant: perkGrantView(await perkGrantOf(user.id)) });
   }));
   router.post("/perks/checkout", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
     const input = z.object({ tier: z.enum(["tier1", "tier2", "tier3"]), days: z.union([z.literal(14), z.literal(30), z.literal(90)]) }).strict().parse(req.body);

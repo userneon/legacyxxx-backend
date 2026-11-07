@@ -48,6 +48,15 @@ export async function revokeStaleQaCosmetics(db: Db): Promise<void> {
   legacyXError(holders.error || qa.error, "Unable to check the QA cosmetics");
   const active = new Set(((qa.data ?? []) as Array<{ user_id: string }>).map((row) => row.user_id));
   const stale = Array.from(new Set(((holders.data ?? []) as Array<{ user_id: string }>).map((row) => row.user_id))).filter((id) => !active.has(id));
+  // A paid rank a tester switched on for free goes the same way.
+  const rankHolders = await db.from("perk_grants").select("user_id").eq("qa", true).limit(100000);
+  legacyXError(rankHolders.error, "Unable to check the QA ranks");
+  for (const row of (rankHolders.data ?? []) as Array<{ user_id: string }>) {
+    if (!active.has(row.user_id)) {
+      const { error } = await db.from("perk_grants").delete().eq("user_id", row.user_id).eq("qa", true);
+      legacyXError(error, "Unable to take the QA rank back");
+    }
+  }
   for (const userId of stale) {
     const { error } = await db.from("cosmetic_owned").delete().eq("user_id", userId).eq("source", QA_SOURCE);
     legacyXError(error, "Unable to take the QA cosmetics back");

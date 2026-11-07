@@ -17,3 +17,6 @@ ALTER TABLE legacy_x.staff_panel_actions DROP CONSTRAINT IF EXISTS staff_panel_a
 ALTER TABLE legacy_x.staff_panel_actions ADD CONSTRAINT staff_panel_actions_requested_by_staff_id_fkey FOREIGN KEY (requested_by_staff_id) REFERENCES legacy_x.staff(id) ON DELETE SET NULL;
 ALTER TABLE legacy_x.staff_panel_settings DROP CONSTRAINT IF EXISTS staff_panel_settings_updated_by_staff_id_fkey;
 ALTER TABLE legacy_x.staff_panel_settings ADD CONSTRAINT staff_panel_settings_updated_by_staff_id_fkey FOREIGN KEY (updated_by_staff_id) REFERENCES legacy_x.staff(id) ON DELETE SET NULL;
+
+-- A QA tester may switch on any paid rank for free (owner request 2026-11-07); such a grant is marked and taken back when they leave QA.
+ALTER TABLE legacy_x.perk_grants ADD COLUMN IF NOT EXISTS qa boolean NOT NULL DEFAULT false;
