@@ -5,3 +5,6 @@ ALTER TABLE legacy_x.staff DROP CONSTRAINT IF EXISTS staff_role_check;
 ALTER TABLE legacy_x.staff ADD CONSTRAINT staff_role_check CHECK (role IN ('OWNER','MANAGER','ADMIN','DEVELOPER','DESIGNER','QA'));
 ALTER TABLE legacy_x.cosmetic_owned DROP CONSTRAINT IF EXISTS cosmetic_owned_source_check;
 ALTER TABLE legacy_x.cosmetic_owned ADD CONSTRAINT cosmetic_owned_source_check CHECK (source IN ('coin', 'achievement', 'staff', 'qa'));
+
+-- A QA switch on any staff row (owner request 2026-11-07, "the Owner is already on the list, so add QA on top"): a tester need not be a QA-role row.
+ALTER TABLE legacy_x.staff ADD COLUMN IF NOT EXISTS qa boolean NOT NULL DEFAULT false;

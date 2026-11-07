@@ -17,10 +17,13 @@ export function itemsToGrant(allItemIds: string[], held: Held[], now = Date.now(
   return allItemIds.filter((id) => !running.has(id));
 }
 
+/** A staff row makes a QA tester when its role is QA, or when any other role carries the tester switch (so an Owner can test the Shop too). */
+export const isQaRow = (row: { role?: string; qa?: boolean } | null | undefined) => Boolean(row) && (row!.role === "QA" || row!.qa === true);
+
 export async function isActiveQa(db: Db, userId: string): Promise<boolean> {
-  const { data, error } = await db.from("staff").select("role").eq("user_id", userId).eq("status", "active").maybeSingle();
+  const { data, error } = await db.from("staff").select("role,qa").eq("user_id", userId).eq("status", "active").maybeSingle();
   legacyXError(error, "Unable to read the staff role");
-  return (data as { role?: string } | null)?.role === "QA";
+  return isQaRow(data as { role?: string; qa?: boolean } | null);
 }
 
 /** Gives an active QA tester every cosmetic for good, so the Shop, the wardrobe and the game servers all treat it as theirs. */
@@ -40,7 +43,7 @@ export async function grantQaCosmetics(db: Db, userId: string): Promise<void> {
 export async function revokeStaleQaCosmetics(db: Db): Promise<void> {
   const [holders, qa] = await Promise.all([
     db.from("cosmetic_owned").select("user_id").eq("source", QA_SOURCE).limit(100000),
-    db.from("staff").select("user_id").eq("role", "QA").eq("status", "active").limit(1000),
+    db.from("staff").select("user_id").or("role.eq.QA,qa.eq.true").eq("status", "active").limit(1000),
   ]);
   legacyXError(holders.error || qa.error, "Unable to check the QA cosmetics");
   const active = new Set(((qa.data ?? []) as Array<{ user_id: string }>).map((row) => row.user_id));

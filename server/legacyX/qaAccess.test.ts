@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { itemsToGrant } from "./qaAccess";
+import { isQaRow, itemsToGrant } from "./qaAccess";
 
 describe("itemsToGrant", () => {
   const now = Date.parse("2026-11-07T00:00:00Z");
@@ -7,4 +7,13 @@ describe("itemsToGrant", () => {
   it("leaves a rented item that is still running", () => expect(itemsToGrant(["a"], [{ item_id: "a", expires_at: "2026-12-01T00:00:00Z" }], now)).toEqual([]));
   it("replaces an expired row", () => expect(itemsToGrant(["a"], [{ item_id: "a", expires_at: "2026-10-01T00:00:00Z" }], now)).toEqual(["a"]));
   it("grants nothing when all are held for good", () => expect(itemsToGrant(["a", "b"], [{ item_id: "a", expires_at: null }, { item_id: "b", expires_at: null }], now)).toEqual([]));
+});
+
+describe("isQaRow", () => {
+  it("is a tester by the QA role or by the switch on any role", () => {
+    expect(isQaRow({ role: "QA" })).toBe(true);
+    expect(isQaRow({ role: "OWNER", qa: true })).toBe(true);
+    expect(isQaRow({ role: "OWNER", qa: false })).toBe(false);
+    expect(isQaRow(null)).toBe(false);
+  });
 });
