@@ -4,7 +4,7 @@ import { legacyXError } from "./supabase";
 import { playModeFromServerMode } from "./play";
 import { effectiveExtras, isAdminLevel } from "./adminLevels";
 import { effectivePerkCommands } from "./perks";
-import { GAME_ROLES, defaultGameRole, flagsFor, isGameRole, parseGameRole, type GameRoleConfig, type GameRoleKey } from "./gameRoles";
+import { GAME_ROLES, defaultGameRole, flagsFor, isGameRole, mergeGameRoles, parseGameRole, type GameRoleConfig, type GameRoleKey } from "./gameRoles";
 
 /**
  * In-game staff authorization for LegacyX-Admin (POST /plugin/admin/authorizations).
@@ -173,17 +173,26 @@ export async function resolveAuthorizations(db: Db, input: z.infer<typeof author
     }
     bySteamId.set(steamId, { steamId, authorized: true, role: role as GameStaffRole, status, source, expiresAt: expiry ? expiry.toISOString() : null, clanTag: null });
   }
-  // Anyone the staff records do not vouch for may still be a content creator.
-  const creators = await creatorRolesFor(db, steamIds.filter((steamId) => !bySteamId.get(steamId)?.authorized));
-  creators.forEach((role, steamId) => bySteamId.set(steamId, { steamId, authorized: true, role, status: "active", source: "creator", expiresAt: null, clanTag: null }));
-  // Anyone still without a role may have a paid rank running (the Shop's): the plugin knows it as a creator-style role with its own name in Tab.
-  const ranks = await perkRanksFor(db, steamIds.filter((steamId) => !bySteamId.get(steamId)?.authorized), now);
-  ranks.forEach((rank, steamId) => bySteamId.set(steamId, { steamId, authorized: true, role: "perk", status: "active", source: "perk", expiresAt: rank.endsAt, clanTag: null, ...(rank.name ? { label: rank.name } : {}) }));
+  // The roles a player holds besides their first (owner request 2026-11-07: a Content Creator may be staff too, a paid rank may sit on either, "whatever the combination"):
+  // the first is staff, else creator, else the paid rank; every other one they hold adds its commands, flags and limits to theirs.
+  const creators = await creatorRolesFor(db, steamIds);
+  const ranks = await perkRanksFor(db, steamIds, now);
+  const also = new Map<string, GameRoleKey[]>();
+  const alsoAdd = (steamId: string, role: GameRoleKey) => also.set(steamId, [...(also.get(steamId) ?? []), role]);
+  creators.forEach((role, steamId) => {
+    if (bySteamId.get(steamId)?.authorized) alsoAdd(steamId, role);
+    else bySteamId.set(steamId, { steamId, authorized: true, role, status: "active", source: "creator", expiresAt: null, clanTag: null });
+  });
+  // The paid rank is the first role only for someone with nothing else; the plugin knows it as a creator-style role with its own name in Tab.
+  ranks.forEach((rank, steamId) => {
+    if (bySteamId.get(steamId)?.authorized) alsoAdd(steamId, "perk");
+    else bySteamId.set(steamId, { steamId, authorized: true, role: "perk", status: "active", source: "perk", expiresAt: rank.endsAt, clanTag: null, ...(rank.name ? { label: rank.name } : {}) });
+  });
   // Each editable role is what the Owner set on the staff site: its commands, its immunity, and the kinds of server it works on.
   // A role limited to some kinds of server gets nothing on another (or on one whose kind is not known): fail closed.
   const configs = await loadGameRoles(db);
   const authorized = Array.from(bySteamId.values()).filter((entry) => entry.authorized && isGameRole(entry.role));
-  const limited = authorized.some((entry) => (configs.get(entry.role as GameRoleKey)?.modes.length ?? 0) > 0);
+  const limited = authorized.some((entry) => (configs.get(entry.role as GameRoleKey)?.modes.length ?? 0) > 0 || (also.get(entry.steamId) ?? []).some((role) => (configs.get(role)?.modes.length ?? 0) > 0));
   let serverMode: string | null = null;
   if (limited) {
     try {
@@ -193,18 +202,24 @@ export async function resolveAuthorizations(db: Db, input: z.infer<typeof author
   }
   // An Admin's extra commands (owner request 2026-11-07), by their level: read once for all the Admins asked about.
   const extras = await adminExtrasFor(db, authorized.filter((entry) => entry.role === "admin").map((entry) => entry.steamId));
-  for (const entry of authorized) {
-    const config = configs.get(entry.role as GameRoleKey) ?? defaultGameRole(entry.role as GameRoleKey);
-    if (config.modes.length > 0 && (!serverMode || !(config.modes as string[]).includes(serverMode))) {
-      bySteamId.set(entry.steamId, unauthorized(entry.steamId, "mode", entry.source));
-      continue;
-    }
-    const rank = entry.role === "perk" ? ranks.get(entry.steamId) : undefined;
-    const picked = entry.role === "admin" ? effectiveExtras(extras.get(entry.steamId)?.level, extras.get(entry.steamId)?.commands, config.commands) : [];
+  /** What one role gives this player on this server: its commands (a paid rank's picks and an Admin's extras included), or nothing where its kind of server does not match. */
+  const roleGrant = (role: GameRoleKey, steamId: string): GameRoleConfig | null => {
+    const config = configs.get(role) ?? defaultGameRole(role);
+    if (config.modes.length > 0 && (!serverMode || !(config.modes as string[]).includes(serverMode))) return null;
+    const rank = role === "perk" ? ranks.get(steamId) : undefined;
+    const picked = role === "admin" ? effectiveExtras(extras.get(steamId)?.level, extras.get(steamId)?.commands, config.commands) : [];
     const perkPicks = rank ? effectivePerkCommands({ tier: rank.tier, endsAt: rank.endsAt, commands: rank.commands }, now) : [];
     const added = picked.length ? picked : perkPicks;
-    const given: GameRoleConfig = added.length ? { ...config, commands: Array.from(new Set([...config.commands, ...added])).sort() } : config;
-    entry.grant = { flags: flagsFor(given), commands: given.commands, immunity: config.immunity, limits: config.limits };
+    return added.length ? { ...config, commands: Array.from(new Set([...config.commands, ...added])).sort() } : config;
+  };
+  for (const entry of authorized) {
+    let given = roleGrant(entry.role as GameRoleKey, entry.steamId);
+    if (!given) { bySteamId.set(entry.steamId, unauthorized(entry.steamId, "mode", entry.source)); continue; }
+    for (const role of also.get(entry.steamId) ?? []) {
+      const more = roleGrant(role, entry.steamId);
+      if (more) given = mergeGameRoles(given, more);
+    }
+    entry.grant = { flags: flagsFor(given), commands: given.commands, immunity: given.immunity, limits: given.limits };
   }
   await addClanTags(db, Array.from(bySteamId.values()).filter((entry) => entry.authorized));
   // The plugin knows a paid rank as a creator (fun commands, nothing that punishes); its own commands and name come in the grant and the label.

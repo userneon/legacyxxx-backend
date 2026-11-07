@@ -67,3 +67,23 @@ describe("in-game roles you can edit", () => {
     expect(gameRoleConfigSchema.parse(base).limits).toEqual({});
   });
 });
+
+import { mergeGameRoles } from "./gameRoles";
+describe("mergeGameRoles", () => {
+  const base = { extraFlags: [] as string[], modes: [] as never[], immunity: 0, limits: {} as Record<string, { cooldown: number; perMap: number }> };
+  it("gives a player holding two roles everything both give, with the higher immunity", () => {
+    const merged = mergeGameRoles({ ...base, commands: ["kick", "ban"], immunity: 500, extraFlags: ["@css/changemap"] }, { ...base, commands: ["slay", "ban"], immunity: 100 });
+    expect(merged.commands).toEqual(["ban", "kick", "slay"]);
+    expect(merged.immunity).toBe(500);
+    expect(merged.extraFlags).toEqual(["@css/changemap"]);
+  });
+  it("keeps a limit only where every role that gives the command limits it, at the looser value", () => {
+    const merged = mergeGameRoles(
+      { ...base, commands: ["slay", "freeze", "kick"], limits: { slay: { cooldown: 30, perMap: 3 }, freeze: { cooldown: 10, perMap: 0 } } },
+      { ...base, commands: ["slay", "freeze"], limits: { slay: { cooldown: 10, perMap: 5 } } },
+    );
+    expect(merged.limits.slay).toEqual({ cooldown: 10, perMap: 5 });
+    expect(merged.limits.freeze).toBeUndefined();
+    expect(merged.limits.kick).toBeUndefined();
+  });
+});

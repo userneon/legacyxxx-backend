@@ -210,6 +210,25 @@ export function readGameRole(role: GameRoleKey, value: unknown): GameRoleConfig 
   return parsed.success ? parsed.data : defaultGameRole(role);
 }
 
+/**
+ * One player holding two game roles at once (a Content Creator who is also staff, a paid rank on top of either; owner request 2026-11-07):
+ * they get everything both give. Commands, extra flags and limits come together; the immunity is the higher one. A command both roles give is
+ * limited only if both limit it, and then by the looser of the two limits.
+ */
+export function mergeGameRoles(a: GameRoleConfig, b: GameRoleConfig): GameRoleConfig {
+  const commands = Array.from(new Set([...a.commands, ...b.commands])).sort();
+  const limits: Record<string, CommandLimit> = {};
+  for (const name of commands) {
+    const inA = a.commands.includes(name), inB = b.commands.includes(name);
+    const la = a.limits[name], lb = b.limits[name];
+    if (inA && inB) {
+      if (!la || !lb) continue; // one of them gives it without a limit
+      limits[name] = { cooldown: Math.min(la.cooldown, lb.cooldown), perMap: la.perMap === 0 || lb.perMap === 0 ? 0 : Math.max(la.perMap, lb.perMap) };
+    } else if (inA ? la : lb) limits[name] = (inA ? la : lb) as CommandLimit;
+  }
+  return { commands, extraFlags: Array.from(new Set([...a.extraFlags, ...b.extraFlags])).sort(), modes: Array.from(new Set([...a.modes, ...b.modes])) as GameRoleConfig["modes"], immunity: Math.max(a.immunity, b.immunity), limits };
+}
+
 /** The CounterStrikeSharp flags a set of commands needs, plus the extra ones: what the plugin adds to the player. */
 export function flagsFor(config: GameRoleConfig): string[] {
   const flags = new Set<string>(config.extraFlags);
