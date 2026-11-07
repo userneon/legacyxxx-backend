@@ -8,3 +8,12 @@ ALTER TABLE legacy_x.cosmetic_owned ADD CONSTRAINT cosmetic_owned_source_check C
 
 -- A QA switch on any staff row (owner request 2026-11-07, "the Owner is already on the list, so add QA on top"): a tester need not be a QA-role row.
 ALTER TABLE legacy_x.staff ADD COLUMN IF NOT EXISTS qa boolean NOT NULL DEFAULT false;
+
+-- Deleting a staff member (owner request 2026-11-07): their audit rows and queued actions stay, only the "who" link is emptied.
+ALTER TABLE legacy_x.staff_audit_logs ALTER COLUMN staff_id DROP NOT NULL;
+ALTER TABLE legacy_x.staff_audit_logs DROP CONSTRAINT IF EXISTS staff_audit_logs_staff_id_fkey;
+ALTER TABLE legacy_x.staff_audit_logs ADD CONSTRAINT staff_audit_logs_staff_id_fkey FOREIGN KEY (staff_id) REFERENCES legacy_x.staff(id) ON DELETE SET NULL;
+ALTER TABLE legacy_x.staff_panel_actions DROP CONSTRAINT IF EXISTS staff_panel_actions_requested_by_staff_id_fkey;
+ALTER TABLE legacy_x.staff_panel_actions ADD CONSTRAINT staff_panel_actions_requested_by_staff_id_fkey FOREIGN KEY (requested_by_staff_id) REFERENCES legacy_x.staff(id) ON DELETE SET NULL;
+ALTER TABLE legacy_x.staff_panel_settings DROP CONSTRAINT IF EXISTS staff_panel_settings_updated_by_staff_id_fkey;
+ALTER TABLE legacy_x.staff_panel_settings ADD CONSTRAINT staff_panel_settings_updated_by_staff_id_fkey FOREIGN KEY (updated_by_staff_id) REFERENCES legacy_x.staff(id) ON DELETE SET NULL;

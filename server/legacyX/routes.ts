@@ -5297,6 +5297,26 @@ export function createLegacyXRouter() {
     legacyXError(audit.error, "Unable to audit staff record creation");
     res.status(201).json(data);
   }));
+  // Deletes a staff record for good (owner request 2026-11-07: "make it possible to delete from the staff list"). Their past actions stay in the audit log without a name on them.
+  router.delete("/staffpanel/staff/:staffId", ownerPanelRoute(async (req, res, staff) => {
+    const staffId = userIdSchema.parse(req.params.staffId);
+    const { data: current, error: currentError } = await db().from("staff").select("id,user_id,role,status").eq("id", staffId).maybeSingle();
+    legacyXError(currentError, "Unable to resolve staff record");
+    if (!current) apiError(404, "Staff record was not found");
+    if (current.role === "OWNER" && current.status === "active") {
+      const { count, error } = await db().from("staff").select("id", { count: "exact", head: true }).eq("role", "OWNER").eq("status", "active");
+      legacyXError(error, "Unable to verify active Owner count");
+      if ((count ?? 0) <= 1) apiError(409, "The last active Owner cannot be deleted");
+    }
+    // Written first, because the record it names is about to go.
+    const audit = await db().from("staff_audit_logs").insert({ staff_id: staff.staffId, event_type: "staff_member_deleted", target_type: "staff", target_id: staffId, metadata: { user_id: textValue(current.user_id), role: textValue(current.role), status: textValue(current.status) } });
+    legacyXError(audit.error, "Unable to audit the staff record deletion");
+    const { error } = await db().from("staff").delete().eq("id", staffId);
+    legacyXError(error, "Unable to delete the staff record");
+    // Anything they held as a tester goes with them, and an in-game role they had is read afresh by the game servers within a minute.
+    await revokeStaleQaCosmetics(db()).catch((revokeError) => console.warn("[legacy-x-api] QA cosmetics were not taken back", revokeError instanceof Error ? revokeError.message : revokeError));
+    res.status(204).end();
+  }));
   router.patch("/staffpanel/staff/:staffId", ownerPanelRoute(async (req, res, staff) => {
     const staffId = userIdSchema.parse(req.params.staffId);
     const input = staffMemberUpdateSchema.parse(req.body);
