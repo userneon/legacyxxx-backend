@@ -3896,6 +3896,8 @@ export function createLegacyXRouter() {
     kind: textValue(row.kind),
     priceMnt: numberValue(row.price_mnt),
     imageUrl: row.image_url ? textValue(row.image_url) : null,
+    /** The real photo shown in the preview (the card shows imageUrl, the AI picture); null when there is none. */
+    previewUrl: row.preview_url ? textValue(row.preview_url) : null,
     stock: numberValue(row.stock),
     /** For kind "lx": how many LX the package gives once it is paid. */
     grantsLx: numberValue(row.grants_lx),
@@ -3928,7 +3930,7 @@ export function createLegacyXRouter() {
     createdAt: textValue(row.created_at),
   });
   router.get("/shop/products", asyncRoute(async (_req, res) => {
-    const { data, error } = await db().from("shop_products").select("id,slug,name,description,kind,price_mnt,image_url,stock,grants_lx").eq("enabled", true).order("sort").order("created_at");
+    const { data, error } = await db().from("shop_products").select("id,slug,name,description,kind,price_mnt,image_url,preview_url,stock,grants_lx").eq("enabled", true).order("sort").order("created_at");
     legacyXError(error, "Unable to load the shop");
     const rows = (data ?? []) as DbRow[];
     const founder = await founderInfoFor(rows);
@@ -4343,7 +4345,7 @@ export function createLegacyXRouter() {
   }));
   router.get("/staff/shop/products", userRoute(async (_req, res, user) => {
     await requireClanModerator(user.id);
-    const { data, error } = await db().from("shop_products").select("id,slug,name,description,kind,price_mnt,image_url,stock,grants_lx,enabled,sort").order("sort").order("created_at");
+    const { data, error } = await db().from("shop_products").select("id,slug,name,description,kind,price_mnt,image_url,preview_url,stock,grants_lx,enabled,sort").order("sort").order("created_at");
     legacyXError(error, "Unable to load products");
     const rows = (data ?? []) as DbRow[];
     const founder = await founderInfoFor(rows);
@@ -4361,11 +4363,12 @@ export function createLegacyXRouter() {
       grantsLx: z.number().int().min(0).max(1_000_000).default(0),
       priceMnt: z.number().int().min(0).max(100_000_000),
       imageUrl: z.string().url().startsWith("https://").nullable().default(null),
+      previewUrl: z.string().url().startsWith("https://").nullable().optional(),
       stock: z.number().int().min(0).max(100_000),
       enabled: z.boolean().default(true),
       sort: z.number().int().min(-1000).max(1000).default(0),
     }).strict().parse(req.body);
-    const { data, error } = await db().from("shop_products").upsert({ slug, name: input.name, description: input.description, kind: input.kind, grants_lx: input.kind === "lx" ? input.grantsLx : 0, price_mnt: input.priceMnt, image_url: input.imageUrl, stock: input.stock, enabled: input.enabled, sort: input.sort, ...(input.endsAt !== undefined ? { ends_at: input.endsAt } : {}), updated_at: new Date().toISOString() }, { onConflict: "slug" }).select("id,slug,name,description,kind,price_mnt,image_url,stock,grants_lx").single();
+    const { data, error } = await db().from("shop_products").upsert({ slug, name: input.name, description: input.description, kind: input.kind, grants_lx: input.kind === "lx" ? input.grantsLx : 0, price_mnt: input.priceMnt, image_url: input.imageUrl, ...(input.previewUrl !== undefined ? { preview_url: input.previewUrl } : {}), stock: input.stock, enabled: input.enabled, sort: input.sort, ...(input.endsAt !== undefined ? { ends_at: input.endsAt } : {}), updated_at: new Date().toISOString() }, { onConflict: "slug" }).select("id,slug,name,description,kind,price_mnt,image_url,stock,grants_lx").single();
     legacyXError(error, "Unable to save the product");
     if (!data) apiError(500, "The product was not saved");
     await db().from("audit_logs").insert({ actor_type: "user", actor_id: user.id, action: "shop.product.save", target_type: "shop_products", target_id: textValue(data.id), metadata: { slug } });
