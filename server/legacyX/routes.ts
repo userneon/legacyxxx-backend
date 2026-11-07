@@ -3590,6 +3590,18 @@ export function createLegacyXRouter() {
     res.set("Cache-Control", "no-store");
     res.status(201).json(await createCheck(textValue((account as DbRow).user_id), steamId));
   }));
+  // !check <name> in game (owner request 2026-11-07): the staff member is whoever has that Steam ID on the website and must be Admin, Manager or Owner.
+  // The code and link go back to the game server, which shows them to the asked player alone.
+  router.post("/plugin/checks", pluginRoute("bans:write", async (req, res) => {
+    const { issuerSteamId, targetSteamId } = z.object({ issuerSteamId: createCheckSchema.shape.steamId, targetSteamId: createCheckSchema.shape.steamId }).strict().parse(req.body);
+    const { data: account, error } = await db().from("users").select("id").eq("steam_id", issuerSteamId).maybeSingle();
+    legacyXError(error, "Unable to read the staff member");
+    if (!account) apiError(403, "Sign in on the website first", "check_forbidden");
+    const check = await createCheck(textValue((account as DbRow).id), targetSteamId);
+    const link = check.downloadUrl ?? (check.downloadPath ? `${requestOrigin(req)}${check.downloadPath}` : null);
+    res.set("Cache-Control", "no-store");
+    res.status(201).json({ code: check.code, expiresAt: check.expiresAt, link });
+  }));
   router.get("/checks", userRoute(async (_req, res, user) => {
     await requireCheckStaff(user.id);
     // Finished checks do not stay for ever.

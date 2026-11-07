@@ -61,6 +61,7 @@ export const GAME_COMMANDS: GameCommand[] = [
   { name: "hsay", flag: "@css/chat", group: "Chat and punishments", summary: "HUD say (console)", locked: false, stamina: 500 },
   { name: "ipban", flag: "@css/ban", group: "Bans", summary: "IP ban a player from console", locked: false, stamina: 750 },
   { name: "kickbots", flag: "@css/kick", group: "Basics and votes", summary: "Remove every bot from the server at once", locked: false, stamina: 500 },
+  { name: "check", flag: "@css/ban", group: "Bans", summary: "Ask a player to run the Checker; only they see the link and code", locked: false, stamina: 500 },
   { name: "chatlock", flag: "@css/chat", group: "Chat and punishments", summary: "Only staff can write in chat, again to unlock", locked: false, stamina: 500 },
   { name: "kick", flag: "@css/generic", group: "Basics and votes", summary: "Kick a player from console", locked: false, stamina: 500 },
   { name: "lastban", flag: "@css/ban", group: "Bans", summary: "Show last disconnected players", locked: false, stamina: 500 },
