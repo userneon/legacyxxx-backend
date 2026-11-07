@@ -56,6 +56,7 @@ import { PROFILE_NAME_MAX, PROFILE_SECTIONS, bestNameMatch, escapeLike, hiddenFo
 import { PERK_DAYS, PERK_QUOTAS, grantAfterPurchase, isPerkTier, perkActive, perkCheckoutProblem, perkPool, savePicks, type PerkGrant, type PerkTier } from "./perks";
 import { ADMIN_LEVEL_KEYS, ADMIN_LEVELS, extraCommandChoices, extraCommandsProblem, isAdminLevel } from "./adminLevels";
 import { hostActionSchema, hostConfigs, runHost } from "./hostAgent";
+import { grantQaCosmetics, isActiveQa, revokeStaleQaCosmetics } from "./qaAccess";
 import { activeBannedUserIds, activeBans, bannedPlayer, checkBansSchema, issueBan, issueBanSchema, issueIpBan, issueIpBanSchema, listActiveBans, revokeAllBans, revokeAllBansSchema, revokeBans, revokeBanSchema, revokeIpBans, revokeIpBanSchema } from "./bans";
 import { authorizationRequestSchema, loadGameRoles, resolveAuthorizations } from "./adminAuthorization";
 import { CREATOR_TIER_LABEL, cleanCreatorLinks, creatorApplicationSchema, creatorDecisionSchema, creatorTier, ownCreatorLinksSchema, sortCreators, upsertCreatorSchema } from "./creators";
@@ -159,14 +160,14 @@ async function requireOwnerStaffRole(userId: string) {
 
 type StaffPanelRole = "OWNER" | "MANAGER";
 type StaffPrincipal = { staffId: string; userId: string; role: StaffPanelRole; permissions: string[]; username: string };
-const staffDirectoryRoleSchema = z.enum(["OWNER", "MANAGER", "ADMIN", "DEVELOPER", "DESIGNER"]);
+const staffDirectoryRoleSchema = z.enum(["OWNER", "MANAGER", "ADMIN", "DEVELOPER", "DESIGNER", "QA"]);
 const staffDirectoryStatusSchema = z.enum(["active", "suspended", "revoked"]);
 const staffPermissionListSchema = z.array(z.string().trim().min(1).max(80).regex(/^[a-z0-9_*:-]+$/i)).max(32);
 const inGameAdminPermissionSchema = z.enum(["@css/generic", "@css/kick", "@css/ban", "@css/unban", "@css/slay", "@css/changemap", "@css/chat", "@css/vote", "@css/config", "@css/cvar", "@css/rcon", "@css/cheats", "@css/root"]);
 const inGameAdminPermissionsSchema = z.array(inGameAdminPermissionSchema).max(13).transform((values) => values.filter((value, index) => values.indexOf(value) === index));
 const inGameAdminImmunitySchema = z.number().int().min(0).max(1000);
 const inGameAdminStaminaSchema = z.number().int().min(0).max(1000);
-const staffRoleNumericDefaults = { OWNER: 1000, MANAGER: 750, ADMIN: 500, DEVELOPER: 0, DESIGNER: 0 } as const;
+const staffRoleNumericDefaults = { OWNER: 1000, MANAGER: 750, ADMIN: 500, DEVELOPER: 0, DESIGNER: 0, QA: 0 } as const;
 /** When a staff grant ends: an ISO date in the future, or null for no end. */
 const staffExpirySchema = z.string().datetime({ offset: true }).nullable().refine((value) => value === null || Date.parse(value) > Date.now(), "The end date must be in the future");
 const staffMemberCreateSchema = z.object({ userId: z.string().uuid().optional(), steamId: z.string().regex(/^7656119\d{10}$/, "Enter a SteamID64").optional(), role: staffDirectoryRoleSchema, permissions: staffPermissionListSchema.default([]), gamePermissions: inGameAdminPermissionsSchema.default([]), stamina: inGameAdminStaminaSchema.optional(), immunity: inGameAdminImmunitySchema.optional(), status: staffDirectoryStatusSchema.default("active"), expiresAt: staffExpirySchema.optional(), adminLevel: z.enum(ADMIN_LEVEL_KEYS).optional(), extraCommands: z.array(z.string().max(30)).max(10).optional() }).strict().refine((value) => Boolean(value.userId || value.steamId), "Give the player's SteamID64");
@@ -217,6 +218,7 @@ async function expireStaffGrants(now = Date.now()) {
     const nowIso = new Date(now).toISOString();
     const { error } = await legacyXDb().from("staff").update({ status: "suspended", updated_at: nowIso }).eq("status", "active").not("expires_at", "is", null).lte("expires_at", nowIso);
     if (error) console.warn("[legacy-x-api] staff expiry check failed", error.message);
+    else await revokeStaleQaCosmetics(legacyXDb());
   } catch (error) {
     console.warn("[legacy-x-api] staff expiry check failed", error instanceof Error ? error.message : error);
   }
@@ -408,7 +410,7 @@ function hiddenSectionsValue(value: unknown): ProfileHideableSection[] {
 function isMissingColumnError(error: unknown) {
   return Boolean(error && typeof error === "object" && (error as { code?: unknown }).code === "42703");
 }
-const STAFF_PROFILE_ROLES: Record<string, string> = { OWNER: "Owner", MANAGER: "Manager", ADMIN: "Admin", DEVELOPER: "Developer", DESIGNER: "Designer" };
+const STAFF_PROFILE_ROLES: Record<string, string> = { OWNER: "Owner", MANAGER: "Manager", ADMIN: "Admin", DEVELOPER: "Developer", DESIGNER: "Designer", QA: "QA" };
 const faceitLinkSchema = z.object({ nickname: z.string().trim().min(1).max(64).regex(/^[A-Za-z0-9_.-]+$/, "FACEIT nickname contains unsupported characters") });
 const clanSchema = z.object({ name: z.string().trim().min(3).max(24), tag: z.string().trim().toUpperCase().regex(/^[A-Z0-9]{2,5}$/, "Tag is 2-5 letters or numbers"), region: z.string().trim().min(2).max(64).optional(), joinMode: z.enum(["open", "request"]).default("open"), maxPlayers: z.number().int().min(2).max(50).default(10) }).strict();
 const pluginEventIdSchema = z.string().trim().min(8).max(220).regex(/^[A-Za-z0-9:_-]+$/, "event_id contains unsupported characters");
@@ -2108,6 +2110,9 @@ export function createLegacyXRouter() {
   // Visitors see the whole catalogue too (audit 2026-10-11: a shop behind a sign-in wall sells nothing); owning and wearing need an account.
   router.get("/cosmetics", optionalUserRoute(async (_req, res, user) => {
     const none = { data: [] as DbRow[], error: null };
+    // A QA tester holds everything for good, switched-off items included (marked `testing`), so they can try each before it goes on sale.
+    const qaTester = user ? await isActiveQa(db(), user.id).catch(() => false) : false;
+    if (user && qaTester) await grantQaCosmetics(db(), user.id).catch((grantError) => console.warn("[legacy-x-api] QA cosmetics were not given", grantError instanceof Error ? grantError.message : grantError));
     const [enabledCatalog, owned, worn, equippedRows, everyOwned, players, slotRows] = await Promise.all([
       loadCosmeticCatalog(),
       user ? db().from("cosmetic_owned").select("item_id,expires_at").eq("user_id", user.id) : Promise.resolve(none),
@@ -2139,7 +2144,7 @@ export function createLegacyXRouter() {
     const mineRows = new Map<string, DbRow>(((mine.error ? [] : mine.data ?? []) as DbRow[]).map((row) => [textValue(row.item_id), row]));
     // A design shows the colours this player picked for it, or neutral grey until they pick (a visitor sees grey).
     const ofKind = (kind: CosmeticKind) => catalog.filter((item) => item.kind === kind).map((item) => {
-      const view: Record<string, unknown> = { ...(cosmeticView(item, ownedIds, owners, endsAt) as Record<string, unknown>), ...(retiredIds.has(textValue(item.id)) ? { retired: true } : {}) };
+      const view: Record<string, unknown> = { ...(cosmeticView(item, ownedIds, owners, endsAt) as Record<string, unknown>), ...(retiredIds.has(textValue(item.id)) ? (qaTester ? { testing: true } : { retired: true }) : {}) };
       if (!isColourable(item)) return view;
       const colours = itemColours(item, mineRows.get(textValue(item.id)));
       const { color: _color, color2: _color2, glow: _glow, ...rest } = view;
@@ -5316,6 +5321,8 @@ export function createLegacyXRouter() {
     }
     const { data, error } = await db().from("staff").update({ ...(input.role === undefined ? {} : { role: input.role }), ...(input.permissions === undefined ? {} : { permissions: input.permissions }), ...(input.gamePermissions === undefined ? {} : { game_permissions: input.gamePermissions }), ...(input.stamina === undefined ? {} : { stamina: input.stamina }), ...(input.immunity === undefined ? {} : { immunity: input.immunity }), ...(input.status === undefined ? {} : { status: input.status }), ...(input.expiresAt === undefined ? {} : { expires_at: input.expiresAt }), ...(levelTouched ? { admin_level: finalLevel, extra_commands: finalExtras } : {}), updated_at: new Date().toISOString() }).eq("id", staffId).select("id,user_id,role,permissions,game_permissions,stamina,immunity,status,admin_level,extra_commands,created_at,updated_at").single();
     legacyXError(error, "Unable to update staff record");
+    // A tester who is moved to another role, suspended or removed loses the testing items at once.
+    await revokeStaleQaCosmetics(db()).catch((revokeError) => console.warn("[legacy-x-api] QA cosmetics were not taken back", revokeError instanceof Error ? revokeError.message : revokeError));
     const audit = await db().from("staff_audit_logs").insert({ staff_id: staff.staffId, event_type: "staff_member_updated", target_type: "staff", target_id: staffId, metadata: input });
     legacyXError(audit.error, "Unable to audit staff record update");
     res.json(data);

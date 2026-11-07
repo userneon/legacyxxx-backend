@@ -35,8 +35,8 @@ export function ownerLinks(value: unknown): { url: string; label?: string }[] {
 }
 
 /** Staff shown as the team in rank order: the Owner's profile lists everyone but the Owner, the Staff page everyone. */
-const TEAM_ORDER = ["OWNER", "MANAGER", "ADMIN", "DEVELOPER", "DESIGNER"];
-const TEAM_LABEL: Record<string, string> = { OWNER: "Owner", MANAGER: "Manager", ADMIN: "Admin", DEVELOPER: "Developer", DESIGNER: "Designer" };
+const TEAM_ORDER = ["OWNER", "MANAGER", "ADMIN", "DEVELOPER", "DESIGNER", "QA"];
+const TEAM_LABEL: Record<string, string> = { OWNER: "Owner", MANAGER: "Manager", ADMIN: "Admin", DEVELOPER: "Developer", DESIGNER: "Designer", QA: "QA" };
 
 export function ownerTeam(rows: Row[], withOwner = false) {
   return rows
