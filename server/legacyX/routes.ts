@@ -6038,7 +6038,10 @@ export function createLegacyXRouter() {
   }));
   router.get("/plugin/discord/links", pluginRoute("discord:link", async (_req, res) => {
     res.set("Cache-Control", "no-store");
-    res.json({ links: await listLinks(db()) });
+    // `clanIds`: every clan that exists, so the bot can tell a clan that was deleted (its role and channel go at once) from one whose linked members are
+    // merely away (it waits a while). Null when the read failed: the bot then waits too.
+    const [links, clans] = await Promise.all([listLinks(db()), db().from("clans").select("id").limit(5000)]);
+    res.json({ links, clanIds: clans.error ? null : ((clans.data ?? []) as DbRow[]).map((row) => textValue(row.id)) });
   }));
   router.get("/plugin/discord/links/:discordId", pluginRoute("discord:link", async (req, res) => {
     const discordId = discordIdSchema.parse(req.params.discordId);
