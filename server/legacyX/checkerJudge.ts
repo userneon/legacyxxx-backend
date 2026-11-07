@@ -21,7 +21,22 @@ export type CheckFact = {
 
 export type JudgedFinding = { name: string; kind: "file" | "process"; confidence: "detection" | "suspicion"; path?: string; note: string };
 
-const includesWord = (words: string[], text: string) => words.find((word) => word.length >= 4 && text.toLowerCase().includes(word.toLowerCase())) ?? null;
+/**
+ * A name as a person would read it: lower case, the look-alike digits and symbols turned back into letters (4 -> a, 3 -> e, 0 -> o, 1 -> i, 5 -> s, 7 -> t, @ -> a,
+ * $ -> s), everything that is not a letter or digit dropped, and a letter repeated three times or more cut to one. "N3ver_L0se", "never lose" and "neverloose" all
+ * become "neverlose"; "aimb0t" becomes "aimbot".
+ */
+export function normalizeName(text: string): string {
+  const mapped = text.toLowerCase().replace(/[@4]/g, "a").replace(/3/g, "e").replace(/[0]/g, "o").replace(/[1!|]/g, "i").replace(/[5$]/g, "s").replace(/7/g, "t");
+  return mapped.replace(/[^a-z0-9]/g, "").replace(/(.)\1{2,}/g, "$1");
+}
+
+/** The first listed word the text holds, read both as written and normalised (a spelling trick does not hide it). */
+const includesWord = (words: string[], text: string) => {
+  const plain = text.toLowerCase();
+  const clean = normalizeName(text);
+  return words.find((word) => word.length >= 4 && (plain.includes(word.toLowerCase()) || clean.includes(normalizeName(word)))) ?? null;
+};
 
 /** Digits only, a long run of hex, or letters and digits jumbled together: not a name a person would give a program. */
 export function looksRandom(stem: string): boolean {

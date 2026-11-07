@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { judgeFact, looksRandom, type CheckFact } from "./checkerJudge";
+import { judgeFact, looksRandom, normalizeName, type CheckFact } from "./checkerJudge";
 import { DEFAULT_CHECKER_RULES, mergeCheckerRules, probesOf } from "./checkerRules";
 
 const rules = DEFAULT_CHECKER_RULES;
@@ -69,5 +69,21 @@ describe("rules", () => {
     expect(probes.families).toBeUndefined();
     expect(probes.cheatNames).toBeUndefined();
     expect(probes.apis).toContain("openprocess");
+  });
+});
+
+describe("cheat names are read the way a person reads them", () => {
+  it("turns spelling tricks back into the name", () => {
+    expect(normalizeName("N3ver_L0se")).toBe("neverlose");
+    expect(normalizeName("aimb0t v2")).toBe("aimbotv2");
+    expect(normalizeName("g4m3sense")).toBe("gamesense");
+    expect(normalizeName("N e v e r l o s e")).toBe("neverlose");
+  });
+  it("lowers the bar for a disguised name the same way as a plain one", () => {
+    const base = fact({ apis: ["openprocess", "readprocessmemory", "setlayeredwindowattributes", "sendinput"], game: [] });
+    const plain = judgeFact({ ...base, name: "tool.exe" }, rules);
+    const hinted = judgeFact({ ...base, name: "N3ver_L0se loader.exe" }, rules);
+    expect(plain).toBeNull();
+    expect(hinted?.confidence).toBe("suspicion");
   });
 });
