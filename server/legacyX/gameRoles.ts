@@ -19,12 +19,9 @@ export type GameMode = (typeof GAME_MODES)[number];
 export type GameCommand = { name: string; flag: string; group: string; summary: string; locked: boolean; stamina?: number };
 
 export const GAME_COMMANDS: GameCommand[] = [
-  { name: "1up", flag: "@css/slay", group: "Fun", summary: "Respawn at last pos", locked: false, stamina: 1000 },
   { name: "addadmin", flag: "@css/root", group: "Server", summary: "Staff are managed on legacyx.cc", locked: true, stamina: 1000 },
   { name: "admin", flag: "@css/generic", group: "Basics and votes", summary: "Open admin menu from console", locked: false, stamina: 250 },
-  { name: "admin_reload", flag: "@css/root", group: "Server", summary: "Re-check online staff with the LEGACY-X API", locked: true, stamina: 1000 },
   { name: "adminlist", flag: "@css/root", group: "Server", summary: "List authorized staff online", locked: true, stamina: 750 },
-  { name: "adminmenu", flag: "@css/generic", group: "Basics and votes", summary: "Open admin menu from console", locked: false, stamina: 250 },
   { name: "adminreload", flag: "@css/root", group: "Server", summary: "Re-check online staff with the LEGACY-X API", locked: true, stamina: 1000 },
   { name: "aimlock", flag: "@css/root", group: "Server", summary: "View snaps to the nearest enemy while firing", locked: true },
   { name: "armor", flag: "@css/slay", group: "Fun", summary: "Set player armor", locked: false, stamina: 1000 },
@@ -75,7 +72,6 @@ export const GAME_COMMANDS: GameCommand[] = [
   { name: "removeadmin", flag: "@css/root", group: "Server", summary: "Staff are managed on legacyx.cc", locked: true, stamina: 1000 },
   { name: "rename", flag: "@css/slay", group: "Fun", summary: "Rename a player", locked: false, stamina: 750 },
   { name: "respawn", flag: "@css/cheats", group: "Cheats", summary: "", locked: false, stamina: 1000 },
-  { name: "revive", flag: "@css/cheats", group: "Cheats", summary: "", locked: false, stamina: 1000 },
   { name: "rr", flag: "@css/generic", group: "Basics and votes", summary: "Send the server back to warmup", locked: false, stamina: 500 },
   { name: "sethp", flag: "@css/cheats", group: "Cheats", summary: "", locked: false, stamina: 1000 },
   { name: "shake", flag: "@css/slay", group: "Fun", summary: "", locked: false, stamina: 1000 },
@@ -135,7 +131,6 @@ export const GAME_COMMANDS: GameCommand[] = [
   { name: "wh", flag: "@css/root", group: "Server", summary: "See enemies through walls", locked: true },
   { name: "who", flag: "@css/generic", group: "Basics and votes", summary: "Show player info from console", locked: false, stamina: 250 },
   { name: "workshop", flag: "@css/generic", group: "Basics and votes", summary: "Change workshop map from console", locked: false, stamina: 750 },
-  { name: "wsmap", flag: "@css/generic", group: "Basics and votes", summary: "Change workshop map from console", locked: false, stamina: 750 },
 ];
 
 const COMMAND_NAMES = new Set(GAME_COMMANDS.map((command) => command.name));
@@ -155,10 +150,11 @@ export type CommandLimit = { cooldown: number; perMap: number };
 export type GameRoleConfig = { commands: string[]; extraFlags: string[]; modes: GameMode[]; immunity: number; limits: Record<string, CommandLimit> };
 
 /**
- * Commands that used to have an "un" twin (owner request 2026-11-06): the one command now switches the effect on and off, so the twin is no
+ * Commands that used to have a twin: an "un" twin (owner request 2026-11-06: the one command now switches the effect on and off) or a second name for the
+ * same command (owner request 2026-11-07: 1up = hrespawn, revive = respawn, adminmenu = admin, admin_reload = adminreload, wsmap = workshop), so the twin is no
  * longer a separate entry. A role saved while the twins existed keeps working: a twin in its list becomes the command it undid.
  */
-export const RETIRED_COMMANDS: Record<string, string> = { unblind: "blind", unbury: "bury", undrug: "drug", unfreeze: "freeze", unshake: "shake", unsize: "size", unspeed: "speed" };
+export const RETIRED_COMMANDS: Record<string, string> = { unblind: "blind", unbury: "bury", undrug: "drug", unfreeze: "freeze", unshake: "shake", unsize: "size", unspeed: "speed", "1up": "hrespawn", revive: "respawn", adminmenu: "admin", admin_reload: "adminreload", wsmap: "workshop" };
 function migrateRole(value: unknown): unknown {
   if (!value || typeof value !== "object" || !Array.isArray((value as { commands?: unknown }).commands)) return value;
   const commands = (value as { commands: unknown[] }).commands.map((name) => (typeof name === "string" && RETIRED_COMMANDS[name]) || name);

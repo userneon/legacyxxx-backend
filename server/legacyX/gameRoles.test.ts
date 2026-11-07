@@ -87,3 +87,16 @@ describe("mergeGameRoles", () => {
     expect(merged.limits.kick).toBeUndefined();
   });
 });
+
+describe("commands with two names", () => {
+  it("lists each one once, under the name the staff site shows", () => {
+    const names = GAME_COMMANDS.map((command) => command.name);
+    for (const old of ["1up", "revive", "adminmenu", "admin_reload", "wsmap"]) expect(names).not.toContain(old);
+    for (const kept of ["hrespawn", "respawn", "admin", "adminreload", "workshop"]) expect(names).toContain(kept);
+  });
+  it("keeps a role saved with the old name working as the kept one", () => {
+    const role = parseGameRole({ commands: ["1up", "revive", "adminmenu", "kick"], extraFlags: [], modes: [], immunity: 0, limits: {} });
+    expect(role?.commands).toEqual(expect.arrayContaining(["hrespawn", "respawn", "admin", "kick"]));
+    expect(role?.commands).not.toContain("1up");
+  });
+});
