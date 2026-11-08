@@ -6084,7 +6084,7 @@ export function createLegacyXRouter() {
     await requireKitUser(user.id);
     await kitHouse().catch(() => undefined);
     res.set("Cache-Control", "no-store");
-    res.json({ enabled: kitRenderEnabled(), items: KIT_ITEMS.map(({ id, label, ext, needs }) => ({ id, label, ext, needs })), dailyLimit: KIT_DAILY_LIMIT, keepHours: KIT_KEEP_HOURS, queue: kitQueue.length });
+    res.json({ enabled: kitRenderEnabled(), items: KIT_ITEMS.map((item) => ({ id: item.id, label: item.label, ext: item.ext, needs: item.needs, heavy: "heavy" in item })), dailyLimit: KIT_DAILY_LIMIT, keepHours: KIT_KEEP_HOURS, queue: kitQueue.length });
   }));
   router.post("/creators/kit-renders", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
     await requireKitUser(user.id);

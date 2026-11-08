@@ -14,10 +14,12 @@ const serveUrl = await bundle({ entryPoint: join(here, "src", "index.ts"), onPro
 const composition = await selectComposition({ serveUrl, id, inputProps: props, browserExecutable })
 const transparent = ["LowerThird", "CodeBar", "CommunityIntro", "LogoSting", "Wipe", "CommunityBug"].includes(id)
 const gif = id.endsWith("Gif")
+// A .mov out file means ProRes 4444 with alpha: what video editors (Premiere, DaVinci, Final Cut, CapCut) read, where WebM alpha is not read everywhere.
+const prores = transparent && out.toLowerCase().endsWith(".mov")
 await renderMedia({
   composition, serveUrl, outputLocation: out, inputProps: props, browserExecutable,
-  codec: gif ? "gif" : transparent ? "vp9" : "h264",
-  ...(transparent ? { pixelFormat: "yuva420p", imageFormat: "png" } : {}),
+  codec: gif ? "gif" : prores ? "prores" : transparent ? "vp9" : "h264",
+  ...(prores ? { proResProfile: "4444", pixelFormat: "yuva444p10le", imageFormat: "png" } : transparent ? { pixelFormat: "yuva420p", imageFormat: "png" } : {}),
   ...(gif ? { everyNthFrame: 1 } : {}),
   concurrency: Number(process.env.REMOTION_CONCURRENCY || 2),
   muted: true,

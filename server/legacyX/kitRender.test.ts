@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { KitRenderQueue, cleanKitCode, cleanKitName, kitFilePath, kitRenderSchema, type KitJob } from "./kitRender";
+import { KIT_ITEMS, KitRenderQueue, cleanKitCode, cleanKitName, kitExt, kitFilePath, kitRenderSchema, type KitJob } from "./kitRender";
 
 describe("kit render input", () => {
   it("cleans the name and the code", () => {
@@ -67,5 +67,12 @@ describe("kit render queue", () => {
     await new Promise((resolve) => setTimeout(resolve, 200));
     expect(events).toEqual(["fail bad boom", "finish good"]);
     await rm(dir, { recursive: true, force: true });
+  });
+  it("offers MOV (ProRes alpha) copies for editors: heavy ones need no name or code when they are the same for everyone", () => {
+    const mov = KIT_ITEMS.filter((item) => item.ext === "mov");
+    expect(mov.map((item) => item.id)).toEqual(["lower-third-mov", "code-bar-mov", "intro-mov", "sting-mov", "wipe-mov", "badge-mov"]);
+    expect(kitRenderSchema.safeParse({ items: ["intro-mov", "badge-mov"] }).success).toBe(true);
+    expect(kitRenderSchema.safeParse({ items: ["lower-third-mov"] }).success).toBe(false);
+    expect(kitExt("intro-mov")).toBe("mov");
   });
 });

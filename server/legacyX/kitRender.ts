@@ -17,6 +17,13 @@ export const KIT_ITEMS = [
   { id: "end-card", composition: "EndCard", ext: "mp4", needs: "either", label: "End card, 6 seconds (MP4)" },
   { id: "code-gif", composition: "CodeGif", ext: "gif", needs: "code", label: "Creator code sticker (looping GIF)" },
   { id: "glitch-gif", composition: "GlitchGif", ext: "gif", needs: "name", label: "Glitch logo with your name (looping GIF)" },
+  // MOV (ProRes 4444 with alpha) for video editors that do not read WebM transparency. Big files (up to ~100 MB), so they are never ticked by default.
+  { id: "lower-third-mov", composition: "LowerThird", ext: "mov", needs: "name", heavy: true, label: "Lower third (transparent MOV for editors)" },
+  { id: "code-bar-mov", composition: "CodeBar", ext: "mov", needs: "code", heavy: true, label: "Creator code bar (transparent MOV for editors)" },
+  { id: "intro-mov", composition: "CommunityIntro", ext: "mov", needs: "none", heavy: true, label: "Community intro, 5 s (transparent MOV for editors)" },
+  { id: "sting-mov", composition: "LogoSting", ext: "mov", needs: "none", heavy: true, label: "Logo sting (transparent MOV for editors)" },
+  { id: "wipe-mov", composition: "Wipe", ext: "mov", needs: "none", heavy: true, label: "Wipe transition (transparent MOV for editors)" },
+  { id: "badge-mov", composition: "CommunityBug", ext: "mov", needs: "none", heavy: true, label: "Community badge (transparent MOV for editors)" },
 ] as const;
 export type KitItemId = (typeof KIT_ITEMS)[number]["id"];
 const ITEM_IDS = KIT_ITEMS.map((item) => item.id) as [KitItemId, ...KitItemId[]];
