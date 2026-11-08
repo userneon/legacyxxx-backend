@@ -54,9 +54,9 @@ export function kitRemotionDir() {
 }
 export const kitOutputDir = () => process.env.KIT_RENDER_DIR?.trim() || path.join(os.tmpdir(), "legacyx-kit-renders");
 
-/** Switched on with KIT_RENDER_ENABLED=true once `npm ci` was run in backend/remotion. */
+/** On by itself once backend/remotion has its packages (ops/deploy.sh installs them); KIT_RENDER_ENABLED=false is the only .env line, to switch it off. */
 export function kitRenderEnabled() {
-  return process.env.KIT_RENDER_ENABLED === "true" && existsSync(path.join(kitRemotionDir(), "node_modules", "remotion"));
+  return process.env.KIT_RENDER_ENABLED !== "false" && existsSync(path.join(kitRemotionDir(), "node_modules", "remotion"));
 }
 
 /** Renders one animation into `out`; rejects with a short reason. */

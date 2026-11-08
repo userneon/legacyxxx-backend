@@ -37,6 +37,13 @@ git pull --ff-only origin "$BRANCH"
 echo "==> Installing dependencies"
 npm ci
 
+# The animated Creator kit renders with Remotion: install its packages once so it switches itself on (nothing to set in .env).
+# A failure here never stops the deploy; the kit then just says it is not set up.
+if [[ -f remotion/package-lock.json && ! -d remotion/node_modules/remotion ]]; then
+  echo "==> Installing the Creator kit renderer (first time only)"
+  (cd remotion && npm ci --no-audit --no-fund) || echo "!! Creator kit renderer not installed (the deploy goes on)"
+fi
+
 echo "==> Typecheck and build"
 npm run check
 npm run build
