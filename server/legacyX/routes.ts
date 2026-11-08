@@ -44,6 +44,7 @@ import { leaveRulesFrom, leaveStatus, loadLeaves, playerAccess } from "./playAcc
 import { CHAT_PAGE, checkChatBody, chatMessageSchema, chatRoomQuery, clanOfRoom, clanRoom, spamProblem } from "./chat";
 import { cosmeticEditSchema } from "./cosmeticAdmin";
 import { SETTINGS, forgetSettings, loadSettings, settingDef, validSettingValue } from "./settings";
+import { activeSiteEvent, siteEventSchema, siteEventView, ulaanbaatarDay, type SiteEventRecord } from "./siteEvents";
 import { cleanReferralCode, newReferralCode, referralRefusal } from "./referrals";
 import { GAME_COMMANDS, GAME_MODES, GAME_ROLES, GAME_ROLE_LABELS, EXTRA_FLAGS, defaultGameRole, gameRoleConfigSchema, isGameRole } from "./gameRoles";
 import { frameLookSchema, readFrameLook, type FrameLook } from "./frameLook";
@@ -5683,6 +5684,48 @@ export function createLegacyXRouter() {
     forgetSettings();
     await db().from("audit_logs").insert({ actor_type: "user", actor_id: user.id, action: "setting.change", target_type: "site_settings", target_id: def.key, metadata: { value: input.value } });
     res.json({ key: def.key, value: input.value === null ? def.def : validSettingValue(def, input.value) });
+  }));
+  // Holiday looks (owner request 2026-11-08, siteEvents.ts): the Owner schedules events; the website, the app and the bot read which one runs today.
+  router.get("/public/events/active", asyncRoute(async (_req, res) => {
+    const { data, error } = await db().from("site_events").select("id,theme,title,starts_on,ends_on,enabled").eq("enabled", true).limit(100);
+    // A missing table or a read error means "no event": the site keeps its normal look.
+    const event = error ? null : activeSiteEvent((data ?? []) as SiteEventRecord[], ulaanbaatarDay());
+    res.set("Cache-Control", "public, max-age=300").json({ event: event ? { theme: event.theme, title: event.title, startsOn: event.starts_on, endsOn: event.ends_on } : null });
+  }));
+  router.get("/staff/events", userRoute(async (_req, res, user) => {
+    await requireOwnerStaffRole(user.id);
+    const { data, error } = await db().from("site_events").select("id,theme,title,starts_on,ends_on,enabled").order("starts_on", { ascending: false }).limit(200);
+    legacyXError(error, "Unable to load the events");
+    const events = ((data ?? []) as SiteEventRecord[]);
+    const today = ulaanbaatarDay();
+    const running = activeSiteEvent(events, today);
+    res.set("Cache-Control", "no-store").json({ today, runningId: running?.id ?? null, events: events.map(siteEventView) });
+  }));
+  router.post("/staff/events", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
+    await requireOwnerStaffRole(user.id);
+    const input = siteEventSchema.parse(req.body);
+    const { data, error } = await db().from("site_events").insert({ theme: input.theme, title: input.title, starts_on: input.startsOn, ends_on: input.endsOn, enabled: input.enabled, created_by: user.id }).select("id,theme,title,starts_on,ends_on,enabled").single();
+    legacyXError(error, "Unable to save the event");
+    await db().from("audit_logs").insert({ actor_type: "user", actor_id: user.id, action: "event.create", target_type: "site_events", target_id: textValue((data as DbRow).id), metadata: input });
+    res.status(201).json({ event: siteEventView(data as SiteEventRecord) });
+  }));
+  router.put("/staff/events/:id", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
+    await requireOwnerStaffRole(user.id);
+    const id = z.string().uuid().parse(req.params.id);
+    const input = siteEventSchema.parse(req.body);
+    const { data, error } = await db().from("site_events").update({ theme: input.theme, title: input.title, starts_on: input.startsOn, ends_on: input.endsOn, enabled: input.enabled }).eq("id", id).select("id,theme,title,starts_on,ends_on,enabled").maybeSingle();
+    legacyXError(error, "Unable to save the event");
+    if (!data) apiError(404, "No such event");
+    await db().from("audit_logs").insert({ actor_type: "user", actor_id: user.id, action: "event.update", target_type: "site_events", target_id: id, metadata: input });
+    res.json({ event: siteEventView(data as SiteEventRecord) });
+  }));
+  router.delete("/staff/events/:id", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
+    await requireOwnerStaffRole(user.id);
+    const id = z.string().uuid().parse(req.params.id);
+    const { error } = await db().from("site_events").delete().eq("id", id);
+    legacyXError(error, "Unable to delete the event");
+    await db().from("audit_logs").insert({ actor_type: "user", actor_id: user.id, action: "event.delete", target_type: "site_events", target_id: id, metadata: {} });
+    res.json({ deleted: true });
   }));
   // Staff → Roles (Owner only): which commands each in-game role may run, on which kinds of server, and its immunity (gameRoles.ts, table game_roles).
   // The plugin reads the result with the next staff check (within a minute); no row means the built-in role.
