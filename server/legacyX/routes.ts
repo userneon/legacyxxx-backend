@@ -6892,7 +6892,7 @@ export function createLegacyXRouter() {
     if (!itemRes.data || (itemRes.data as DbRow).enabled !== true || !ownedRes.data || !stillRunning((ownedRes.data as DbRow).expires_at)) return null;
     const base = textValue((modelRes.data as DbRow | null)?.anim_base);
     // "default": the model was made for the plain knife's skeleton, so the player's own knife pick (butterfly ...) is dropped and the plain knife stays under it.
-    return base === "m9" ? { defindex: 508, designer: "weapon_knife_m9_bayonet" } : base === "bayonet" ? { defindex: 500, designer: "weapon_bayonet" } : base === "default" ? { defindex: 0, designer: null } : null;
+    return base === "m9" ? { defindex: 508, designer: "weapon_knife_m9_bayonet" } : base === "bayonet" ? { defindex: 500, designer: "weapon_bayonet" } : base === "stiletto" ? { defindex: 522, designer: "weapon_knife_stiletto" } : base === "default" ? { defindex: 0, designer: null } : null;
   };
   router.get("/plugin/skinchanger/loadout", skinchangerPluginLoadoutRateLimit, pluginRoute("skinchanger:read", async (req, res, plugin) => {
     const steamId = z.string().regex(/^\d{15,20}$/).parse(req.query.steam_id);
