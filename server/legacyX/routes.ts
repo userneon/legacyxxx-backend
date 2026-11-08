@@ -2063,7 +2063,7 @@ export function createLegacyXRouter() {
   });
   router.use("/cosmetics", cosmeticRateLimit);
   const cosmeticIdSchema = z.string().regex(/^[a-z0-9-]{2,40}$/);
-  const COSMETIC_KINDS = ["frame", "name_color", "name_glow", "banner", "title", "smoke_color", "grenade_trail", "grenade_light", "flash_effect", "background", "model_knife", "model_deagle", "model_ak47"] as const;
+  const COSMETIC_KINDS = ["frame", "name_color", "name_glow", "banner", "title", "smoke_color", "grenade_trail", "grenade_light", "flash_effect", "background", "model_knife", "model_deagle", "model_ak47", "model_agent_ct", "model_agent_t"] as const;
   type CosmeticKind = (typeof COSMETIC_KINDS)[number];
   // Bought cosmetics are rented: a share of the item's price (its 30-day price) buys 1 day, 7 days or 30 days (owner request 2026-11-02: no forever, and the same three lengths for every item, the Crystal Orb and the backgrounds too).
   const COSMETIC_DURATIONS = [
@@ -2226,6 +2226,9 @@ export function createLegacyXRouter() {
       equippedModelKnife: wearing.get("model_knife") ?? null,
       equippedModelDeagle: wearing.get("model_deagle") ?? null,
       equippedModelAk47: wearing.get("model_ak47") ?? null,
+      /** Agent models worn (owner request 2026-11-08): one for the CT side and one for the T side. */
+      equippedModelAgentCt: wearing.get("model_agent_ct") ?? null,
+      equippedModelAgentT: wearing.get("model_agent_t") ?? null,
       /** Grenades that wear something other than the default (owner request 2026-10-26): { he: { grenade_trail: "trail-comet" }, flash: { grenade_trail: null } }, null meaning nothing on it. */
       nadeSlots: slotRows.error ? {} : slotOverrides((slotRows.data ?? []) as Array<{ nade: string; kind: string; item_id: string | null }>),
       frames: ofKind("frame"),
@@ -2245,6 +2248,9 @@ export function createLegacyXRouter() {
       modelKnives: ofKind("model_knife"),
       modelDeagles: ofKind("model_deagle"),
       modelAk47s: ofKind("model_ak47"),
+      /** Agent models (game server): a player model for each side. */
+      modelAgentsCt: ofKind("model_agent_ct"),
+      modelAgentsT: ofKind("model_agent_t"),
     });
   }));
   const COSMETIC_UNDO_SECONDS = 7;
@@ -6809,7 +6815,7 @@ export function createLegacyXRouter() {
     const slotRows = (slotRes.error ? [] : slotRes.data ?? []) as Array<{ nade: string; kind: string; item_id: string | null }>;
     const trailBy = itemsByNade("grenade_trail", wornBy.get("grenade_trail") ?? null, slotRows);
     const lightBy = itemsByNade("grenade_light", wornBy.get("grenade_light") ?? null, slotRows);
-    const modelWorn = ["model_knife", "model_deagle", "model_ak47"].map((kind) => wornBy.get(kind)).filter((id): id is string => Boolean(id));
+    const modelWorn = ["model_knife", "model_deagle", "model_ak47", "model_agent_ct", "model_agent_t"].map((kind) => wornBy.get(kind)).filter((id): id is string => Boolean(id));
     const wanted = new Set<string>([...modelWorn, wornBy.get("smoke_color"), wornBy.get("flash_effect"), ...Object.values(trailBy), ...Object.values(lightBy), wornBy.get("grenade_trail"), wornBy.get("grenade_light")].filter((id): id is string => Boolean(id)));
     const { data: itemRows } = wanted.size ? await db().from("cosmetic_items").select("id,kind,unlock,color,color2,fx").in("id", Array.from(wanted)).eq("enabled", true) : { data: [] as DbRow[] };
     const itemById = new Map(((itemRows ?? []) as DbRow[]).map((row) => [textValue(row.id), row]));
