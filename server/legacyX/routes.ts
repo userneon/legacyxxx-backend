@@ -59,6 +59,7 @@ import { PROFILE_NAME_MAX, PROFILE_SECTIONS, bestNameMatch, escapeLike, hiddenFo
 import { PERK_DAYS, PERK_QUOTAS, grantAfterPurchase, isPerkTier, perkActive, perkCheckoutProblem, perkPool, savePicks, type PerkGrant, type PerkTier } from "./perks";
 import { ADMIN_LEVEL_KEYS, ADMIN_LEVELS, extraCommandChoices, extraCommandsProblem, isAdminLevel } from "./adminLevels";
 import { hostActionSchema, hostConfigs, runHost } from "./hostAgent";
+import { apnsConfig, createApnsSender, pushDeviceSchema, pushTick, supabasePushStore } from "./push";
 import { grantQaCosmetics, isActiveQa, revokeStaleQaCosmetics } from "./qaAccess";
 import { activeBannedUserIds, activeBans, bannedPlayer, checkBansSchema, issueBan, issueBanSchema, issueIpBan, issueIpBanSchema, listActiveBans, revokeAllBans, revokeAllBansSchema, revokeBans, revokeBanSchema, revokeIpBans, revokeIpBanSchema } from "./bans";
 import { authorizationRequestSchema, loadGameRoles, resolveAuthorizations } from "./adminAuthorization";
@@ -1911,6 +1912,32 @@ export function createLegacyXRouter() {
     res.json({ entries, unreadCount: entries.filter(entry => entry.readAt === null).length });
   }));
 
+  // Phone push (iOS app): the app sends its APNs token after sign-in; the worker below pushes new bell notifications to it.
+  router.put("/push/devices", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
+    const input = pushDeviceSchema.parse(req.body);
+    const { error } = await db().from("push_devices").upsert({ user_id: user.id, token: input.token, environment: input.environment, last_seen_at: new Date().toISOString() }, { onConflict: "token" });
+    legacyXError(error, "Unable to save the device");
+    res.json({ ok: true, enabled: apnsConfig() !== null });
+  }));
+  router.delete("/push/devices", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
+    const input = z.object({ token: z.string().regex(/^[0-9a-fA-F]{32,200}$/) }).strict().parse(req.body);
+    const { error } = await db().from("push_devices").delete().eq("user_id", user.id).eq("token", input.token);
+    legacyXError(error, "Unable to remove the device");
+    res.json({ ok: true });
+  }));
+  {
+    const apns = apnsConfig();
+    if (apns) {
+      const send = createApnsSender(apns);
+      const store = supabasePushStore(db as never);
+      let busy = false;
+      setInterval(() => {
+        if (busy) return;
+        busy = true;
+        void pushTick(store, send).catch((error) => console.error(`[push] ${error instanceof Error ? error.message : "failed"}`)).finally(() => { busy = false; });
+      }, 15_000).unref();
+    }
+  }
   router.post("/notifications/read", userRoute(async (req, res, user) => {
     const input = z.object({ ids: z.array(userIdSchema).max(100).optional() }).parse(req.body ?? {});
     let query = db().from("notifications").update({ read_at: new Date().toISOString() }).eq("user_id", user.id).is("read_at", null);
