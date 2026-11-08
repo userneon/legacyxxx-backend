@@ -1912,6 +1912,15 @@ export function createLegacyXRouter() {
     res.json({ entries, unreadCount: entries.filter(entry => entry.readAt === null).length });
   }));
 
+  // Account deletion request (the iOS app and the website's Settings). Only a request is stored: staff look at each one, because deleting an
+  // account must not wipe a ban or a penalty. The player is told it is received and that a ban stays on record.
+  router.post("/account/deletion-request", sensitiveMutationRateLimit, userRoute(async (_req, res, user) => {
+    const { data: row } = await db().from("users").select("steam_id,username").eq("id", user.id).maybeSingle();
+    const { error } = await db().from("account_deletion_requests").upsert({ user_id: user.id, steam_id: row?.steam_id ?? null, username: row?.username ?? null, status: "open", requested_at: new Date().toISOString(), handled_at: null }, { onConflict: "user_id" });
+    legacyXError(error, "Unable to save the request");
+    await db().from("audit_logs").insert({ actor_type: "user", actor_id: user.id, action: "account.deletion_request", target_type: "user", target_id: user.id, metadata: {} });
+    res.json({ ok: true });
+  }));
   // Phone push (iOS app): the app sends its APNs token after sign-in; the worker below pushes new bell notifications to it.
   router.put("/push/devices", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
     const input = pushDeviceSchema.parse(req.body);
