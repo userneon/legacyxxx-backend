@@ -3,11 +3,14 @@
 //   id | English name | Mongolian name | 30-day price in LX | replaces | world model | view model | anim base | notes
 //   katana-1 | Katana One | Катана 1 | 12000 | knife | models/weapons/legacyx/katana_01/katana_01.vmdl | models/weapons/legacyx/katana_01/katana_01_v.vmdl | m9 | uses the M9 animations
 //
-// "replaces" is knife, deagle or ak47. "anim base" is m9, bayonet, stiletto or default (the plain knife) for a knife and empty for the others. The paths are the game's names (.vmdl, not .vmdl_c).
+// "replaces" is knife, deagle or ak47. "anim base" is the knife the model plays right on for a knife (m9, bayonet, stiletto, karambit, butterfly, paracord ... the list below, or default = the plain knife), empty for a knife that has none (the player's own knife pick stays under it) and always empty for the others. The paths are the game's names (.vmdl, not .vmdl_c).
 // Every item is added switched OFF: check each in game, then switch it on in Staff -> Shop -> Cosmetics.
 //
 //   node scripts/make-weapon-models-sql.mjs ../legacyxxx-workshop/compiled/MODELS.txt > supabase/legacy_x_weapon_models_items.sql
 import { readFileSync } from "node:fs";
+
+// The same list as ANIMATION_KNIVES in server/legacyX/routes.ts, AnimKnives in the plugin and the SQL check (supabase/legacy_x_weapon_models_all_knives.sql).
+const ANIM_BASES = ["m9", "bayonet", "classic", "flip", "gut", "karambit", "huntsman", "falchion", "bowie", "butterfly", "daggers", "paracord", "survival", "ursus", "navaja", "nomad", "stiletto", "talon", "skeleton", "default"];
 
 const file = process.argv[2];
 if (!file) { console.error("Usage: node scripts/make-weapon-models-sql.mjs <MODELS.txt>"); process.exit(1); }
@@ -31,7 +34,7 @@ readFileSync(file, "utf8").split(/\r?\n/).forEach((raw, index) => {
   for (const [label, path] of [["world model", world], ["view model", view]]) {
     if (!/^[a-z0-9_/.\-]{4,200}\.vmdl$/.test(path ?? "")) return problems.push(`${where}: the ${label} path must be lower-case, end in .vmdl (not .vmdl_c) and use /`);
   }
-  if (weapon === "knife" ? !["m9", "bayonet", "stiletto", "default"].includes(animBase) : animBase !== "") return problems.push(`${where}: the anim base is m9, bayonet, stiletto or default for a knife and empty for the others`);
+  if (weapon === "knife" ? animBase !== "" && !ANIM_BASES.includes(animBase) : animBase !== "") return problems.push(`${where}: the anim base is one of ${ANIM_BASES.join(", ")} (or empty) for a knife and empty for the others`);
   items.push(`  (${quote(id)}, ${quote(WEAPONS[weapon])}, ${quote(nameEn)}, ${quote(nameMn)}, 'coin', ${Number(price)}, '', ${sort++}, 3, false, false)`);
   links.push(`  (${quote(id)}, ${quote(weapon)}, ${quote(world)}, ${quote(view)}, ${animBase ? quote(animBase) : "NULL"})`);
 });
