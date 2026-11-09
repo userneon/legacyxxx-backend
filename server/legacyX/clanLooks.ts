@@ -27,7 +27,10 @@ export interface ClanLookItem {
 }
 
 
-export const CLAN_LOOK_ITEMS: ClanLookItem[] = [
+/** 1 LX = 1 MNT (owner request 2026-11-09): a clan look costs five times the old number, to the nearest 500 and at least 1,000. */
+const lxPrice = (old: number) => (old <= 0 ? 0 : Math.max(1_000, Math.round((old * 5) / 500) * 500));
+
+const RAW_CLAN_LOOK_ITEMS: ClanLookItem[] = [
   // Colour it yourself (owner request 2026-10-26): one item per design, the clan picks its colours (clan_look_custom); grey until it does.
   { id: "tag-custom", kind: "tag_color", name: "Solid", price: 150, rarity: 1, color: "#d4d4d4", custom: true },
   { id: "tag-gradient", kind: "tag_color", name: "Gradient", price: 350, rarity: 2, color: "#d4d4d4", fx: "gradient", custom: true },
@@ -77,6 +80,8 @@ export const CLAN_LOOK_ITEMS: ClanLookItem[] = [
   { id: "page-custom-vortex", kind: "page", name: "Galaxy", price: 1600, rarity: 4, from: "#d4d4d4", to: "#0a0a0a", effect: "vortex", custom: true },
   { id: "page-custom-hex", kind: "page", name: "Honeycomb", price: 1300, rarity: 4, from: "#d4d4d4", to: "#0a0a0a", effect: "hex", custom: true },
 ];
+
+export const CLAN_LOOK_ITEMS: ClanLookItem[] = RAW_CLAN_LOOK_ITEMS.map((item) => ({ ...item, price: lxPrice(item.price) }));
 
 const ITEM_BY_ID = new Map(CLAN_LOOK_ITEMS.map((item) => [item.id, item]));
 export const clanLookItem = (id: string) => ITEM_BY_ID.get(id);

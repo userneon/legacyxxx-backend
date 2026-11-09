@@ -117,30 +117,35 @@ export async function loadWallet(db: Db, userId: string, limit = 20): Promise<Wa
  * Creating a clan costs `clanFee` (owner decision 2026-10-21: 3,000 LX, which is 20,000 MNT when topped up, so 1 LX is about
  * 6.67 MNT): about 60 wins or 150 losses.
  */
+/**
+ * 1 LX = 1 MNT (owner request 2026-11-09, "1 LX = 1 tugrug; a clan 50,000"). Top-up packages are priced in MNT and grant at least as many LX as MNT.
+ * What a player earns is five times what it was, like the shop's small items, so playing still buys about the same share of the shop; a clan is
+ * the one thing set by hand, 50,000 LX.
+ */
 export const COIN_RULES = {
-  match: 20,
-  win: 30,
-  clanFee: 3_000,
-  clanRename: 200,
+  match: 100,
+  win: 150,
+  clanFee: 50_000,
+  clanRename: 1_500,
   /** Extra member slots: `clanSlotStep` more places for `clanSlotPrice`, up to `clanSlotCap` members. */
-  clanSlotPrice: 300,
+  clanSlotPrice: 2_000,
   clanSlotStep: 2,
   clanSlotCap: 50,
   /** Every new wallet starts with this. */
-  welcome: 50,
+  welcome: 250,
   /** The daily EXP limit pays this share of the coins, like it does for EXP. */
   overDailyLimitShare: 0.25,
   /** The first ranked win of each (Ulaanbaatar) day. */
-  firstWinOfDay: 25,
+  firstWinOfDay: 125,
   /** Each rank a player reaches for the first time. Falling and climbing back pays nothing again. */
-  rankUp: 50,
+  rankUp: 250,
   /** Linking a Discord account, once per player. */
-  discordLink: 50,
+  discordLink: 250,
   /** Ranked matches on 3 days in a row, then every 7th day of the run (3, 7, 10, 14 ...). */
-  streakThree: 30,
-  streakSeven: 100,
-  /** The Genesis pack in LX (owner request 2026-10-26): its 30,000 MNT at the clan fee's rate (3,000 LX = 20,000 MNT, 1 LX about 6.67 MNT). */
-  founderPrice: 4_500,
+  streakThree: 150,
+  streakSeven: 500,
+  /** The Genesis pack in LX: its 30,000 MNT at 1 LX = 1 MNT (owner request 2026-11-09). The pack is off sale. */
+  founderPrice: 30_000,
 } as const;
 
 /** The earning rules as the website shows them (one source: COIN_RULES). */
@@ -393,10 +398,10 @@ export async function loadWalletSummary(db: Db, userId: string, now = new Date()
 export const TRANSFER_RULES = {
   /** Share of every transfer that is not passed on (rounded up, so the smallest transfer still pays 1 LX). */
   feePercent: 5,
-  min: 10,
-  max: 5_000,
+  min: 50,
+  max: 25_000,
   /** What one player may send in one Ulaanbaatar day, and in any one hour (how many transfers). */
-  dailyMax: 20_000,
+  dailyMax: 100_000,
   perHour: 5,
   /** An account must have played this many ranked matches before it can send (a new account only receives). */
   minRankedMatches: 1,

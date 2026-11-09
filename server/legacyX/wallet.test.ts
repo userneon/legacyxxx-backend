@@ -54,10 +54,10 @@ describe("match coins", () => {
     expect(matchCoins({ outcome: "win", countsAsRankedMatch: false })).toBe(0);
   });
 
-  it("a clan costs 3,000 LX: about 60 wins or 150 played matches", () => {
-    expect(COIN_RULES.clanFee).toBe(3_000);
-    expect(COIN_RULES.clanFee / (COIN_RULES.match + COIN_RULES.win)).toBe(60);
-    expect(COIN_RULES.clanFee / COIN_RULES.match).toBe(150);
+  it("a clan costs 50,000 LX (1 LX = 1 MNT): 200 wins or 500 played matches", () => {
+    expect(COIN_RULES.clanFee).toBe(50_000);
+    expect(COIN_RULES.clanFee / (COIN_RULES.match + COIN_RULES.win)).toBe(200);
+    expect(COIN_RULES.clanFee / COIN_RULES.match).toBe(500);
   });
 
   it("pays each player once per match, skips leavers, and a failing wallet never throws", async () => {
@@ -69,7 +69,7 @@ describe("match coins", () => {
       { userId: "u3", outcome: "loss" as const, countsAsRankedMatch: true, breakdown: { limited: "daily" as const } },
     ];
     expect(await awardMatchCoins(db, "m1", players)).toBe(1);
-    expect(calls.map((c) => [c.p_user_id, c.p_amount, c.p_ref])).toEqual([["u1", 50, "match:m1"], ["u3", 5, "match:m1"]]);
+    expect(calls.map((c) => [c.p_user_id, c.p_amount, c.p_ref])).toEqual([["u1", COIN_RULES.match + COIN_RULES.win, "match:m1"], ["u3", Math.floor(COIN_RULES.match * COIN_RULES.overDailyLimitShare), "match:m1"]]);
 
     const logged: string[] = [];
     const broken = { rpc: async () => ({ data: null, error: { message: "relation does not exist" } }) } as any;
@@ -79,12 +79,12 @@ describe("match coins", () => {
 });
 
 describe("welcome bonus and penalty", () => {
-  it("every new wallet starts with 50", async () => {
-    expect(COIN_RULES.welcome).toBe(50);
+  it("every new wallet starts with 250", async () => {
+    expect(COIN_RULES.welcome).toBe(250);
     const calls: unknown[] = [];
     const db = { rpc: async (name: string, args: unknown) => (calls.push([name, args]), { data: 50, error: null }) } as any;
     expect(await ensureWallet(db, USER)).toBe(50);
-    expect(calls).toEqual([["wallet_ensure", { p_user_id: USER, p_welcome: 50 }]]);
+    expect(calls).toEqual([["wallet_ensure", { p_user_id: USER, p_welcome: COIN_RULES.welcome }]]);
   });
 
   it("a penalty reports what it really took, which can be less than asked", async () => {
