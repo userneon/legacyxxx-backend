@@ -6878,6 +6878,16 @@ export function createLegacyXRouter() {
   });
 
   /** Read on demand when a player types !rs. No queue and no session: the plugin applies what this returns. */
+  /** The knives a model can be made for the animations of (`weapon_models.anim_base`): the knife that must sit under the model so its graph plays. Same list as the plugin's `AnimKnives` and the SQL check. */
+  const ANIMATION_KNIVES: Record<string, { defindex: number; designer: string }> = {
+    bayonet: { defindex: 500, designer: "weapon_bayonet" }, classic: { defindex: 503, designer: "weapon_knife_css" }, flip: { defindex: 505, designer: "weapon_knife_flip" },
+    gut: { defindex: 506, designer: "weapon_knife_gut" }, karambit: { defindex: 507, designer: "weapon_knife_karambit" }, m9: { defindex: 508, designer: "weapon_knife_m9_bayonet" },
+    huntsman: { defindex: 509, designer: "weapon_knife_tactical" }, falchion: { defindex: 512, designer: "weapon_knife_falchion" }, bowie: { defindex: 514, designer: "weapon_knife_survival_bowie" },
+    butterfly: { defindex: 515, designer: "weapon_knife_butterfly" }, daggers: { defindex: 516, designer: "weapon_knife_push" }, paracord: { defindex: 517, designer: "weapon_knife_cord" },
+    survival: { defindex: 518, designer: "weapon_knife_canis" }, ursus: { defindex: 519, designer: "weapon_knife_ursus" }, navaja: { defindex: 520, designer: "weapon_knife_gypsy_jackknife" },
+    nomad: { defindex: 521, designer: "weapon_knife_outdoor" }, stiletto: { defindex: 522, designer: "weapon_knife_stiletto" }, talon: { defindex: 523, designer: "weapon_knife_widowmaker" },
+    skeleton: { defindex: 525, designer: "weapon_knife_skeleton" },
+  };
   /** The knife a worn knife model needs under it for its animations (M9, Bayonet, Stiletto, Karambit or Butterfly), or null: nothing worn, switched off, run out, or no animation base. */
   const wornKnifeAnimation = async (userId: string): Promise<{ defindex: number; designer: string | null } | null> => {
     const { data: worn, error: wornError } = await db().from("cosmetic_equipped").select("item_id").eq("user_id", userId).eq("kind", "model_knife").maybeSingle();
@@ -6892,7 +6902,7 @@ export function createLegacyXRouter() {
     if (!itemRes.data || (itemRes.data as DbRow).enabled !== true || !ownedRes.data || !stillRunning((ownedRes.data as DbRow).expires_at)) return null;
     const base = textValue((modelRes.data as DbRow | null)?.anim_base);
     // "default": the model was made for the plain knife's skeleton, so the player's own knife pick (butterfly ...) is dropped and the plain knife stays under it.
-    return base === "m9" ? { defindex: 508, designer: "weapon_knife_m9_bayonet" } : base === "bayonet" ? { defindex: 500, designer: "weapon_bayonet" } : base === "stiletto" ? { defindex: 522, designer: "weapon_knife_stiletto" } : base === "karambit" ? { defindex: 507, designer: "weapon_knife_karambit" } : base === "butterfly" ? { defindex: 515, designer: "weapon_knife_butterfly" } : base === "default" ? { defindex: 0, designer: null } : null;
+    return base === "default" ? { defindex: 0, designer: null } : ANIMATION_KNIVES[base] ?? null;
   };
   router.get("/plugin/skinchanger/loadout", skinchangerPluginLoadoutRateLimit, pluginRoute("skinchanger:read", async (req, res, plugin) => {
     const steamId = z.string().regex(/^\d{15,20}$/).parse(req.query.steam_id);
