@@ -187,12 +187,29 @@ describe("wallet summary", () => {
     expect(summary.weekEarned).toBe(105);
     expect(summary.todayMatches).toBe(2);
     expect(summary.weekMatches).toBe(3);
-    // A refund is not income, and old spending still counts toward the total.
-    expect(summary.spentTotal).toBe(750);
-    expect(summary.spentCount).toBe(2);
+    // A refund is not income, and it comes off what was spent (450 spent and given back, 300 spent): 300 over one purchase.
+    expect(summary.spentTotal).toBe(300);
+    expect(summary.spentCount).toBe(1);
     expect(summary.daily).toHaveLength(14);
     expect(summary.daily[13]).toEqual({ day: "2026-10-10", earned: 75 });
     expect(summary.daily[12].earned).toBe(30);
+  });
+
+  it("does not count top-ups, received transfers, balance resets or refunds as earned", () => {
+    const summary = buildWalletSummary(
+      [
+        { amount: 100, kind: "grant", at: hoursAgo(1), ref: "match:1" },
+        { amount: 5_000, kind: "grant", at: hoursAgo(2), ref: "topup:wire:abc" },
+        { amount: 700, kind: "grant", at: hoursAgo(3), ref: "transfer:xyz:in" },
+        { amount: 120, kind: "adjust", at: hoursAgo(4), ref: "lx-reset:20261109" },
+        { amount: 90, kind: "refund", at: hoursAgo(5), ref: "buy:1:refund" },
+      ],
+      [],
+      now,
+    );
+    expect(summary.todayEarned).toBe(100);
+    expect(summary.weekEarned).toBe(100);
+    expect(summary.daily[13].earned).toBe(100);
   });
 
   it("counts the days in a row and marks the week", () => {

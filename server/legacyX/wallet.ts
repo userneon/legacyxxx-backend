@@ -331,9 +331,16 @@ export interface WalletSummary {
   streakDays: number;
 }
 
+/** What counts as LX earned: grants from play, bonuses and creator codes. A top-up is bought, a transfer is received, a balance reset is an adjustment and a refund is money back, so none of those is earnings. */
+function isEarning(line: { amount: number; kind: string; ref?: string | null }): boolean {
+  if (line.amount <= 0 || line.kind !== "grant") return false;
+  const ref = line.ref ?? "";
+  return !ref.startsWith("topup:") && !ref.startsWith("transfer:");
+}
+
 /** Turns ledger lines and ranked-match times into the wallet's numbers. Pure, so it can be tested. */
 export function buildWalletSummary(
-  ledger: { amount: number; kind: string; at: string }[],
+  ledger: { amount: number; kind: string; at: string; ref?: string | null }[],
   matchTimes: string[],
   now: Date,
 ): WalletSummary {
@@ -341,18 +348,27 @@ export function buildWalletSummary(
   const dayAt = (offset: number) => playDay(new Date(now.getTime() - offset * DAY_MS));
   const days14 = Array.from({ length: 14 }, (_, index) => dayAt(13 - index));
   const earnedBy = new Map<string, number>(days14.map((day) => [day, 0]));
-  let spentTotal = 0;
-  let spentCount = 0;
+  let spent = 0;
+  let spentLines = 0;
+  let refunded = 0;
+  let refundLines = 0;
   for (const line of ledger) {
     if (line.kind === "spend" && line.amount < 0) {
-      spentTotal += -line.amount;
-      spentCount += 1;
+      spent += -line.amount;
+      spentLines += 1;
     }
-    if (line.amount > 0 && line.kind !== "refund") {
+    // A refund undoes a purchase that failed or was undone, so it comes off what was spent.
+    if (line.kind === "refund" && line.amount > 0) {
+      refunded += line.amount;
+      refundLines += 1;
+    }
+    if (isEarning(line)) {
       const day = playDay(new Date(line.at));
       if (earnedBy.has(day)) earnedBy.set(day, (earnedBy.get(day) ?? 0) + line.amount);
     }
   }
+  const spentTotal = Math.max(0, spent - refunded);
+  const spentCount = Math.max(0, spentLines - refundLines);
   const matchDays = matchTimes.map((at) => playDay(new Date(at)));
   const days7 = days14.slice(7);
   const playedDays = new Set(matchDays);
@@ -374,15 +390,16 @@ export async function loadWalletSummary(db: Db, userId: string, now = new Date()
   try {
     const since = new Date(now.getTime() - 15 * DAY_MS).toISOString();
     const [recent, spends, matches] = await Promise.all([
-      db.from("wallet_transactions").select("amount,kind,created_at").eq("user_id", userId).gte("created_at", since).limit(2000),
-      db.from("wallet_transactions").select("amount,kind,created_at").eq("user_id", userId).eq("kind", "spend").limit(5000),
+      db.from("wallet_transactions").select("id,amount,kind,ref,created_at").eq("user_id", userId).gte("created_at", since).limit(2000),
+      db.from("wallet_transactions").select("id,amount,kind,ref,created_at").eq("user_id", userId).in("kind", ["spend", "refund"]).limit(5000),
       db.from("competitive_match_exp").select("created_at").eq("user_id", userId).gte("created_at", since).limit(2000),
     ]);
     if (recent.error) throw recent.error;
     if (spends.error) throw spends.error;
     if (matches.error) throw matches.error;
-    const rows = new Map<string, { amount: number; kind: string; at: string }>();
-    for (const row of [...((recent.data ?? []) as Record<string, unknown>[]), ...((spends.data ?? []) as Record<string, unknown>[])]) rows.set(`${row.created_at}|${row.kind}|${row.amount}`, { amount: Number(row.amount), kind: String(row.kind), at: String(row.created_at) });
+    // Each line once, by its own id (two equal lines at the same moment are two lines).
+    const rows = new Map<string, { amount: number; kind: string; at: string; ref: string | null }>();
+    for (const row of [...((recent.data ?? []) as Record<string, unknown>[]), ...((spends.data ?? []) as Record<string, unknown>[])]) rows.set(String(row.id), { amount: Number(row.amount), kind: String(row.kind), at: String(row.created_at), ref: row.ref == null ? null : String(row.ref) });
     return buildWalletSummary(Array.from(rows.values()), ((matches.data ?? []) as { created_at: string }[]).map((row) => row.created_at), now);
   } catch (error) {
     log("Unable to read the wallet summary", error);
