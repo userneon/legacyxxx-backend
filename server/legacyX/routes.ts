@@ -1,3 +1,4 @@
+import { getTikTokStats } from "./tiktokStats";
 import express, { Router, type NextFunction, type Request, type Response } from "express";
 import { randomBytes } from "node:crypto";
 import rateLimit, { ipKeyGenerator } from "express-rate-limit";
@@ -6574,6 +6575,11 @@ export function createLegacyXRouter() {
     // The three top boosters wear Gold, Silver and Bronze, which follow the ranking. Best effort too (the SQL may not be run yet).
     await syncBoosterPodium(db()).catch((error) => console.warn("[legacy-x-api] booster podium not synced", error?.message));
     res.json({ saved });
+  }));
+  // Home's TikTok card: followers and videos read from the public profile page by the server (tiktokStats.ts); no TIKTOK_URL, no card.
+  router.get("/public/social/tiktok", asyncRoute(async (_req, res) => {
+    res.set("Cache-Control", "public, max-age=300");
+    res.json({ tiktok: await getTikTokStats() });
   }));
   router.get("/public/discord/community", asyncRoute(async (req, res) => {
     const sort = z.enum(["boosts", "invites"]).catch("boosts").parse(req.query.sort ?? "boosts");
