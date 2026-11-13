@@ -2,6 +2,8 @@
 
 This repository runs as a single Node.js API process behind Nginx. It does **not** require Manus hosting. Nginx should proxy the `api.legacyx.cc` hostname to the private listener at `127.0.0.1:3000`.
 
+> **A new or rebuilt web VPS (v3.0):** `docs/V3_REBUILD.md` and `ops/v3-bootstrap.sh` do everything below in a few commands (packages, Nginx, certificates, `.env`, pm2, the website, the staff site and the bot), with nightly encrypted backups that leave the VPS. This page stays as the reference for what each step does.
+
 > The repository deliberately contains **no seed data, test users, store items, or plugin tokens**. Create real API tokens and operational content through your administrator workflow after deployment; do not place raw tokens in source control.
 
 ## Required environment
