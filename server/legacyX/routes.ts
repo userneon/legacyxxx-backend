@@ -4,6 +4,7 @@ import { randomBytes } from "node:crypto";
 import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
+import { consumeTikTokState, createTikTokState, fetchTikTokProfile, isTikTokState, linkTikTokAccount, ownTikTokLink, removeOwnTikTokLink, tiktokAuthorizeUrl, tiktokConfig, tiktokLinksFor } from "./tiktokOAuth";
 import { authorizeUrl, consumeOAuthState, createOAuthState, discordOAuthConfig, fetchDiscordIdentity, isOAuthState, linkDiscordAccount, ownDiscordLink, removeOwnDiscordLink } from "./discordOAuth";
 import { isReaction, tallyReactions } from "./reactions";
 import { mayApproveLifts, mayModerate, mayModerateClans, mayPenalize, mayTouchBan, needsLiftApproval, needsReview, termFields, type ModerationCapability } from "./moderation";
@@ -5159,6 +5160,7 @@ export function createLegacyXRouter() {
     const ranks = ids.length ? await db().from("competitive_player_profiles").select("user_id,rank_id,rank_name,rank_image_key").in("user_id", ids) : { data: [], error: null };
     const rankOf = new Map(((ranks.error ? [] : ranks.data) ?? []).map((row: DbRow) => [textValue(row.user_id), row]));
     const worn = await equippedCosmeticsFor(ids);
+    const tiktok = await tiktokLinksFor(db(), ids);
     const creators = sortCreators(rows.flatMap((row) => {
       const tier = creatorTier(row.tier);
       const account = firstRow(row.users) ?? {};
@@ -5173,6 +5175,8 @@ export function createLegacyXRouter() {
         label: CREATOR_TIER_LABEL[tier],
         bio: textValue(row.bio),
         links: cleanCreatorLinks(row.links),
+        /** Their TikTok, proven with TikTok's own sign-in (null when not connected). */
+        tiktok: tiktok.get(textValue(row.user_id)) ? { username: tiktok.get(textValue(row.user_id))!.username, followers: tiktok.get(textValue(row.user_id))!.followers } : null,
         rank: rank ? { id: numberValue(rank.rank_id), name: textValue(rank.rank_name), imageKey: textValue(rank.rank_image_key) || null } : null,
         frame: worn.get(textValue(row.user_id))?.frame ?? null,
         frameLook: worn.get(textValue(row.user_id))?.frameLook ?? null,
@@ -5851,6 +5855,55 @@ export function createLegacyXRouter() {
     if (!data || data.length === 0) apiError(403, "Only content creators can change this", "creator_required");
     await db().from("audit_logs").insert({ actor_type: "user", actor_id: user.id, action: "creator.links", target_type: "content_creators", target_id: user.id, metadata: { platforms: Object.keys(input.links) } });
     res.json({ links: input.links });
+  }));
+  // Connecting TikTok (owner request 2026-11-13, supabase/legacy_x_creator_tiktok.sql, tiktokOAuth.ts): a content creator proves their TikTok account with Login Kit.
+  const requireCreator = async (userId: string) => {
+    const { data, error } = await db().from("content_creators").select("user_id").eq("user_id", userId).maybeSingle();
+    legacyXError(error, "Unable to check the creator");
+    if (!data) apiError(403, "Only content creators can connect TikTok", "creator_required");
+  };
+  router.get("/creators/me/tiktok", userRoute(async (_req, res, user) => {
+    await requireCreator(user.id);
+    res.set("Cache-Control", "no-store");
+    res.json({ available: tiktokConfig() !== null, link: await ownTikTokLink(db(), user.id) });
+  }));
+  router.post("/creators/me/tiktok/start", sensitiveMutationRateLimit, userRoute(async (_req, res, user) => {
+    await requireCreator(user.id);
+    const config = tiktokConfig();
+    if (!config) apiError(503, "Connecting TikTok is not set up yet");
+    const state = await createTikTokState(db(), user.id);
+    res.set("Cache-Control", "no-store");
+    res.json({ url: tiktokAuthorizeUrl(config, state) });
+  }));
+  router.delete("/creators/me/tiktok", sensitiveMutationRateLimit, userRoute(async (_req, res, user) => {
+    await removeOwnTikTokLink(db(), user.id);
+    await db().from("audit_logs").insert({ actor_type: "user", actor_id: user.id, action: "creator.tiktok_unlinked", target_type: "content_creators", target_id: user.id, metadata: {} });
+    res.status(204).end();
+  }));
+  router.get("/auth/tiktok/callback", asyncRoute(async (req, res) => {
+    const back = (result: string) => res.set("Cache-Control", "no-store").redirect(302, `${steamOpenIdOrigin(req)}/creators?tiktok=${result}`);
+    const config = tiktokConfig();
+    const { code, state, error } = req.query as Record<string, unknown>;
+    if (!config) return back("unavailable");
+    if (typeof error === "string" || typeof code !== "string" || !code || code.length > 1024 || !isTikTokState(state)) return back("cancelled");
+    const userId = await consumeTikTokState(db(), state);
+    if (!userId) return back("expired");
+    try {
+      await requireCreator(userId);
+      const profile = await fetchTikTokProfile(config, code);
+      await linkTikTokAccount(db(), userId, profile);
+      // The verified account becomes the creator's TikTok link, so the button on their card points at the account they proved.
+      if (profile.username) {
+        const creator = await db().from("content_creators").select("links").eq("user_id", userId).maybeSingle();
+        const links = { ...cleanCreatorLinks((creator.data as DbRow | null)?.links), tiktok: `https://www.tiktok.com/@${profile.username}` };
+        await db().from("content_creators").update({ links }).eq("user_id", userId);
+      }
+      await db().from("audit_logs").insert({ actor_type: "user", actor_id: userId, action: "creator.tiktok_linked", target_type: "content_creators", target_id: userId, metadata: { username: profile.username } });
+    } catch (failure) {
+      console.warn("[legacy-x-api] TikTok link failed", failure instanceof Error ? failure.message : failure);
+      return back("failed");
+    }
+    return back("linked");
   }));
   // Creator codes (owner request 2026-11-01, supabase/legacy_x_creator_referrals.sql): a creator reads their code and who used it ...
   router.get("/creators/me/referral", userRoute(async (_req, res, user) => {
