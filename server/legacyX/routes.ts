@@ -4,6 +4,7 @@ import { randomBytes } from "node:crypto";
 import rateLimit, { ipKeyGenerator } from "express-rate-limit";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
+import { createReportSchema, REPORTS_PER_DAY, reportOutcomeMessage, resolveReportSchema } from "./playerReports";
 import { consumeTikTokState, createTikTokState, fetchTikTokProfile, isTikTokState, linkTikTokAccount, ownTikTokLink, removeOwnTikTokLink, tiktokAuthorizeUrl, tiktokConfig, tiktokLinksFor } from "./tiktokOAuth";
 import { authorizeUrl, consumeOAuthState, createOAuthState, discordOAuthConfig, fetchDiscordIdentity, isOAuthState, linkDiscordAccount, ownDiscordLink, removeOwnDiscordLink } from "./discordOAuth";
 import { isReaction, tallyReactions } from "./reactions";
@@ -4918,6 +4919,65 @@ export function createLegacyXRouter() {
   });
   router.post("/moderation/lift-requests/:requestId/approve", sensitiveMutationRateLimit, decideLift(true));
   router.post("/moderation/lift-requests/:requestId/decline", sensitiveMutationRateLimit, decideLift(false));
+  // Player reports (owner request 2026-11-13, supabase/legacy_x_player_reports.sql, playerReports.ts): a signed-in player reports another player from their
+  // profile; Admin and above read the queue on the staff site and answer. The reporter is told the outcome in the bell; the reported player never is.
+  router.post("/reports", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
+    const input = createReportSchema.parse(req.body);
+    if (input.reportedUserId === user.id) apiError(400, "You cannot report yourself");
+    const { data: target, error: targetError } = await db().from("users").select("id").eq("id", input.reportedUserId).maybeSingle();
+    legacyXError(targetError, "Unable to find that player");
+    if (!target) apiError(404, "That player was not found");
+    const since = new Date(Date.now() - 86_400_000).toISOString();
+    const recent = await db().from("player_reports").select("id", { count: "exact", head: true }).eq("reporter_id", user.id).gte("created_at", since);
+    legacyXError(recent.error, "Unable to check your reports");
+    if ((recent.count ?? 0) >= REPORTS_PER_DAY) apiError(429, `You can send ${REPORTS_PER_DAY} reports a day. Try again tomorrow.`, "report_limit");
+    const { data, error } = await db().from("player_reports").insert({ reporter_id: user.id, reported_id: input.reportedUserId, category: input.category, reason: input.reason, evidence_url: input.evidenceUrl ?? null }).select("id").single();
+    if (error?.code === "23505") apiError(409, "You already have an open report on this player", "report_open");
+    legacyXError(error, "Unable to send the report");
+    res.status(201).json({ id: textValue((data as DbRow).id) });
+  }));
+  router.get("/moderation/reports", userRoute(async (req, res, user) => {
+    await requireModerator(user.id, "mute");
+    const history = req.query.status === "closed";
+    let query = db().from("player_reports").select("id,category,reason,evidence_url,status,staff_note,created_at,handled_at,reporter_id,reported_id,reporter:users!player_reports_reporter_id_fkey(username,avatar,steam_id),reported:users!player_reports_reported_id_fkey(username,avatar,steam_id)");
+    query = history ? query.neq("status", "open").order("handled_at", { ascending: false }).limit(50) : query.eq("status", "open").order("created_at", { ascending: true }).limit(100);
+    const { data, error } = await query;
+    legacyXError(error, "Unable to load the reports");
+    const rows = (data ?? []) as DbRow[];
+    const reportedIds = Array.from(new Set(rows.map((row) => textValue(row.reported_id))));
+    const others = reportedIds.length ? await db().from("player_reports").select("reported_id").eq("status", "open").in("reported_id", reportedIds) : { data: [], error: null };
+    const openCount = new Map<string, number>();
+    for (const row of ((others.data ?? []) as DbRow[])) openCount.set(textValue(row.reported_id), (openCount.get(textValue(row.reported_id)) ?? 0) + 1);
+    const bans = reportedIds.length ? await db().from("penalties").select("user_id").in("user_id", reportedIds).eq("type", "ban").eq("is_unbanned", false) : { data: [], error: null };
+    const banned = new Set(((bans.data ?? []) as DbRow[]).map((row) => textValue(row.user_id)));
+    res.set("Cache-Control", "no-store");
+    res.json(rows.map((row) => {
+      const reporter = firstRow(row.reporter) ?? {};
+      const reported = firstRow(row.reported) ?? {};
+      return {
+        id: textValue(row.id), category: textValue(row.category), reason: textValue(row.reason), evidenceUrl: row.evidence_url == null ? null : textValue(row.evidence_url),
+        status: textValue(row.status), staffNote: row.staff_note == null ? null : textValue(row.staff_note), createdAt: textValue(row.created_at), handledAt: row.handled_at == null ? null : textValue(row.handled_at),
+        reporter: { username: textValue(reporter.username), avatar: textValue(reporter.avatar) || null, steamId: textValue(reporter.steam_id) },
+        reported: { username: textValue(reported.username), avatar: textValue(reported.avatar) || null, steamId: textValue(reported.steam_id), openReports: openCount.get(textValue(row.reported_id)) ?? 0, banned: banned.has(textValue(row.reported_id)) },
+      };
+    }));
+  }));
+  router.post("/moderation/reports/:reportId/resolve", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
+    const reportId = userIdSchema.parse(req.params.reportId);
+    const input = resolveReportSchema.parse(req.body);
+    await requireModerator(user.id, "mute");
+    const { data: report, error } = await db().from("player_reports").select("id,status,reporter_id,reported_id").eq("id", reportId).maybeSingle();
+    legacyXError(error, "Unable to load the report");
+    if (!report) apiError(404, "There is no such report");
+    if (report.status !== "open") apiError(409, "That report was already answered");
+    const decided = await db().from("player_reports").update({ status: input.outcome, handled_by: user.id, handled_at: new Date().toISOString(), staff_note: input.note || null }).eq("id", reportId).eq("status", "open").select("id");
+    legacyXError(decided.error, "Unable to save the answer");
+    if (!decided.data || decided.data.length === 0) apiError(409, "That report was already answered");
+    const message = reportOutcomeMessage(input.outcome);
+    await db().from("notifications").insert({ user_id: textValue(report.reporter_id), kind: "system", title: message.title, body: message.body, metadata: { kind: "report", reportId } });
+    await db().from("audit_logs").insert({ actor_type: "user", actor_id: user.id, action: `report.${input.outcome}`, target_type: "player_report", target_id: reportId, metadata: { reportedUserId: textValue(report.reported_id) } });
+    res.status(204).end();
+  }));
   router.put("/moderation/penalties/:penaltyId", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
     const penaltyId = userIdSchema.parse(req.params.penaltyId);
     const input = z.object({ reason: z.string().trim().min(1).max(200).optional(), durationMinutes: z.number().int().min(0).max(525_600).optional() }).strict().refine((value) => value.reason !== undefined || value.durationMinutes !== undefined, "A reason or a length of time is required").parse(req.body);
