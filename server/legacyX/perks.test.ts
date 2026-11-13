@@ -7,7 +7,7 @@ const running = (extra: Partial<PerkGrant> = {}): PerkGrant => ({ tier: "tier1",
 
 describe("paid ranks", () => {
   it("allow 3, 5 and 10 commands", () => {
-    expect(PERK_QUOTAS).toEqual({ tier1: 3, tier2: 5, tier3: 10 });
+    expect(PERK_QUOTAS).toEqual({ tier1: 3, tier2: 5, tier3: 10, tier4: 1, tier5: 15 });
   });
   it("offer only fun commands, nothing that punishes or runs the server", () => {
     const names = perkPool().map((command) => command.name);

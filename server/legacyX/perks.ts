@@ -1,18 +1,19 @@
 import { GAME_COMMANDS } from "./gameRoles";
 
 /**
- * Paid in-game ranks (owner request 2026-11-07): three tiers sold in the Shop for 14, 30 or 90 days, paid straight through Wire (QPay and the bank apps).
- * A tier gives a few commands the buyer picks from a pool of harmless ones: 3, 5 or 10. Names and prices live in `perk_tiers` (the Owner decides them,
+ * Paid in-game ranks (owner request 2026-11-07): tiers sold in the Shop for 14, 30 or 90 days (three at first, five since 2026-11-13), paid straight through Wire (QPay and the bank apps).
+ * A tier gives a few commands the buyer picks from a pool of harmless ones: 1, 3, 5, 10 or 15. Names and prices live in `perk_tiers` (the Owner decides them,
  * a tier is not for sale until it is enabled and has a price). The picks live on the player's grant (`perk_grants`).
  *
  * Picking: nothing has to be picked at once (closing the window leaves the picks open); the picks can be changed while they are not full; once all of the
  * tier's commands are picked they are locked until the rank is renewed, and a renewal opens them again.
  */
-export const PERK_TIER_KEYS = ["tier1", "tier2", "tier3"] as const;
+// tier1 Prestige, tier2 Imperial, tier3 Eternal (2026-11-07); tier4 Prime (below Prestige) and tier5 Sovereign (above Eternal) were added 2026-11-13. `perk_tiers.sort` orders them in the Shop.
+export const PERK_TIER_KEYS = ["tier1", "tier2", "tier3", "tier4", "tier5"] as const;
 export type PerkTier = (typeof PERK_TIER_KEYS)[number];
 export const PERK_DAYS = [14, 30, 90] as const;
 export type PerkDays = (typeof PERK_DAYS)[number];
-export const PERK_QUOTAS: Record<PerkTier, number> = { tier1: 3, tier2: 5, tier3: 10 };
+export const PERK_QUOTAS: Record<PerkTier, number> = { tier1: 3, tier2: 5, tier3: 10, tier4: 1, tier5: 15 };
 export const isPerkTier = (value: unknown): value is PerkTier => typeof value === "string" && (PERK_TIER_KEYS as readonly string[]).includes(value);
 export const isPerkDays = (value: unknown): value is PerkDays => typeof value === "number" && (PERK_DAYS as readonly number[]).includes(value);
 

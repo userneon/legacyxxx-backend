@@ -57,7 +57,7 @@ import { liftInfo } from "./penaltyLift";
 import { cleanPlayerConfig, playerConfigSchema } from "./playerConfig";
 import { menuLoadoutQuery, menuRarity, menuTiles, MENU_AGENT_TEAMS, MENU_SKIN_PAGE, MENU_SLOT_CATEGORY, entriesReplacedByEquip, menuAgentName, menuGunModel, menuSkinEquipBody, menuSkinOptionsBody, mergeMenuOptions, menuSkinUnequipBody, entriesRemovedByUnequip, menuSkinItemsQuery, menuSkinName, menuSkinSlotSchema, menuSkinTypesQuery, menuSlotKey, sharedGunEntryMovedTo, type LoadoutRow, type MenuSkinSlot } from "./menuSkins";
 import { PROFILE_NAME_MAX, PROFILE_SECTIONS, bestNameMatch, escapeLike, hiddenForViewer, loadoutShowcase, mapWinRates, normalizeHiddenSections, profileStats, buildBenchmark, BENCHMARK_MIN_MATCHES, staffCard, type ProfileSection } from "./profileOverview";
-import { PERK_DAYS, PERK_QUOTAS, grantAfterPurchase, isPerkTier, perkActive, perkCheckoutProblem, perkPool, savePicks, type PerkGrant, type PerkTier } from "./perks";
+import { PERK_DAYS, PERK_QUOTAS, PERK_TIER_KEYS, grantAfterPurchase, isPerkTier, perkActive, perkCheckoutProblem, perkPool, savePicks, type PerkGrant, type PerkTier } from "./perks";
 import { ADMIN_LEVEL_KEYS, ADMIN_LEVELS, extraCommandChoices, extraCommandsProblem, isAdminLevel } from "./adminLevels";
 import { hostActionSchema, hostConfigs, runHost } from "./hostAgent";
 import { apnsConfig, createApnsSender, pushDeviceSchema, pushTick, supabasePushStore } from "./push";
@@ -4390,7 +4390,7 @@ export function createLegacyXRouter() {
   }));
   // A QA tester switches on any rank for free, to try it (owner request 2026-11-07). It lasts while they are a tester; leaving QA takes it back.
   router.post("/perks/qa-activate", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
-    const input = z.object({ tier: z.enum(["tier1", "tier2", "tier3"]) }).strict().parse(req.body);
+    const input = z.object({ tier: z.enum(PERK_TIER_KEYS) }).strict().parse(req.body);
     if (!(await isActiveQa(db(), user.id))) apiError(403, "Only a QA tester can switch a rank on for free", "perk_not_qa");
     const current = await perkGrantOf(user.id);
     // A rank bought with money is not swapped out from under its owner.
@@ -4402,7 +4402,7 @@ export function createLegacyXRouter() {
     res.json({ grant: perkGrantView(await perkGrantOf(user.id)) });
   }));
   router.post("/perks/checkout", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
-    const input = z.object({ tier: z.enum(["tier1", "tier2", "tier3"]), days: z.union([z.literal(14), z.literal(30), z.literal(90)]) }).strict().parse(req.body);
+    const input = z.object({ tier: z.enum(PERK_TIER_KEYS), days: z.union([z.literal(14), z.literal(30), z.literal(90)]) }).strict().parse(req.body);
     const config = wireConfig();
     if (!config) apiError(503, "Payment is not set up yet", "perk_unavailable");
     const tiers = await perkTiersOpen();
