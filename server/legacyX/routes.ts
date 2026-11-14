@@ -52,6 +52,7 @@ import { cleanReferralCode, newReferralCode, referralRefusal } from "./referrals
 import { GAME_COMMANDS, GAME_MODES, GAME_ROLES, GAME_ROLE_LABELS, EXTRA_FLAGS, defaultGameRole, gameRoleConfigSchema, isGameRole } from "./gameRoles";
 import { frameLookSchema, readFrameLook, type FrameLook } from "./frameLook";
 import { backgroundLookSchema, isBackgroundItem, readBackgroundLook } from "./backgroundLook";
+import { PROFILE_BANNER_LIMITS, PROFILE_CUSTOMIZE_ITEM, cleanProfileLook, nameStyleOf, profileLookSchema, readProfileLook } from "./profileLook";
 import { ANNOUNCEMENT_MAX_AGE_HOURS, ANNOUNCEMENT_PAGE, announcementRow, announcementSchema, announcementView, type AnnouncementRecord } from "./announcements";
 import { ADMIN_CALL_COOLDOWN_SECONDS, ADMIN_CALL_MAX_AGE_HOURS, ADMIN_CALL_PAGE, adminCallRow, adminCallSchema, adminCallView, parseAfter, type AdminCallRecord } from "./adminCalls";
 import { TRANSFER_RULES, planTransfer, transferProblem, walletTransferSchema, COIN_RULES, NotEnoughCoinsError, applyWalletChange, awardDiscordLink, awardMatchBonuses, awardMatchCoins, clanPrices, earnRules, loadWallet, loadWalletSummary, penalizeWallet, walletGrantSchema, walletPenaltySchema } from "./wallet";
@@ -1627,7 +1628,7 @@ export function createLegacyXRouter() {
         steamBackground: steamMedia.background,
         steamMedia: { backgroundVideo: steamMedia.backgroundVideo, animatedAvatar: steamMedia.animatedAvatar, avatarFrame: steamMedia.avatarFrame },
         background: profileBackground,
-        frame: mine?.frame ?? null, frameLook: mine?.frame === "crystal-orb" ? profileFrameLook : null, nameStyle: mine?.nameStyle ?? null, banner: mine?.banner ?? null, title: mine?.title ?? null, founder,
+        frame: mine?.frame ?? null, frameLook: mine?.frame === "crystal-orb" ? profileFrameLook : null, nameStyle: mine?.nameStyle ?? null, banner: mine?.banner ?? null, bannerImage: mine?.bannerImage ?? null, title: mine?.title ?? null, founder,
       },
       viewer: { isOwner, isStaff },
       banned: bannedNow,
@@ -2080,7 +2081,7 @@ export function createLegacyXRouter() {
   });
   router.use("/cosmetics", cosmeticRateLimit);
   const cosmeticIdSchema = z.string().regex(/^[a-z0-9-]{2,40}$/);
-  const COSMETIC_KINDS = ["frame", "name_color", "name_glow", "banner", "title", "smoke_color", "grenade_trail", "grenade_light", "flash_effect", "background", "model_knife", "model_deagle", "model_ak47"] as const;
+  const COSMETIC_KINDS = ["frame", "name_color", "name_glow", "banner", "title", "smoke_color", "grenade_trail", "grenade_light", "flash_effect", "background", "model_knife", "model_deagle", "model_ak47", "profile_customize"] as const;
   type CosmeticKind = (typeof COSMETIC_KINDS)[number];
   // Bought cosmetics are rented: a share of the item's price (its 30-day price) buys 1 day, 7 days or 30 days (owner request 2026-11-02: no forever, and the same three lengths for every item, the Crystal Orb and the backgrounds too).
   const COSMETIC_DURATIONS = [
@@ -2096,10 +2097,17 @@ export function createLegacyXRouter() {
     legacyXError(error, "Unable to load cosmetics");
     return (data ?? []) as DbRow[];
   };
+  /** Which of these players have Profile customize running right now (their rental has not run out). */
+  const profileCustomizeUsers = async (userIds: string[]): Promise<string[]> => {
+    if (!userIds.length) return [];
+    const { data, error } = await db().from("cosmetic_owned").select("user_id,expires_at").eq("item_id", PROFILE_CUSTOMIZE_ITEM).in("user_id", userIds);
+    if (error) return [];
+    return ((data ?? []) as DbRow[]).filter((row) => stillRunning(row.expires_at)).map((row) => textValue(row.user_id));
+  };
   /** What each of these players wears: their frame (item id) and name style (plain colours); players with nothing are left out. */
   const equippedCosmeticsFor = async (userIds: string[]) => {
     const ids = Array.from(new Set(userIds.filter(Boolean)));
-    const worn = new Map<string, { frame: string | null; frameLook?: FrameLook | null; background?: string | null; banner: string | null; title: string | null; nameStyle: { color: string | null; glow: string | null; colorFx: string | null; glowFx: string | null } | null; perk?: { tier: string; name: string } | null }>();
+    const worn = new Map<string, { frame: string | null; frameLook?: FrameLook | null; background?: string | null; banner: string | null; bannerImage?: string | null; title: string | null; nameStyle: { color: string | null; glow: string | null; colorFx: string | null; glowFx: string | null; mode?: string; font?: string; color2?: string | null } | null; perk?: { tier: string; name: string } | null }>();
     if (!ids.length) return worn;
     // The colour each player picked for each design (name colours and glows are coloured by their wearer).
     const customRows = await db().from("cosmetic_custom").select("user_id,item_id,color,color2").in("user_id", ids);
@@ -2136,6 +2144,26 @@ export function createLegacyXRouter() {
       const looks = await db().from("frame_looks").select("user_id,look").in("user_id", orbWearers);
       if (!looks.error) for (const row of (looks.data ?? []) as DbRow[]) { const entry = worn.get(textValue(row.user_id)); if (entry) entry.frameLook = readFrameLook(row.look); }
     }
+    // Profile customize (owner request 2026-11-14): while the rental runs, the player's own name style and banner picture replace the old name items. Best effort: a missing table never breaks the lists.
+    const customizing = await profileCustomizeUsers(ids);
+    if (customizing.length) {
+      const [looks, banners] = await Promise.all([
+        db().from("profile_looks").select("user_id,name_mode,name_font,name_color,name_color2,name_glow").in("user_id", customizing),
+        db().from("profile_banners").select("user_id,updated_at").in("user_id", customizing),
+      ]);
+      if (!looks.error) for (const row of (looks.data ?? []) as DbRow[]) {
+        const userId = textValue(row.user_id);
+        const entry = worn.get(userId) ?? { frame: null, banner: null, title: null, nameStyle: null };
+        entry.nameStyle = nameStyleOf(readProfileLook(row));
+        worn.set(userId, entry);
+      }
+      if (!banners.error) for (const row of (banners.data ?? []) as DbRow[]) {
+        const userId = textValue(row.user_id);
+        const entry = worn.get(userId) ?? { frame: null, banner: null, title: null, nameStyle: null };
+        entry.bannerImage = `/api/v1/profile-banner/${userId}?v=${Date.parse(textValue(row.updated_at)) || 0}`;
+        worn.set(userId, entry);
+      }
+    }
     // A paid rank that is running (the Shop's Ranks) shows its emblem wherever the player's name does. Best effort: a missing table never breaks the lists.
     const grants = await db().from("perk_grants").select("user_id,tier").in("user_id", ids).gt("ends_at", new Date().toISOString());
     if (!grants.error && (grants.data ?? []).length) {
@@ -2153,7 +2181,7 @@ export function createLegacyXRouter() {
   /** The banner shown behind a player's card in lists: the one they wear, else their paid rank's own (owner request 2026-11-07), else none. */
   const bannerOf = (worn: Awaited<ReturnType<typeof equippedCosmeticsFor>>, userId: string) => worn.get(userId)?.banner ?? (worn.get(userId)?.perk ? `perk-${worn.get(userId)!.perk!.tier}` : null);
   /** The frame and name style fields every player card carries (null when nothing is worn). */
-  const lookOf = (worn: Awaited<ReturnType<typeof equippedCosmeticsFor>>, userId: string) => ({ frame: worn.get(userId)?.frame ?? null, frameLook: worn.get(userId)?.frameLook ?? null, nameStyle: worn.get(userId)?.nameStyle ?? null, perk: worn.get(userId)?.perk ?? null, banner: bannerOf(worn, userId) });
+  const lookOf = (worn: Awaited<ReturnType<typeof equippedCosmeticsFor>>, userId: string) => ({ frame: worn.get(userId)?.frame ?? null, frameLook: worn.get(userId)?.frameLook ?? null, nameStyle: worn.get(userId)?.nameStyle ?? null, perk: worn.get(userId)?.perk ?? null, banner: bannerOf(worn, userId), bannerImage: worn.get(userId)?.bannerImage ?? null });
   const cosmeticView = (item: DbRow, ownedIds: Set<string>, owners: Map<string, number>, endsAt: Map<string, string | null>) => ({
     id: textValue(item.id),
     name: textValue(item.name_en),
@@ -2206,6 +2234,10 @@ export function createLegacyXRouter() {
     const catalog = [...enabledCatalog, ...(retiredRows as DbRow[])];
     const endsAt = new Map<string, string | null>(runningRows.map((row) => [textValue(row.item_id), row.expires_at ? timestampValue(row.expires_at) : null]));
     const wearing = new Map(((equippedRows.data ?? []) as DbRow[]).filter((row) => textValue(catalog.find((item) => textValue(item.id) === textValue(row.item_id))?.unlock) !== "coin" || ownedIds.has(textValue(row.item_id))).map((row) => [textValue(row.kind), textValue(row.item_id)]));
+    const profileLookRow = user ? await db().from("profile_looks").select("name_mode,name_font,name_color,name_color2,name_glow").eq("user_id", user.id).maybeSingle() : { data: null, error: null };
+    const profileLookOwn = profileLookRow.error ? null : readProfileLook(profileLookRow.data as DbRow | null);
+    const profileBannerRow = user ? await db().from("profile_banners").select("updated_at").eq("user_id", user.id).maybeSingle() : { data: null, error: null };
+    const profileBannerOwn = !profileBannerRow.error && profileBannerRow.data ? `/api/v1/profile-banner/${user!.id}?v=${Date.parse(textValue((profileBannerRow.data as DbRow).updated_at)) || 0}` : null;
     const frameLookRow = user ? await db().from("frame_looks").select("look").eq("user_id", user.id).maybeSingle() : { data: null, error: null };
     const frameLookOwn = frameLookRow.error ? null : readFrameLook((frameLookRow.data as DbRow | null)?.look);
     const bgLookRows = user ? await db().from("background_looks").select("item_id,look").eq("user_id", user.id) : { data: [] as DbRow[], error: null };
@@ -2247,6 +2279,10 @@ export function createLegacyXRouter() {
       nadeSlots: slotRows.error ? {} : slotOverrides((slotRows.data ?? []) as Array<{ nade: string; kind: string; item_id: string | null }>),
       frames: ofKind("frame"),
       backgrounds: ofKind("background"),
+      profileCustomize: ofKind("profile_customize"),
+      /** What this player set under Profile customize (null: nothing yet) and whether they have a banner picture. */
+      profileLook: profileLookOwn,
+      profileBanner: profileBannerOwn,
       nameColors: ofKind("name_color"),
       nameGlows: ofKind("name_glow"),
       banners: ofKind("banner"),
@@ -2273,7 +2309,7 @@ export function createLegacyXRouter() {
     if (textValue(item.unlock) !== "coin") apiError(409, "This item is not for sale", "cosmetic_not_for_sale");
     const length = COSMETIC_DURATIONS.find((entry) => entry.key === input.duration)!;
     const price = Number(cosmeticPrices(numberValue(item.price))[length.key]);
-    const label = item.kind === "frame" ? "Frame" : item.kind === "name_color" ? "Name colour" : item.kind === "banner" ? "Banner" : item.kind === "title" ? "Title" : item.kind === "smoke_color" ? "Smoke colour" : item.kind === "grenade_trail" ? "Grenade trail" : item.kind === "grenade_light" ? "Grenade light" : item.kind === "flash_effect" ? "Flash effect" : String(item.kind).startsWith("model_") ? "Weapon model" : "Name glow";
+    const label = item.kind === "frame" ? "Frame" : item.kind === "name_color" ? "Name colour" : item.kind === "banner" ? "Banner" : item.kind === "title" ? "Title" : item.kind === "smoke_color" ? "Smoke colour" : item.kind === "grenade_trail" ? "Grenade trail" : item.kind === "grenade_light" ? "Grenade light" : item.kind === "flash_effect" ? "Flash effect" : String(item.kind).startsWith("model_") ? "Weapon model" : item.kind === "profile_customize" ? "Profile customize" : "Name glow";
     // Already yours: a rental is added on to the time left, and an item that is yours for good cannot be bought again.
     const { data: current, error: currentError } = await db().from("cosmetic_owned").select("expires_at,source").eq("user_id", user.id).eq("item_id", itemId).maybeSingle();
     legacyXError(currentError, "Unable to check your cosmetics");
@@ -2321,6 +2357,44 @@ export function createLegacyXRouter() {
     res.json({ undone: true, balance: refund.balance });
   }));
   // The knobs of a profile background the player owns (owner request 2026-11-02), one saved set per background.
+  // Profile customize (owner request 2026-11-14): the name style and the banner picture. Saving needs the rental to be running.
+  const requireProfileCustomize = async (userId: string) => {
+    if (!(await profileCustomizeUsers([userId])).length) apiError(403, "Profile customize is not active", "profile_customize_inactive");
+  };
+  router.put("/cosmetics/profile-look", userRoute(async (req, res, user) => {
+    await requireProfileCustomize(user.id);
+    const checked = cleanProfileLook(profileLookSchema.parse(req.body));
+    if (!checked.ok) apiError(400, checked.message);
+    const { look } = checked;
+    const saved = await db().from("profile_looks").upsert({ user_id: user.id, name_mode: look.mode, name_font: look.font, name_color: look.color, name_color2: look.color2, name_glow: look.glow, updated_at: new Date().toISOString() });
+    legacyXError(saved.error, "Unable to save the look");
+    res.json({ look });
+  }));
+  router.put("/cosmetics/profile-banner", sensitiveMutationRateLimit, express.raw({ type: () => true, limit: PROFILE_BANNER_LIMITS.maxBytes + 1 }), userRoute(async (req, res, user) => {
+    await requireProfileCustomize(user.id);
+    const bytes = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+    const verdict = checkClanArt("banner", bytes);
+    if (!verdict.ok) apiError(verdict.status, verdict.message);
+    if (bytes.length > PROFILE_BANNER_LIMITS.maxBytes) apiError(413, "The banner is larger than 5 MB");
+    const saved = await db().from("profile_banners").upsert({ user_id: user.id, mime: verdict.mime, data: `\\x${bytes.toString("hex")}`, updated_at: new Date().toISOString() });
+    legacyXError(saved.error, "Unable to save the banner");
+    res.json({ banner: `/api/v1/profile-banner/${user.id}?v=${Date.now()}` });
+  }));
+  router.delete("/cosmetics/profile-banner", sensitiveMutationRateLimit, userRoute(async (_req, res, user) => {
+    const removed = await db().from("profile_banners").delete().eq("user_id", user.id);
+    legacyXError(removed.error, "Unable to remove the banner");
+    res.status(204).end();
+  }));
+  // The picture itself: anyone may look (an <img> cannot send a token), but only while its owner still has Profile customize running.
+  router.get("/profile-banner/:userId", asyncRoute(async (req, res) => {
+    const userId = z.string().uuid().parse(req.params.userId);
+    if (!(await profileCustomizeUsers([userId])).length) apiError(404, "No picture");
+    const { data, error } = await db().from("profile_banners").select("mime,data").eq("user_id", userId).maybeSingle();
+    legacyXError(error, "Unable to load the picture");
+    if (!data) apiError(404, "No picture");
+    const hex = String(data.data);
+    res.set({ "Content-Type": String(data.mime), "Cache-Control": "public, max-age=3600", "Content-Disposition": "inline", "X-Content-Type-Options": "nosniff" }).send(Buffer.from(hex.startsWith("\\x") ? hex.slice(2) : hex, "hex"));
+  }));
   router.put("/cosmetics/background-look", userRoute(async (req, res, user) => {
     const input = z.object({ item: cosmeticIdSchema, look: backgroundLookSchema }).strict().parse(req.body);
     if (!isBackgroundItem(input.item)) apiError(404, "Item not found");
