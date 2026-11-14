@@ -9,7 +9,7 @@ import { consumeTikTokState, createTikTokState, fetchTikTokProfile, isTikTokStat
 import { authorizeUrl, consumeOAuthState, createOAuthState, discordOAuthConfig, fetchDiscordIdentity, isOAuthState, linkDiscordAccount, ownDiscordLink, removeOwnDiscordLink } from "./discordOAuth";
 import { isReaction, tallyReactions } from "./reactions";
 import { mayApproveLifts, mayModerate, mayModerateClans, mayPenalize, mayTouchBan, needsLiftApproval, needsReview, termFields, type ModerationCapability } from "./moderation";
-import { CLAN_LIMITS, canManage, canRemove, clanRole, describeClanAction, leaveCooldownLeftMs } from "./clans";
+import { CLAN_LIMITS, canManage, canRemove, clanRole, describeClanAction, leaveCooldownLeftMs, verifiedClanIds } from "./clans";
 import { CLAN_ART_LIMITS, artMarker, artUrl, checkClanArt, type ClanArtKind } from "./clanArt";
 import { parseCookieHeader } from "../_core/cookieHeader";
 import {
@@ -958,6 +958,20 @@ const COMPETITIVE_SORT_MIN_MATCHES = 10;
 export function createLegacyXRouter() {
   const router = Router();
   const db = () => legacyXDb();
+  /** Which of these clans are verified (ten or more members, every one with Discord linked), read live from the members and the Discord links. */
+  const verifiedClansFor = async (clanIds: string[]): Promise<Set<string>> => {
+    if (clanIds.length === 0) return new Set();
+    const { data, error } = await db().from("clan_members").select("clan_id,user_id").in("clan_id", clanIds);
+    if (error) return new Set();
+    const byClan = new Map<string, string[]>();
+    for (const row of (data ?? []) as DbRow[]) {
+      const id = textValue(row.clan_id);
+      byClan.set(id, [...(byClan.get(id) ?? []), textValue(row.user_id)]);
+    }
+    const everyone: string[] = [];
+    byClan.forEach((members) => everyone.push(...members));
+    return verifiedClanIds(byClan, await discordLinkedUserIds(db(), everyone));
+  }
   const mapFeedbackRows = async (rows: DbRow[]) => {
     const userIds = rows.map(row => textValue(row.user_id)).filter((userId, index, values) => Boolean(userId) && values.indexOf(userId) === index);
     if (userIds.length === 0) return rows.map(row => mapFeedback(row));
@@ -1155,7 +1169,7 @@ export function createLegacyXRouter() {
     const viewerRole = viewerId ? members.find((member) => member.id === viewerId)?.role ?? null : null;
     const recruiting = await clanRecruitmentFor([clanId]);
     const progress = await db().from("clan_progress").select("xp").eq("clan_id", clanId).maybeSingle();
-    return { ...mapClanCard(clan), level: levelFor(numberValue(progress.data?.xp)).level, look: (await clanLooksFor(db(), [clanId])).get(clanId) ?? null, recruit: recruiting.has(clanId) ? { questions: recruiting.get(clanId) ?? [] } : null, ...(viewerRole === "leader" ? { recruitment: await recruitmentOf(clanId) } : {}), description: clan.description ?? undefined, links: cleanClanLinks(clan.links), members, viewer: { role: viewerRole, canModerate: viewerId ? await canModerateClans(viewerId) : false } };
+    return { ...mapClanCard(clan), verified: (await verifiedClansFor([clanId])).has(clanId), level: levelFor(numberValue(progress.data?.xp)).level, look: (await clanLooksFor(db(), [clanId])).get(clanId) ?? null, recruit: recruiting.has(clanId) ? { questions: recruiting.get(clanId) ?? [] } : null, ...(viewerRole === "leader" ? { recruitment: await recruitmentOf(clanId) } : {}), description: clan.description ?? undefined, links: cleanClanLinks(clan.links), members, viewer: { role: viewerRole, canModerate: viewerId ? await canModerateClans(viewerId) : false } };
   };
   // Public website reads deliberately bypass AdminPlus. CS2 plugins/admin tools
   // write to Supabase; the website reads these safe projections through root API.
@@ -3078,7 +3092,8 @@ export function createLegacyXRouter() {
     const levels = await db().from("clan_progress").select("clan_id,xp").in("clan_id", ((data ?? []) as DbRow[]).map((row) => textValue(row.id)));
     const levelOf = new Map(((levels.data ?? []) as DbRow[]).map((row) => [textValue(row.clan_id), levelFor(numberValue(row.xp)).level]));
     const previews = await clanPreviewsFor(((data ?? []) as DbRow[]).map((row) => textValue(row.id)));
-    res.json(((data ?? []) as DbRow[]).map((row) => ({ ...mapClanCard(row), level: levelOf.get(textValue(row.id)) ?? 1, preview: previews.get(textValue(row.id)) ?? null, look: looks.get(textValue(row.id)) ?? null, recruit: recruiting.has(textValue(row.id)) ? { questions: recruiting.get(textValue(row.id)) ?? [] } : null })));
+    const verified = await verifiedClansFor(((data ?? []) as DbRow[]).map((row) => textValue(row.id)));
+    res.json(((data ?? []) as DbRow[]).map((row) => ({ ...mapClanCard(row), verified: verified.has(textValue(row.id)), level: levelOf.get(textValue(row.id)) ?? 1, preview: previews.get(textValue(row.id)) ?? null, look: looks.get(textValue(row.id)) ?? null, recruit: recruiting.has(textValue(row.id)) ? { questions: recruiting.get(textValue(row.id)) ?? [] } : null })));
   }));
   // Ranking: the total EXP of a clan's members, counted from real ranked results.
   router.get("/clans/leaderboard", optionalUserRoute(async (_req, res) => {

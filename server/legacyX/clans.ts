@@ -13,7 +13,21 @@ export const CLAN_LIMITS = {
   /** A clan may change its name or tag once in this many days. */
   renameCooldownDays: 7,
   activityLimit: 40,
+  /** A clan is verified (owner request 2026-11-14) with at least this many members, all of them with Discord linked. */
+  verifiedMinMembers: 10,
 } as const;
+
+/**
+ * Which clans are verified: at least `verifiedMinMembers` members and every one of them has linked Discord. `membersByClan` maps a clan id to its member user ids;
+ * `linkedUserIds` is who has Discord linked. The result is the set of verified clan ids; nothing is stored, it is read live.
+ */
+export function verifiedClanIds(membersByClan: Map<string, string[]>, linkedUserIds: Set<string>): Set<string> {
+  const verified = new Set<string>();
+  membersByClan.forEach((members, clanId) => {
+    if (members.length >= CLAN_LIMITS.verifiedMinMembers && members.every((userId) => linkedUserIds.has(userId))) verified.add(clanId);
+  });
+  return verified;
+}
 
 export function clanRole(value: unknown): ClanRole | null {
   return value === "leader" || value === "co-leader" || value === "captain" || value === "member" ? value : null;

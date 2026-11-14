@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { CLAN_LIMITS, canManage, canRemove, clanRole, describeClanAction, leaveCooldownLeftMs } from "./clans";
+import { CLAN_LIMITS, canManage, canRemove, clanRole, describeClanAction, leaveCooldownLeftMs, verifiedClanIds } from "./clans";
 
 describe("clan permissions", () => {
   it("lets leaders and co-leaders manage, and nobody else", () => {
@@ -43,5 +43,21 @@ describe("activity text", () => {
     expect(describeClanAction("kicked", null)).toBe("was removed");
     expect(describeClanAction("renamed", "Old to New")).toBe("changed the clan name or tag (Old to New)");
     expect(describeClanAction("something_new", null)).toBe("something_new");
+  });
+});
+
+describe("verified clans", () => {
+  const ids = (count: number, prefix = "u") => Array.from({ length: count }, (_, index) => `${prefix}${index}`);
+  it("needs ten members who all linked Discord", () => {
+    const all = new Set(ids(12));
+    expect([...verifiedClanIds(new Map([["a", ids(10)], ["b", ids(12)]]), all)]).toEqual(["a", "b"]);
+  });
+  it("is not verified with fewer than ten members, even if they all linked", () => {
+    expect(verifiedClanIds(new Map([["a", ids(9)]]), new Set(ids(9))).size).toBe(0);
+  });
+  it("is not verified when one member has not linked Discord", () => {
+    const linked = new Set(ids(10));
+    linked.delete("u3");
+    expect(verifiedClanIds(new Map([["a", ids(10)]]), linked).size).toBe(0);
   });
 });
