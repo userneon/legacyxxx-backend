@@ -15,7 +15,7 @@ import type { Router } from "express";
 import { z } from "zod";
 
 import { activeBannedUserIds } from "./bans";
-import { ACCEPT_SECONDS, MATCH_SIZE, PARTY_MAX, buildMatchZyConfig, pickLobby, pickMap, pickServerForMatch, splitTeams, type LobbyPlayer, type QueueEntry, type QueueMode } from "./matchmaking";
+import { ACCEPT_SECONDS, MAP_POOL, MATCH_SIZE, PARTY_MAX, buildMatchZyConfig, pickLobby, pickMap, pickServerForMatch, splitTeams, type LobbyPlayer, type QueueEntry, type QueueMode } from "./matchmaking";
 import { leaveRulesFrom, leaveStatus, loadLeaves } from "./playAccess";
 import type { PlayServer } from "./play";
 import { loadSettings } from "./settings";
@@ -49,6 +49,12 @@ export function registerMatchmakingRoutes(deps: Deps) {
     const counts: Record<string, number> = { "5x5": 0, pro: 0 };
     for (const row of (data ?? []) as Row[]) counts[text(row.mode)] = (counts[text(row.mode)] ?? 0) + 1;
     return counts;
+  };
+
+  /** Matches that have a server right now (loading or being played). */
+  const liveMatchCount = async () => {
+    const { count } = await db().from("queue_matches").select("id", { count: "exact", head: true }).in("status", ["loading", "live"]);
+    return count ?? 0;
   };
 
   const cancelMatch = async (matchId: string, requeueAccepted: boolean) => {
@@ -144,7 +150,7 @@ export function registerMatchmakingRoutes(deps: Deps) {
   };
   setInterval(() => { void tick(); }, 3000).unref();
 
-  interface PartyMember { userId: string; username: string; exp: number }
+  interface PartyMember { userId: string; username: string; avatar: string; exp: number }
   interface Party { id: string; leaderId: string; members: PartyMember[] }
 
   /** The party a player is in (with its members), or null. */
@@ -155,23 +161,24 @@ export function registerMatchmakingRoutes(deps: Deps) {
     if (!party) return null;
     const { data: rows } = await db().from("party_members").select("user_id,joined_at").eq("party_id", party.id).order("joined_at", { ascending: true });
     const ids = ((rows ?? []) as Row[]).map((row) => text(row.user_id));
-    const { data: users } = await db().from("users").select("id,username").in("id", ids);
+    const { data: users } = await db().from("users").select("id,username,avatar").in("id", ids);
     const { data: profiles } = await db().from("competitive_player_profiles").select("user_id,current_exp").in("user_id", ids);
     const name = new Map(((users ?? []) as Row[]).map((user) => [text(user.id), text(user.username) || "Player"]));
+    const avatar = new Map(((users ?? []) as Row[]).map((user) => [text(user.id), text(user.avatar)]));
     const exp = new Map(((profiles ?? []) as Row[]).map((row) => [text(row.user_id), Number(row.current_exp) || 0]));
-    return { id: text(party.id), leaderId: text(party.leader_id), members: ids.map((id) => ({ userId: id, username: name.get(id) ?? "Player", exp: exp.get(id) ?? 0 })) };
+    return { id: text(party.id), leaderId: text(party.leader_id), members: ids.map((id) => ({ userId: id, username: name.get(id) ?? "Player", avatar: avatar.get(id) ?? "", exp: exp.get(id) ?? 0 })) };
   };
 
   /** What the Play page shows about parties: my party (members, who I invited) and the invitations waiting for me. */
   const partyView = async (userId: string) => {
     const party = await myParty(userId);
-    let invited: Array<{ userId: string; username: string }> = [];
+    let invited: Array<{ userId: string; username: string; avatar: string }> = [];
     if (party) {
       const { data: invites } = await db().from("party_invites").select("user_id").eq("party_id", party.id);
       const ids = ((invites ?? []) as Row[]).map((row) => text(row.user_id));
       if (ids.length > 0) {
-        const { data: users } = await db().from("users").select("id,username").in("id", ids);
-        invited = ((users ?? []) as Row[]).map((user) => ({ userId: text(user.id), username: text(user.username) || "Player" }));
+        const { data: users } = await db().from("users").select("id,username,avatar").in("id", ids);
+        invited = ((users ?? []) as Row[]).map((user) => ({ userId: text(user.id), username: text(user.username) || "Player", avatar: text(user.avatar) }));
       }
     }
     const { data: mine } = await db().from("party_invites").select("party_id,created_at").eq("user_id", userId).order("created_at", { ascending: false }).limit(10);
@@ -218,7 +225,7 @@ export function registerMatchmakingRoutes(deps: Deps) {
       legacyXError(createError, "Unable to create a party");
       const { error: memberError } = await db().from("party_members").insert({ party_id: partyId, user_id: user.id });
       legacyXError(memberError, "Unable to create a party");
-      party = { id: partyId, leaderId: user.id, members: [{ userId: user.id, username: user.username, exp: 0 }] };
+      party = { id: partyId, leaderId: user.id, members: [{ userId: user.id, username: user.username, avatar: "", exp: 0 }] };
     }
     const { data: invites } = await db().from("party_invites").select("user_id").eq("party_id", party.id);
     if (party.members.length + (invites ?? []).length >= PARTY_MAX) apiError(409, `A party holds ${PARTY_MAX} players.`);
@@ -329,7 +336,8 @@ export function registerMatchmakingRoutes(deps: Deps) {
     res.set("Cache-Control", "no-store");
     const counts = await queueCounts();
     const partyInfo = await partyView(user.id);
-    const send = (body: Record<string, unknown>) => res.json({ ...body, ...partyInfo });
+    const liveMatches = await liveMatchCount();
+    const send = (body: Record<string, unknown>) => res.json({ ...body, ...partyInfo, liveMatches, maps: MAP_POOL });
     const { data: mine } = await db().from("queue_match_players").select("match_id,team,accepted,queue_matches!inner(id,mode,map,status,accept_deadline,server_id,connect_address)").eq("user_id", user.id).in("queue_matches.status", ["accepting", "loading", "live"]).order("joined_at", { ascending: false }).limit(1);
     const row = ((mine ?? []) as Row[])[0];
     if (row) {
@@ -341,7 +349,9 @@ export function registerMatchmakingRoutes(deps: Deps) {
         send({ state: base.accepted >= base.total ? "preparing" : "found", counts, match: base });
         return;
       }
-      send({ state: "ready", counts, match: { ...base, status: text(match.status), team: row.team === 2 ? 2 : 1, connectAddress: text(match.connect_address) || null, players: list.map((player) => ({ userId: text(player.user_id), username: text(player.username), team: player.team === 2 ? 2 : 1, exp: Number(player.exp) || 0 })) } });
+      const { data: faces } = await db().from("users").select("id,avatar").in("id", list.map((player) => player.user_id));
+      const face = new Map(((faces ?? []) as Row[]).map((user) => [text(user.id), text(user.avatar)]));
+      send({ state: "ready", counts, match: { ...base, status: text(match.status), team: row.team === 2 ? 2 : 1, connectAddress: text(match.connect_address) || null, players: list.map((player) => ({ userId: text(player.user_id), username: text(player.username), avatar: face.get(text(player.user_id)) ?? "", team: player.team === 2 ? 2 : 1, exp: Number(player.exp) || 0 })) } });
       return;
     }
     const { data: entry } = await db().from("queue_entries").select("mode,joined_at").eq("user_id", user.id).maybeSingle();
