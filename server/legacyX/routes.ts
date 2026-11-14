@@ -37,6 +37,7 @@ import { headToHead } from "./compare";
 import { MARKET_LIMITS, cleanLine, imageUrl as marketImageUrl, marketListingSchema, marketQuerySchema, marketReportSchema, marketStatusSchema, processMarketImage } from "./market";
 import { KIT_DAILY_LIMIT, KIT_ITEMS, KIT_KEEP_HOURS, KitRenderQueue, kitExt, kitFilePath, kitRenderEnabled, kitRenderSchema, removeKitJobFiles } from "./kitRender";
 import { PICK_DEFAULT_2, isColourable, isTwoColour, itemColours } from "./cosmeticColours";
+import { CUSTOM_CHANGE_PRICE, SMOKE_MOTIFS, isSmokeMotif, pickCosts, vividColour } from "./cosmeticPick";
 import { NADES, NADE_KINDS, itemsByNade, slotOverrides, type NadeKind } from "./cosmeticNades";
 import { LEVEL_PERKS, clanAchievements, clanStats, levelFor } from "./clanProgress";
 import { fetchSteamAccountCreatedAt, fetchSteamBans, syncSteamUserProfile } from "./steamProfile";
@@ -2243,7 +2244,7 @@ export function createLegacyXRouter() {
     const bgLookRows = user ? await db().from("background_looks").select("item_id,look").eq("user_id", user.id) : { data: [] as DbRow[], error: null };
     const backgroundLooks: Record<string, unknown> = {};
     if (!bgLookRows.error) for (const row of (bgLookRows.data ?? []) as DbRow[]) { const look = readBackgroundLook(row.look); if (look) backgroundLooks[textValue(row.item_id)] = look; }
-    const mine = user ? await db().from("cosmetic_custom").select("item_id,color,color2").eq("user_id", user.id) : { data: [] as DbRow[], error: null };
+    const mine = user ? await db().from("cosmetic_custom").select("item_id,color,color2,fx").eq("user_id", user.id) : { data: [] as DbRow[], error: null };
     const mineRows = new Map<string, DbRow>(((mine.error ? [] : mine.data ?? []) as DbRow[]).map((row) => [textValue(row.item_id), row]));
     // A design shows the colours this player picked for it, or neutral grey until they pick (a visitor sees grey).
     const ofKind = (kind: CosmeticKind) => catalog.filter((item) => item.kind === kind).map((item) => {
@@ -2251,11 +2252,14 @@ export function createLegacyXRouter() {
       if (!isColourable(item)) return view;
       const colours = itemColours(item, mineRows.get(textValue(item.id)));
       const { color: _color, color2: _color2, glow: _glow, ...rest } = view;
-      return { ...rest, ...(colours.color ? { color: colours.color } : {}), ...(colours.color2 ? { color2: colours.color2 } : {}), ...(colours.glow ? { glow: colours.glow } : {}) };
+      const motif = textValue(item.kind) === "smoke_color" ? textValue(mineRows.get(textValue(item.id))?.fx) : "";
+      return { ...rest, ...(colours.color ? { color: colours.color } : {}), ...(colours.color2 ? { color2: colours.color2 } : {}), ...(colours.glow ? { glow: colours.glow } : {}), ...(isSmokeMotif(motif) ? { motif } : {}), picked: mineRows.has(textValue(item.id)) };
     });
     res.json({
       /** True for a QA tester: everything is theirs, and the ranks switch on for free. */
       qa: qaTester,
+      /** What changing the colour of something you own costs (the first pick is free). */
+      customChangePrice: CUSTOM_CHANGE_PRICE,
       players: players.error ? null : players.count ?? 0,
       equippedFrame: user ? worn.get(user.id)?.frame ?? null : null,
       equippedBackground: wearing.get("background") ?? null,
@@ -2418,20 +2422,37 @@ export function createLegacyXRouter() {
   // Wear one, or take it off with item: null. The older { frame } body still works.
   // Pick the colour of a custom item you own (a player buys it like any other cosmetic first); saving wears it.
   router.put("/cosmetics/custom", userRoute(async (req, res, user) => {
-    const hex = z.string().regex(/^#[0-9a-fA-F]{6}$/).transform((value) => value.toLowerCase());
-    const input = z.object({ item: cosmeticIdSchema, color: hex, color2: hex.nullish() }).strict().parse(req.body);
+    const hex = z.string().regex(/^#[0-9a-fA-F]{6}$/).transform((value) => vividColour(value.toLowerCase()));
+    const input = z.object({ item: cosmeticIdSchema, color: hex, color2: hex.nullish(), fx: z.enum(SMOKE_MOTIFS).nullish() }).strict().parse(req.body);
     const item = (await loadCosmeticCatalog()).find((entry) => textValue(entry.id) === input.item);
     if (!item || !isColourable(item)) apiError(404, "Item not found");
     const color2 = isTwoColour(item) ? input.color2 ?? PICK_DEFAULT_2 : null;
+    // Only the smoke sheds a picture (owner request 2026-11-14): one of our own shapes, never an upload.
+    const motif = textValue(item.kind) === "smoke_color" ? input.fx ?? null : null;
     const { data, error: ownedError } = await db().from("cosmetic_owned").select("item_id,expires_at").eq("user_id", user.id).eq("item_id", input.item).maybeSingle();
     legacyXError(ownedError, "Unable to check your cosmetics");
     if (!data || !stillRunning((data as DbRow).expires_at)) apiError(403, "You do not own this yet", "cosmetic_not_owned");
+    // The first pick is free; every change after it costs CUSTOM_CHANGE_PRICE FOL$, as often as the player likes.
+    const before = await db().from("cosmetic_custom").select("color,color2,fx").eq("user_id", user.id).eq("item_id", input.item).maybeSingle();
+    legacyXError(before.error, "Unable to read your colour");
+    const previous = before.data ? { color: textValue((before.data as DbRow).color) || null, color2: textValue((before.data as DbRow).color2) || null, fx: textValue((before.data as DbRow).fx) || null } : null;
+    const costs = pickCosts(previous, { color: input.color, color2, fx: motif });
     const now = new Date().toISOString();
-    const saved = await db().from("cosmetic_custom").upsert({ user_id: user.id, item_id: input.item, color: input.color, color2, fx: null, updated_at: now }, { onConflict: "user_id,item_id" });
+    const ref = `cosmetic-pick:${input.item}:${user.id}:${Math.floor(Date.now() / 10_000)}`;
+    if (costs) {
+      try {
+        await applyWalletChange(legacyXDb(), { userId: user.id, amount: -CUSTOM_CHANGE_PRICE, kind: "spend", reason: `Changed the colour of ${textValue(item.name_en)}`, ref, actor: user.id });
+      } catch (error) {
+        if (error instanceof NotEnoughCoinsError) apiError(402, `Changing it costs ${CUSTOM_CHANGE_PRICE} LX`, "cosmetic_no_coins");
+        throw error;
+      }
+    }
+    const saved = await db().from("cosmetic_custom").upsert({ user_id: user.id, item_id: input.item, color: input.color, color2, fx: motif, updated_at: now }, { onConflict: "user_id,item_id" });
+    if (saved.error && costs) await applyWalletChange(legacyXDb(), { userId: user.id, amount: CUSTOM_CHANGE_PRICE, kind: "refund", reason: "Colour change failed", ref: `${ref}:refund`, actor: user.id }).catch((refundError) => console.error("[legacy-x-api] colour refund failed", ref, refundError));
     legacyXError(saved.error, "Unable to save the colour");
     const worn = await db().from("cosmetic_equipped").upsert({ user_id: user.id, kind: textValue(item.kind), item_id: input.item, updated_at: now }, { onConflict: "user_id,kind" });
     legacyXError(worn.error, "Unable to wear it");
-    res.json({ kind: textValue(item.kind), item: input.item, color: input.color, color2 });
+    res.json({ kind: textValue(item.kind), item: input.item, color: input.color, color2, motif, charged: costs ? CUSTOM_CHANGE_PRICE : 0 });
   }));
   router.put("/cosmetics/equip", userRoute(async (req, res, user) => {
     const input = z.union([
@@ -7001,7 +7022,7 @@ export function createLegacyXRouter() {
       db().from("competitive_player_progression").select("kills,deaths,wins,losses,draws").eq("user_id", uid).maybeSingle(),
       db().from("cosmetic_equipped").select("kind,item_id").eq("user_id", uid),
       db().from("cosmetic_owned").select("item_id,expires_at").eq("user_id", uid),
-      db().from("cosmetic_custom").select("item_id,color,color2").eq("user_id", uid),
+      db().from("cosmetic_custom").select("item_id,color,color2,fx").eq("user_id", uid),
       db().from("cosmetic_nade_slot").select("nade,kind,item_id").eq("user_id", uid),
     ]);
     if (membership.error) console.warn("[legacy-x-api] clan lookup unavailable", membership.error.message);
@@ -7012,7 +7033,7 @@ export function createLegacyXRouter() {
     const countOrNull = (key: string) => (progression ? numberValue(counts[key]) ?? 0 : null);
     const wornBy = new Map(((equippedRes.data ?? []) as DbRow[]).map((row) => [textValue(row.kind), textValue(row.item_id)]));
     const rentals = new Map(((ownedRes.data ?? []) as DbRow[]).map((row) => [textValue(row.item_id), row.expires_at]));
-    const picks = new Map(((customRes.data ?? []) as DbRow[]).map((row) => [textValue(row.item_id), { color: textValue(row.color), color2: textValue(row.color2) || null }]));
+    const picks = new Map(((customRes.data ?? []) as DbRow[]).map((row) => [textValue(row.item_id), { color: textValue(row.color), color2: textValue(row.color2) || null, fx: textValue(row.fx) || null }]));
     // What each kind of grenade wears (owner request 2026-10-26): its own slot, else the default. A game server that does not know slots uses the default fields.
     const slotRows = (slotRes.error ? [] : slotRes.data ?? []) as Array<{ nade: string; kind: string; item_id: string | null }>;
     const trailBy = itemsByNade("grenade_trail", wornBy.get("grenade_trail") ?? null, slotRows);
@@ -7031,6 +7052,8 @@ export function createLegacyXRouter() {
     const smokeLook = look(wornBy.get("smoke_color"), "smoke_color");
     const smokeColor: string | null = smokeLook?.colours.color ?? null;
     const smokeColor2: string | null = smokeColor ? smokeLook?.colours.color2 ?? null : null;
+    const smokeMotifPick = picks.get(wornBy.get("smoke_color") ?? "")?.fx ?? null;
+    const smokeMotif: string | null = smokeColor && isSmokeMotif(smokeMotifPick) ? smokeMotifPick : null;
     const grenadeLook = (itemId: string | null | undefined, kind: "grenade_trail" | "grenade_light" | "flash_effect") => {
       const found = look(itemId, kind);
       return found?.colours.color ? { color: found.colours.color, fx: found.fx } : null;
@@ -7062,6 +7085,7 @@ export function createLegacyXRouter() {
       flash_effect_fx: wornFlash?.fx ?? null,
       smoke_color: smokeColor,
       smoke_color2: smokeColor2,
+      smoke_motif: smokeMotif,
       weapon_models: weaponModels,
       position: ladder ? numberValue((ladder as DbRow).position) : null,
       kills: countOrNull("kills"),
