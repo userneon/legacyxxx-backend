@@ -135,3 +135,7 @@ Signed-in routes (`supabase/legacy_x_matchmaking.sql` first): `POST /queue/join 
 → `{state: "idle"|"queued"|"found"|"preparing"|"ready", counts: {"5x5": n, pro: n}, queue?, match?}`. `ready` carries the match's `connectAddress`, `team` and the ten players.
 A ticker (3 s) builds lobbies of ten close in EXP (`matchmaking.ts`), gives them 30 s to accept, hands an accepted match to an empty server as a `match_load` server action
 (payload: `matchId`, `map`, `config` = a MatchZy match file) and closes finished matches. The plugin must handle `match_load` (LegacyX-Admin `AdminPlus.StaffPanel.cs`).
+
+### Parties (matchmaking)
+
+`GET /party` → `{ party: {id, leaderId, members[], invited[]} | null, invitations: [{partyId, from}] }` (also inside `GET /queue/status`). `POST /party/invite {userId}` (creates the party on first invite; up to 5 players with pending invites), `POST /party/accept {partyId}`, `POST /party/decline {partyId}`, `POST /party/leave`, `POST /party/kick {userId}` (leader). The leader's `POST /queue/join` queues every member together (each is checked for bans, leave cooldown, Pro rank); a party is always put in one lobby and on one team; any member leaving the queue takes the whole party out. Tables in `supabase/legacy_x_matchmaking.sql`.

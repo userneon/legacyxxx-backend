@@ -66,3 +66,25 @@ describe("buildMatchZyConfig", () => {
   });
   it("accept window is thirty seconds", () => expect(ACCEPT_SECONDS).toBe(30));
 });
+
+describe("parties", () => {
+  const party = (id: string, size: number, exp: number, from = 0): QueueEntry[] => Array.from({ length: size }, (_, i) => ({ userId: `${id}${i}`, steamId: `${id}${i}`, username: `${id}${i}`, exp, joinedAt: from, partyId: id }));
+  const solos = (n: number, exp = 1000, from = 1): QueueEntry[] => Array.from({ length: n }, (_, i) => ({ userId: `s${i}`, steamId: `s${i}`, username: `s${i}`, exp, joinedAt: from + i }));
+
+  it("keeps a party whole and on one team", () => {
+    const lobby = pickLobby([...party("a", 3, 1000), ...solos(7)], 5000)!;
+    expect(lobby).toHaveLength(MATCH_SIZE);
+    const teams = splitTeams(lobby);
+    expect(new Set(teams.filter((p) => p.partyId === "a").map((p) => p.team)).size).toBe(1);
+    expect(teams.filter((p) => p.team === 1)).toHaveLength(5);
+  });
+
+  it("refuses a lobby where the parties cannot share two teams of five", () => {
+    expect(pickLobby([...party("a", 4, 1000), ...party("b", 3, 1000, 1), ...party("c", 3, 1000, 2)], 5000)).toBeNull();
+  });
+
+  it("never splits a party across lobbies", () => {
+    const lobby = pickLobby([...solos(8), ...party("a", 3, 1000, 100)], 5000);
+    expect(lobby).toBeNull();
+  });
+});
