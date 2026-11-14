@@ -90,6 +90,7 @@ import { backfillProfiles, ensureAccounts, isBare, nameFromGame } from "./profil
 import { EXP_CHANGE_WINDOW_MS, latestExpChanges } from "./expChange";
 import { numericAddress } from "./hostAddress";
 import { mapPlayServer, pickQuickJoin, sortPlayServers, type PlayMode } from "./play";
+import { registerMatchmakingRoutes } from "./matchmakingRoutes";
 import { bracketRounds, checkInOpen, groupTeams, mapTournamentMatch as mapTournamentPlayerMatch, mapTournamentSummary, nextMatchFor, tournamentPhase } from "./tournaments";
 
 type ApiRequest = Request & { legacyUser?: LegacyUser; plugin?: PluginPrincipal };
@@ -5415,6 +5416,8 @@ export function createLegacyXRouter() {
   // looks again anyway, in case the action was queued through another API process. Without `wait` the answer is immediate, as before.
   const staffActionWaiters = new Map<string, Set<() => void>>();
   const wakeStaffActionWaiters = (serverId: string) => { for (const wake of Array.from(staffActionWaiters.get(serverId) ?? [])) wake(); };
+  // The matchmaking queue (owner decision 2026-11-14): routes and ticker in matchmakingRoutes.ts; a matched game server takes its match as a `match_load` action.
+  registerMatchmakingRoutes({ router, db, userRoute, apiError, loadPlayServers, wakeServer: (serverId) => wakeStaffActionWaiters(serverId) });
   router.post("/plugin/staffpanel/claim", pluginRoute("servers:write", async (req, res) => {
     const { serverId, wait } = z.object({ serverId: staffPanelServerSchema, wait: z.number().int().min(0).max(20).default(0) }).parse(req.body);
     let closed = false;
