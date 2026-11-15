@@ -1328,7 +1328,7 @@ export function createLegacyXRouter() {
     res.json({ profile: data });
   }));
   router.get("/public/matches/:matchId/maps/:mapNumber", asyncRoute(async (req, res) => {
-    const matchId = z.string().uuid("matchId must be a LEGACY-X match id").parse(req.params.matchId);
+    const matchId = z.string().uuid("matchId must be a LXC match id").parse(req.params.matchId);
     const mapNumber = z.coerce.number().int().min(0).max(99).parse(req.params.mapNumber);
     const [core, results] = await Promise.all([
       db().from("core_matches").select("id,map_name,map_number,matchzy_local_id,finished_at,result").eq("id", matchId).maybeSingle(),
@@ -4202,7 +4202,7 @@ export function createLegacyXRouter() {
     const price = COIN_RULES.founderPrice;
     const ref = `founder:${user.id}:${Math.floor(Date.now() / 10_000)}`;
     try {
-      await applyWalletChange(legacyXDb(), { userId: user.id, amount: -price, kind: "spend", reason: "LEGACY-X Genesis pack", ref, actor: user.id });
+      await applyWalletChange(legacyXDb(), { userId: user.id, amount: -price, kind: "spend", reason: "LXC Genesis pack", ref, actor: user.id });
     } catch (error) {
       if (error instanceof NotEnoughCoinsError) apiError(402, `This costs ${price.toLocaleString("en-US")} LX`, "founder_no_coins");
       throw error;
@@ -4389,7 +4389,7 @@ export function createLegacyXRouter() {
     const site = (process.env.FRONTEND_ORIGIN?.trim() || "").replace(/\/$/, "");
     try {
       const topupId = textValue(row.id);
-      const intent = await createWireIntent(config, { amount: priceMnt, description: `LEGACY-X ${textValue(product.name)}`, topupId, key: `topup-${topupId}-intent` });
+      const intent = await createWireIntent(config, { amount: priceMnt, description: `LXC ${textValue(product.name)}`, topupId, key: `topup-${topupId}-intent` });
       const checkoutUrl = await createWireCheckout(config, { intentId: intent.id, successUrl: site ? `${site}/wallet/top-up?topup=${topupId}` : null, cancelUrl: site ? `${site}/wallet/top-up` : null, key: `topup-${topupId}-checkout` });
       const { error: saveError } = await db().from("wallet_topups").update({ provider_ref: intent.id, checkout_url: checkoutUrl }).eq("id", topupId);
       legacyXError(saveError, "Unable to save the top-up");
@@ -4539,7 +4539,7 @@ export function createLegacyXRouter() {
     const site = (process.env.FRONTEND_ORIGIN?.trim() || "").replace(/\/$/, "");
     const orderId = textValue(row.id);
     try {
-      const intent = await createWireIntent(config, { amount: price, description: `LEGACY-X ${textValue(tier.name)} ${input.days} days`, topupId: orderId, key: `perk-${orderId}-intent` });
+      const intent = await createWireIntent(config, { amount: price, description: `LXC ${textValue(tier.name)} ${input.days} days`, topupId: orderId, key: `perk-${orderId}-intent` });
       const checkoutUrl = await createWireCheckout(config, { intentId: intent.id, successUrl: site ? `${site}/shop?perk=${orderId}` : null, cancelUrl: site ? `${site}/shop` : null, key: `perk-${orderId}-checkout` });
       const { error: saveError } = await db().from("perk_orders").update({ provider_ref: intent.id, checkout_url: checkoutUrl }).eq("id", orderId);
       legacyXError(saveError, "Unable to save the purchase");
@@ -4699,7 +4699,7 @@ export function createLegacyXRouter() {
     if (input.steamId) {
       const { data: found, error: foundError } = await db().from("users").select("id").eq("steam_id", input.steamId).maybeSingle();
       legacyXError(foundError, "Unable to find the player");
-      if (!found) apiError(404, "That player has not signed in to LEGACY-X yet", "clan_player_not_found");
+      if (!found) apiError(404, "That player has not signed in to LXC yet", "clan_player_not_found");
       heir = textValue(found.id);
     }
     const leaderId = textValue(clan.owner_id);
@@ -5133,7 +5133,7 @@ export function createLegacyXRouter() {
     await requireModerator(user.id, "edit");
     const { data: target, error: targetError } = await db().from("users").select("id").eq("steam_id", input.steamId).maybeSingle();
     legacyXError(targetError, "Unable to find the player");
-    if (!target) apiError(404, "That player has not signed in to LEGACY-X yet");
+    if (!target) apiError(404, "That player has not signed in to LXC yet");
     const { data, error } = await db().from("notifications").insert({ user_id: textValue(target.id), kind: "system", title: input.title, body: input.body, metadata: { kind: "staff_message", from: user.username } }).select("id").single();
     legacyXError(error, "Unable to send the notification");
     const { error: auditError } = await db().from("audit_logs").insert({ actor_type: "user", actor_id: user.id, action: "notification.send", target_type: "user", target_id: textValue(target.id), metadata: { title: input.title, notificationId: textValue(data?.id) } });
@@ -5608,7 +5608,7 @@ export function createLegacyXRouter() {
     if (!userId) {
       const { data: account, error: accountError } = await db().from("users").select("id").eq("steam_id", parsed.steamId!).maybeSingle();
       legacyXError(accountError, "Unable to find the player");
-      if (!account) apiError(404, "No LEGACY-X account has that SteamID");
+      if (!account) apiError(404, "No LXC account has that SteamID");
       userId = textValue((account as DbRow).id);
     }
     const { data: existing } = await db().from("staff").select("id").eq("user_id", userId).maybeSingle();
@@ -5705,7 +5705,7 @@ export function createLegacyXRouter() {
     if (!/^7656119\d{10}$/.test(steamId)) apiError(400, "Enter a SteamID64");
     const { data, error } = await db().from("users").select("id,username").eq("steam_id", steamId).maybeSingle();
     legacyXError(error, "Unable to find the player");
-    if (!data) apiError(404, "No LEGACY-X account has that SteamID");
+    if (!data) apiError(404, "No LXC account has that SteamID");
     return data as DbRow;
   };
   // Staff → Shop → Cosmetics (Owner or Manager): prices, names and on/off of every cosmetic, so a price change is not an SQL edit.

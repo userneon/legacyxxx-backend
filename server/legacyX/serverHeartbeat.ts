@@ -38,7 +38,7 @@ export async function ingestHeartbeat(db: Db, input: z.infer<typeof heartbeatSch
 /** What the website calls a server of each mode until staff rename it ("Fun #2"). Other modes are named after the mode itself. */
 const MODE_LABELS: Record<string, string> = { competitive_5v5: "5x5", fun: "Fun", proleague: "Pro League", tournaments: "Tournament" };
 export function defaultServerName(mode: string, number: number): string {
-  const label = MODE_LABELS[mode] ?? (mode ? mode.replace(/[_-]+/g, " ") : "LEGACY-X");
+  const label = MODE_LABELS[mode] ?? (mode ? mode.replace(/[_-]+/g, " ") : "LXC");
   return `${label} #${number}`.slice(0, 60);
 }
 

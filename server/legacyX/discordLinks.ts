@@ -89,7 +89,7 @@ export async function completeLink(db: Db, token: string, userId: string) {
 export const PING_TOPICS = [
   { key: "updates", label: "Updates", description: "Website and game server updates" },
   { key: "news", label: "News", description: "Counter-Strike 2 news" },
-  { key: "live", label: "Creators live", description: "A LEGACY-X creator goes live" },
+  { key: "live", label: "Creators live", description: "A LXC creator goes live" },
   { key: "play", label: "Servers need players", description: "A server is short of players" },
 ] as const;
 export type PingTopic = (typeof PING_TOPICS)[number]["key"];
@@ -270,7 +270,7 @@ h1{margin:0 0 8px;font-size:20px;color:${accent}}p{margin:0;color:#9ca3af}`;
   const styleHash = createHash("sha256").update(style).digest("base64");
   const html = `<!doctype html>
 <html lang="mn"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<meta name="robots" content="noindex"><title>${escapeHtml(title)} · LEGACY-X</title>
+<meta name="robots" content="noindex"><title>${escapeHtml(title)} · LXC</title>
 <style>${style}</style></head>
 <body><main><h1>${escapeHtml(title)}</h1><p>${escapeHtml(message)}</p></main></body></html>`;
   const csp = `default-src 'none'; style-src 'sha256-${styleHash}'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'`;

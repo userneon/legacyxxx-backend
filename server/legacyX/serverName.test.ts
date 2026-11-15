@@ -33,7 +33,7 @@ describe("a server's name belongs to the website", () => {
   it("names a server after its mode and counts up", () => {
     expect(defaultServerName("fun", 2)).toBe("Fun #2");
     expect(defaultServerName("competitive_5v5", 1)).toBe("5x5 #1");
-    expect(defaultServerName("", 3)).toBe("LEGACY-X #3");
+    expect(defaultServerName("", 3)).toBe("LXC #3");
   });
 
   it("gives a new server a default name on its first heartbeat, and keeps it afterwards", async () => {

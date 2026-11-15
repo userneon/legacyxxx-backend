@@ -22,7 +22,7 @@ export const GAME_COMMANDS: GameCommand[] = [
   { name: "addadmin", flag: "@css/root", group: "Server", summary: "Staff are managed on legacyx.cc", locked: true, stamina: 1000 },
   { name: "admin", flag: "@css/generic", group: "Basics and votes", summary: "Open admin menu from console", locked: false, stamina: 250 },
   { name: "adminlist", flag: "@css/root", group: "Server", summary: "List authorized staff online", locked: true, stamina: 750 },
-  { name: "adminreload", flag: "@css/root", group: "Server", summary: "Re-check online staff with the LEGACY-X API", locked: true, stamina: 1000 },
+  { name: "adminreload", flag: "@css/root", group: "Server", summary: "Re-check online staff with the LXC API", locked: true, stamina: 1000 },
   { name: "aimlock", flag: "@css/root", group: "Server", summary: "View snaps to the nearest enemy while firing", locked: true },
   { name: "armor", flag: "@css/slay", group: "Fun", summary: "Set player armor", locked: false, stamina: 1000 },
   { name: "asay", flag: "@css/chat", group: "Chat and punishments", summary: "Admin say (console)", locked: false, stamina: 250 },

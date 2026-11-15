@@ -39,6 +39,6 @@ export const resolveReportSchema = z.object({
 /** What the reporter reads in the bell once staff have looked. The player they reported is never named. */
 export function reportOutcomeMessage(outcome: "actioned" | "dismissed"): { title: string; body: string } {
   return outcome === "actioned"
-    ? { title: "Your report was acted on", body: "Staff looked at your report and took action. Thank you for helping keep LEGACY-X fair." }
+    ? { title: "Your report was acted on", body: "Staff looked at your report and took action. Thank you for helping keep LXC fair." }
     : { title: "Your report was reviewed", body: "Staff looked at your report and found nothing to act on this time. Thank you for sending it." };
 }
