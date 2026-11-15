@@ -1,5 +1,4 @@
-import "dotenv/config";
-import "dotenv/config";
+import "./loadEnv";
 import express from "express";
 import { createServer } from "http";
 import { createLegacyXRouter } from "../legacyX/routes";
