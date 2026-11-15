@@ -107,6 +107,8 @@ describe("Discord links", () => {
       "penalties.select": [{ data: [{ user_id: "u1", is_permanent: false, expires_at: "2020-01-01T00:00:00Z" }, { user_id: "u2", is_permanent: true, expires_at: null }], error: null }],
       "staff.select": [{ data: [{ user_id: "u1", role: "MANAGER" }], error: null }],
       "content_creators.select": [{ data: [{ user_id: "u2", tier: "main" }], error: null }],
+      // u1 rents Gold; its Legend ran out in 2020; a role id the bot does not know is ignored.
+      "cosmetic_owned.select": [{ data: [{ user_id: "u1", item_id: "role-gold", expires_at: null }, { user_id: "u1", item_id: "role-legend", expires_at: "2020-01-01T00:00:00Z" }], error: null }],
       "discord_community_stats.select": [{ data: [
         { discord_id: "222222222222222222", boosts: 4, boosting_since: "2026-01-01", display_name: "Bravo", username: "b" },
         { discord_id: "999999999999999999", boosts: 9, boosting_since: "2026-01-01", display_name: "Stranger", username: "x" },
@@ -114,8 +116,8 @@ describe("Discord links", () => {
       ], error: null }],
     });
     expect(await listLinks(db)).toEqual([
-      { discordId: "111111111111111111", discordName: "a", linkedAt: "t1", steamId: "76561198000000001", username: "Alpha", rankId: 12, rankName: "Vanguard II", currentExp: 2400, matchesCompleted: 30, clanRole: null, clan: null, staffRole: "manager", creatorTier: null, boosterPlace: 2, banned: false, pings: ["updates", "live"] },
-      { discordId: "222222222222222222", discordName: "b", linkedAt: "t2", steamId: "76561198000000002", username: "Bravo", rankId: null, rankName: null, currentExp: 0, matchesCompleted: 0, clanRole: "leader", clan: { id: "c1", name: "Wolves", tag: "WLF", logo: "/api/v1/clans/c1/logo?v=42" }, staffRole: null, creatorTier: "main", boosterPlace: 1, banned: true, pings: [] },
+      { discordId: "111111111111111111", discordName: "a", linkedAt: "t1", steamId: "76561198000000001", username: "Alpha", rankId: 12, rankName: "Vanguard II", currentExp: 2400, matchesCompleted: 30, clanRole: null, clan: null, staffRole: "manager", creatorTier: null, boosterPlace: 2, banned: false, pings: ["updates", "live"], shopRoles: ["gold"] },
+      { discordId: "222222222222222222", discordName: "b", linkedAt: "t2", steamId: "76561198000000002", username: "Bravo", rankId: null, rankName: null, currentExp: 0, matchesCompleted: 0, clanRole: "leader", clan: { id: "c1", name: "Wolves", tag: "WLF", logo: "/api/v1/clans/c1/logo?v=42" }, staffRole: null, creatorTier: "main", boosterPlace: 1, banned: true, pings: [], shopRoles: [] },
     ]);
   });
 

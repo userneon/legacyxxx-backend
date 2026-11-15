@@ -119,12 +119,17 @@ export type DiscordLink = {
   banned: boolean;
   /** The ping topics the player switched on (see PING_TOPICS). Gives the matching "Ping: …" roles. */
   pings: PingTopic[];
+  /** Shop roles (owner request 2026-11-14) this player rents right now, as the keys SHOP_ROLES lists (`supporter`, `gold`, `legend`). */
+  shopRoles: string[];
 };
 
 type Row = Record<string, unknown>;
 const text = (value: unknown) => (typeof value === "string" ? value : "");
 const num = (value: unknown) => (typeof value === "number" && Number.isFinite(value) ? value : Number(value) || 0);
 const one = (value: unknown): Row => (Array.isArray(value) ? (value[0] as Row) ?? {} : (value as Row) ?? {});
+
+/** The Discord roles the Shop sells (owner request 2026-11-14): the item ids are `role-<key>`; the bot makes the role itself. */
+export const SHOP_ROLE_KEYS = ["supporter", "gold", "legend"];
 
 /** Discord ID → 1, 2 or 3 for the top three linked members who boost right now (most boosts first, ties: the earlier booster, then the name). */
 async function boosterPlaces(db: Db): Promise<Map<string, number>> {
@@ -207,6 +212,20 @@ export async function listLinks(db: Db, discordId?: string): Promise<DiscordLink
     }
   }
 
+  // Discord roles rented in the Shop: the items of kind discord_role whose rental has not run out, as role keys (the item id without "role-").
+  const shopRoles = new Map<string, string[]>();
+  const nowMs = Date.now();
+  for (let index = 0; index < userIds.length; index += 200) {
+    const { data: rows, error: roleError } = await db.from("cosmetic_owned").select("user_id,item_id,expires_at").in("item_id", SHOP_ROLE_KEYS.map((key) => `role-${key}`)).in("user_id", userIds.slice(index, index + 200));
+    if (roleError) continue; // the roles stay as they are for this sync
+    for (const row of (rows ?? []) as Row[]) {
+      const expires = row.expires_at ? Date.parse(text(row.expires_at)) : null;
+      if (expires !== null && !(expires > nowMs)) continue;
+      const key = text(row.item_id).slice("role-".length);
+      if (SHOP_ROLE_KEYS.includes(key)) shopRoles.set(text(row.user_id), [...(shopRoles.get(text(row.user_id)) ?? []), key]);
+    }
+  }
+
   return links.map((link) => {
     const user = one(link.users);
     const profile = profiles.get(text(link.user_id));
@@ -227,6 +246,7 @@ export async function listLinks(db: Db, discordId?: string): Promise<DiscordLink
       boosterPlace: places.get(text(link.discord_id)) ?? null,
       banned: bannedUsers.has(text(link.user_id)),
       pings: pings.get(text(link.user_id)) ?? [],
+      shopRoles: shopRoles.get(text(link.user_id)) ?? [],
     };
   });
 }

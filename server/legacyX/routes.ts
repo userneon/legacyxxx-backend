@@ -2082,7 +2082,7 @@ export function createLegacyXRouter() {
   });
   router.use("/cosmetics", cosmeticRateLimit);
   const cosmeticIdSchema = z.string().regex(/^[a-z0-9-]{2,40}$/);
-  const COSMETIC_KINDS = ["frame", "name_color", "name_glow", "banner", "title", "smoke_color", "grenade_trail", "grenade_light", "flash_effect", "background", "model_knife", "model_deagle", "model_ak47", "profile_customize"] as const;
+  const COSMETIC_KINDS = ["frame", "name_color", "name_glow", "banner", "title", "smoke_color", "grenade_trail", "grenade_light", "flash_effect", "background", "model_knife", "model_deagle", "model_ak47", "profile_customize", "discord_role"] as const;
   type CosmeticKind = (typeof COSMETIC_KINDS)[number];
   // Bought cosmetics are rented: a share of the item's price (its 30-day price) buys 1 day, 7 days or 30 days (owner request 2026-11-02: no forever, and the same three lengths for every item, the Crystal Orb and the backgrounds too).
   const COSMETIC_DURATIONS = [
@@ -2291,6 +2291,8 @@ export function createLegacyXRouter() {
       nameGlows: ofKind("name_glow"),
       banners: ofKind("banner"),
       titles: ofKind("title"),
+      /** Discord roles sold for FOL$ (the bot gives and takes them while the rental runs). */
+      discordRoles: ofKind("discord_role"),
       smokeColors: ofKind("smoke_color"),
       /** The colour of the line your own grenades draw in the air (game server). */
       grenadeTrails: ofKind("grenade_trail"),
@@ -2311,9 +2313,11 @@ export function createLegacyXRouter() {
     const item = (await loadCosmeticCatalog()).find((entry) => textValue(entry.id) === itemId);
     if (!item) apiError(404, "Item not found");
     if (textValue(item.unlock) !== "coin") apiError(409, "This item is not for sale", "cosmetic_not_for_sale");
+    // A Discord role goes to a Discord account: only a player who linked theirs can rent one.
+    if (textValue(item.kind) === "discord_role" && !(await discordLinkedUserIds(db(), [user.id])).has(user.id)) apiError(409, "Link your Discord first (Settings → Connections)", "discord_not_linked");
     const length = COSMETIC_DURATIONS.find((entry) => entry.key === input.duration)!;
     const price = Number(cosmeticPrices(numberValue(item.price))[length.key]);
-    const label = item.kind === "frame" ? "Frame" : item.kind === "name_color" ? "Name colour" : item.kind === "banner" ? "Banner" : item.kind === "title" ? "Title" : item.kind === "smoke_color" ? "Smoke colour" : item.kind === "grenade_trail" ? "Grenade trail" : item.kind === "grenade_light" ? "Grenade light" : item.kind === "flash_effect" ? "Flash effect" : String(item.kind).startsWith("model_") ? "Weapon model" : item.kind === "profile_customize" ? "Profile customize" : "Name glow";
+    const label = item.kind === "frame" ? "Frame" : item.kind === "name_color" ? "Name colour" : item.kind === "banner" ? "Banner" : item.kind === "title" ? "Title" : item.kind === "smoke_color" ? "Smoke colour" : item.kind === "discord_role" ? "Discord role" : item.kind === "grenade_trail" ? "Grenade trail" : item.kind === "grenade_light" ? "Grenade light" : item.kind === "flash_effect" ? "Flash effect" : String(item.kind).startsWith("model_") ? "Weapon model" : item.kind === "profile_customize" ? "Profile customize" : "Name glow";
     // Already yours: a rental is added on to the time left, and an item that is yours for good cannot be bought again.
     const { data: current, error: currentError } = await db().from("cosmetic_owned").select("expires_at,source").eq("user_id", user.id).eq("item_id", itemId).maybeSingle();
     legacyXError(currentError, "Unable to check your cosmetics");
@@ -2459,6 +2463,7 @@ export function createLegacyXRouter() {
       z.object({ frame: cosmeticIdSchema.nullable() }).strict().transform((value) => ({ kind: "frame" as CosmeticKind, item: value.frame })),
       z.object({ kind: z.enum(COSMETIC_KINDS), item: cosmeticIdSchema.nullable() }).strict(),
     ]).parse(req.body);
+    if (input.kind === "discord_role") apiError(400, "A Discord role is not worn: the bot gives it while it runs", "cosmetic_not_wearable");
     if (input.item === null) {
       const { error } = await db().from("cosmetic_equipped").delete().eq("user_id", user.id).eq("kind", input.kind);
       legacyXError(error, "Unable to take it off");
