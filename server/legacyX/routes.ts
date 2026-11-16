@@ -61,6 +61,7 @@ import { isMissingTableError, ownerLinks, ownerProfileSchema, ownerTeam, ownerUp
 import { liftInfo } from "./penaltyLift";
 import { cleanPlayerConfig, playerConfigSchema } from "./playerConfig";
 import { menuLoadoutQuery, menuRarity, menuTiles, MENU_AGENT_TEAMS, MENU_SKIN_PAGE, MENU_SLOT_CATEGORY, entriesReplacedByEquip, menuAgentName, menuGunModel, menuSkinEquipBody, menuSkinOptionsBody, mergeMenuOptions, menuSkinUnequipBody, entriesRemovedByUnequip, menuSkinItemsQuery, menuSkinName, menuSkinSlotSchema, menuSkinTypesQuery, menuSlotKey, sharedGunEntryMovedTo, type LoadoutRow, type MenuSkinSlot } from "./menuSkins";
+import { TRACK_MATCH_LIMIT, buildTrack } from "./profileTrack";
 import { PROFILE_NAME_MAX, PROFILE_SECTIONS, bestNameMatch, escapeLike, hiddenForViewer, loadoutShowcase, mapWinRates, normalizeHiddenSections, profileStats, buildBenchmark, BENCHMARK_MIN_MATCHES, staffCard, type ProfileSection } from "./profileOverview";
 import { PERK_DAYS, PERK_QUOTAS, PERK_TIER_KEYS, grantAfterPurchase, isPerkTier, perkActive, perkCheckoutProblem, perkPool, savePicks, type PerkGrant, type PerkTier } from "./perks";
 import { ADMIN_LEVEL_KEYS, ADMIN_LEVELS, extraCommandChoices, extraCommandsProblem, isAdminLevel } from "./adminLevels";
@@ -1667,6 +1668,32 @@ export function createLegacyXRouter() {
       clan: clanTag,
       ...ownerExtras,
     });
+  }));
+  /**
+   * The Track tab (owner request 2026-11-16): detailed numbers over the player's last ranked matches. The same privacy as the overview:
+   * hidden "stats" or "matches" sections and an active ban show no numbers to anyone but the owner and staff.
+   */
+  router.get("/profile/:userId/track", optionalUserRoute(async (req, res, viewer) => {
+    const raw = String(req.params.userId ?? "");
+    if (raw === "me" && !viewer) apiError(401, "Sign in to view your profile");
+    const userId = viewer ? await resolveUserId(raw, viewer) : await resolveUserId(raw, { id: "" } as LegacyUser);
+    const [userResult, viewerStaffResult] = await Promise.all([
+      db().from("users").select("id,hidden_profile_sections").eq("id", userId).maybeSingle(),
+      viewer ? db().from("staff").select("id").eq("user_id", viewer.id).eq("status", "active").maybeSingle() : Promise.resolve({ data: null, error: null }),
+    ]);
+    legacyXError(userResult.error || viewerStaffResult.error, "Unable to load the track");
+    const user = userResult.data as DbRow | null;
+    if (!user) apiError(404, "Player was not found");
+    const isOwner = viewer?.id === userId;
+    const hidden = hiddenForViewer(hiddenSectionsValue(user.hidden_profile_sections), { isOwner, isStaff: Boolean(viewerStaffResult.data) });
+    const banned = (await activeBannedUserIds(db(), [userId]).catch(() => new Set<string>())).has(userId);
+    if (banned) return void res.json({ banned: true, hidden: false, track: null });
+    if (hidden.includes("stats") || hidden.includes("matches")) return void res.json({ banned: false, hidden: true, track: null });
+    const { data, error } = await db().from("competitive_match_exp")
+      .select("match_id,team_key,outcome,exp_delta,stats,created_at,core_matches(map_name,finished_at)")
+      .eq("user_id", userId).order("created_at", { ascending: false }).limit(TRACK_MATCH_LIMIT);
+    legacyXError(error, "Unable to load the track");
+    res.json({ banned: false, hidden: false, track: buildTrack((data ?? []) as DbRow[]) });
   }));
   /** Respect count and whether the viewer gave one. Null while the migration is not applied, so the button stays hidden. */
   const respectState = async (targetId: string, viewerId: string | null) => {
