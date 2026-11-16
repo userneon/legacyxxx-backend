@@ -61,6 +61,7 @@ import { isMissingTableError, ownerLinks, ownerProfileSchema, ownerTeam, ownerUp
 import { liftInfo } from "./penaltyLift";
 import { cleanPlayerConfig, playerConfigSchema } from "./playerConfig";
 import { menuLoadoutQuery, menuRarity, menuTiles, MENU_AGENT_TEAMS, MENU_SKIN_PAGE, MENU_SLOT_CATEGORY, entriesReplacedByEquip, menuAgentName, menuGunModel, menuSkinEquipBody, menuSkinOptionsBody, mergeMenuOptions, menuSkinUnequipBody, entriesRemovedByUnequip, menuSkinItemsQuery, menuSkinName, menuSkinSlotSchema, menuSkinTypesQuery, menuSlotKey, sharedGunEntryMovedTo, type LoadoutRow, type MenuSkinSlot } from "./menuSkins";
+import { HISTORY_PAGE, historyQuery, historyRow } from "./profileHistory";
 import { TRACK_MATCH_LIMIT, buildTrack } from "./profileTrack";
 import { PROFILE_NAME_MAX, PROFILE_SECTIONS, bestNameMatch, escapeLike, hiddenForViewer, loadoutShowcase, mapWinRates, normalizeHiddenSections, profileStats, buildBenchmark, BENCHMARK_MIN_MATCHES, staffCard, type ProfileSection } from "./profileOverview";
 import { PERK_DAYS, PERK_QUOTAS, PERK_TIER_KEYS, grantAfterPurchase, isPerkTier, perkActive, perkCheckoutProblem, perkPool, savePicks, type PerkGrant, type PerkTier } from "./perks";
@@ -1694,6 +1695,50 @@ export function createLegacyXRouter() {
       .eq("user_id", userId).order("created_at", { ascending: false }).limit(TRACK_MATCH_LIMIT);
     legacyXError(error, "Unable to load the track");
     res.json({ banned: false, hidden: false, track: buildTrack((data ?? []) as DbRow[]) });
+  }));
+  /**
+   * The History tab (owner request 2026-11-16): every ranked match, newest first, 25 at a time. `before` is the `cursor` of the last page,
+   * `result` is win/loss and `map` a map name. The same privacy as the overview: hidden "matches" or an active ban list nothing.
+   */
+  router.get("/profile/:userId/history", optionalUserRoute(async (req, res, viewer) => {
+    const raw = String(req.params.userId ?? "");
+    if (raw === "me" && !viewer) apiError(401, "Sign in to view your profile");
+    const userId = viewer ? await resolveUserId(raw, viewer) : await resolveUserId(raw, { id: "" } as LegacyUser);
+    const [userResult, viewerStaffResult] = await Promise.all([
+      db().from("users").select("id,hidden_profile_sections").eq("id", userId).maybeSingle(),
+      viewer ? db().from("staff").select("id").eq("user_id", viewer.id).eq("status", "active").maybeSingle() : Promise.resolve({ data: null, error: null }),
+    ]);
+    legacyXError(userResult.error || viewerStaffResult.error, "Unable to load the history");
+    const user = userResult.data as DbRow | null;
+    if (!user) apiError(404, "Player was not found");
+    const hidden = hiddenForViewer(hiddenSectionsValue(user.hidden_profile_sections), { isOwner: viewer?.id === userId, isStaff: Boolean(viewerStaffResult.data) });
+    const banned = (await activeBannedUserIds(db(), [userId]).catch(() => new Set<string>())).has(userId);
+    if (banned) return void res.json({ banned: true, hidden: false, matches: [], total: 0, cursor: null, maps: [] });
+    if (hidden.includes("matches")) return void res.json({ banned: false, hidden: true, matches: [], total: 0, cursor: null, maps: [] });
+    const query = historyQuery.parse(req.query);
+    let rows = db().from("competitive_match_exp")
+      .select("match_id,team_key,outcome,exp_before,exp_delta,exp_after,exp_breakdown,stats,created_at,core_matches!inner(map_name,map_number,finished_at,result)", { count: "exact" })
+      .eq("user_id", userId);
+    if (query.result) rows = rows.eq("outcome", query.result);
+    if (query.map) rows = rows.eq("core_matches.map_name", query.map);
+    if (query.before) rows = rows.lt("created_at", query.before);
+    const [page, mapsResult] = await Promise.all([
+      rows.order("created_at", { ascending: false }).limit(HISTORY_PAGE + 1),
+      db().from("competitive_match_exp").select("core_matches!inner(map_name)").eq("user_id", userId).limit(1000),
+    ]);
+    legacyXError(page.error || mapsResult.error, "Unable to load the history");
+    const found = (page.data ?? []) as DbRow[];
+    const more = found.length > HISTORY_PAGE;
+    const shown = found.slice(0, HISTORY_PAGE);
+    const maps = Array.from(new Set(((mapsResult.data ?? []) as DbRow[]).map((row) => textValue((Array.isArray(row.core_matches) ? row.core_matches[0] : row.core_matches)?.map_name)).filter(Boolean))).sort();
+    res.json({
+      banned: false,
+      hidden: false,
+      matches: shown.map(historyRow),
+      total: page.count ?? shown.length,
+      cursor: more ? textValue(shown[shown.length - 1].created_at) : null,
+      maps,
+    });
   }));
   /** Respect count and whether the viewer gave one. Null while the migration is not applied, so the button stays hidden. */
   const respectState = async (targetId: string, viewerId: string | null) => {
