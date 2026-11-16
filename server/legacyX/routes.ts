@@ -51,7 +51,6 @@ import { SETTINGS, forgetSettings, loadSettings, settingDef, validSettingValue }
 import { activeSiteEvent, siteEventSchema, siteEventView, ulaanbaatarDay, type SiteEventRecord } from "./siteEvents";
 import { cleanReferralCode, newReferralCode, referralRefusal } from "./referrals";
 import { GAME_COMMANDS, GAME_MODES, GAME_ROLES, GAME_ROLE_LABELS, EXTRA_FLAGS, defaultGameRole, gameRoleConfigSchema, isGameRole } from "./gameRoles";
-import { frameLookSchema, readFrameLook, type FrameLook } from "./frameLook";
 import { backgroundLookSchema, isBackgroundItem, readBackgroundLook } from "./backgroundLook";
 import { PROFILE_BANNER_LIMITS, PROFILE_CUSTOMIZE_ITEM, cleanProfileLook, nameStyleOf, profileLookSchema, readProfileLook } from "./profileLook";
 import { ANNOUNCEMENT_MAX_AGE_HOURS, ANNOUNCEMENT_PAGE, announcementRow, announcementSchema, announcementView, type AnnouncementRecord } from "./announcements";
@@ -1234,7 +1233,7 @@ export function createLegacyXRouter() {
     })();
     // These four only need the ladder's user IDs: they run side by side.
     const [linked, clanTags, worn, expChanges] = await Promise.all([discordLinkedUserIds(db(), userIds.filter(Boolean)), clanTagsFor(userIds), equippedCosmeticsFor(userIds), expChangesPromise]);
-    const rows = ((data ?? []) as DbRow[]).map((row): DbRow => ({ ...row, exp_change: expChanges.get(textValue(row.user_id)) ?? null, discord_linked: linked.has(textValue(row.user_id)), clan_tag: clanTags.get(textValue(row.user_id))?.tag ?? null, clan_look: clanTags.get(textValue(row.user_id))?.look ?? null, frame: worn.get(textValue(row.user_id))?.frame ?? null, frame_look: worn.get(textValue(row.user_id))?.frameLook ?? null, name_style: worn.get(textValue(row.user_id))?.nameStyle ?? null, perk: worn.get(textValue(row.user_id))?.perk ?? null, banner: bannerOf(worn, textValue(row.user_id)) }));
+    const rows = ((data ?? []) as DbRow[]).map((row): DbRow => ({ ...row, exp_change: expChanges.get(textValue(row.user_id)) ?? null, discord_linked: linked.has(textValue(row.user_id)), clan_tag: clanTags.get(textValue(row.user_id))?.tag ?? null, clan_look: clanTags.get(textValue(row.user_id))?.look ?? null, frame: worn.get(textValue(row.user_id))?.frame ?? null, name_style: worn.get(textValue(row.user_id))?.nameStyle ?? null, perk: worn.get(textValue(row.user_id))?.perk ?? null, banner: bannerOf(worn, textValue(row.user_id)) }));
     if (sort === "exp") return { sort, minimumMatches: 0, entries: rows };
     // K/D and win rate are only meaningful with a sample: 10 completed matches minimum.
     const metric = (row: DbRow) => Number(sort === "kd" ? row.kd_ratio : row.win_rate) || 0;
@@ -1617,7 +1616,6 @@ export function createLegacyXRouter() {
     // The settings of a Crystal Orb frame, only for a player who wears one (best effort: a missing table never breaks the profile).
     // The background worn on this profile and its saved knobs (best effort).
     const profileBackground = mine?.background ? { id: mine.background, look: readBackgroundLook(((await db().from("background_looks").select("look").eq("user_id", userId).eq("item_id", mine.background).maybeSingle()).data as DbRow | null)?.look) } : null;
-    const profileFrameLook = mine?.frame === "crystal-orb" ? readFrameLook(((await db().from("frame_looks").select("look").eq("user_id", userId).maybeSingle()).data as DbRow | null)?.look) : null;
     res.json({
       user: {
         id: textValue(user.id),
@@ -1629,7 +1627,7 @@ export function createLegacyXRouter() {
         steamBackground: steamMedia.background,
         steamMedia: { backgroundVideo: steamMedia.backgroundVideo, animatedAvatar: steamMedia.animatedAvatar, avatarFrame: steamMedia.avatarFrame },
         background: profileBackground,
-        frame: mine?.frame ?? null, frameLook: mine?.frame === "crystal-orb" ? profileFrameLook : null, nameStyle: mine?.nameStyle ?? null, banner: mine?.banner ?? null, bannerImage: mine?.bannerImage ?? null, title: mine?.title ?? null, founder,
+        frame: mine?.frame ?? null, nameStyle: mine?.nameStyle ?? null, banner: mine?.banner ?? null, bannerImage: mine?.bannerImage ?? null, title: mine?.title ?? null, founder,
       },
       viewer: { isOwner, isStaff },
       banned: bannedNow,
@@ -2108,7 +2106,7 @@ export function createLegacyXRouter() {
   /** What each of these players wears: their frame (item id) and name style (plain colours); players with nothing are left out. */
   const equippedCosmeticsFor = async (userIds: string[]) => {
     const ids = Array.from(new Set(userIds.filter(Boolean)));
-    const worn = new Map<string, { frame: string | null; frameLook?: FrameLook | null; background?: string | null; banner: string | null; bannerImage?: string | null; title: string | null; nameStyle: { color: string | null; glow: string | null; colorFx: string | null; glowFx: string | null; mode?: string; font?: string; color2?: string | null } | null; perk?: { tier: string; name: string } | null }>();
+    const worn = new Map<string, { frame: string | null; background?: string | null; banner: string | null; bannerImage?: string | null; title: string | null; nameStyle: { color: string | null; glow: string | null; colorFx: string | null; glowFx: string | null; mode?: string; font?: string; color2?: string | null } | null; perk?: { tier: string; name: string } | null }>();
     if (!ids.length) return worn;
     // The colour each player picked for each design (name colours and glows are coloured by their wearer).
     const customRows = await db().from("cosmetic_custom").select("user_id,item_id,color,color2").in("user_id", ids);
@@ -2138,12 +2136,6 @@ export function createLegacyXRouter() {
         entry.nameStyle = style;
       }
       worn.set(userId, entry);
-    }
-    // The settings of every Crystal Orb that is worn here (one read; a missing table never breaks the lists).
-    const orbWearers = Array.from(worn.entries()).filter(([, entry]) => entry.frame === "crystal-orb").map(([userId]) => userId);
-    if (orbWearers.length) {
-      const looks = await db().from("frame_looks").select("user_id,look").in("user_id", orbWearers);
-      if (!looks.error) for (const row of (looks.data ?? []) as DbRow[]) { const entry = worn.get(textValue(row.user_id)); if (entry) entry.frameLook = readFrameLook(row.look); }
     }
     // Profile customize (owner request 2026-11-14): while the rental runs, the player's own name style and banner picture replace the old name items. Best effort: a missing table never breaks the lists.
     const customizing = await profileCustomizeUsers(ids);
@@ -2182,7 +2174,7 @@ export function createLegacyXRouter() {
   /** The banner shown behind a player's card in lists: the one they wear, else their paid rank's own (owner request 2026-11-07), else none. */
   const bannerOf = (worn: Awaited<ReturnType<typeof equippedCosmeticsFor>>, userId: string) => worn.get(userId)?.banner ?? (worn.get(userId)?.perk ? `perk-${worn.get(userId)!.perk!.tier}` : null);
   /** The frame and name style fields every player card carries (null when nothing is worn). */
-  const lookOf = (worn: Awaited<ReturnType<typeof equippedCosmeticsFor>>, userId: string) => ({ frame: worn.get(userId)?.frame ?? null, frameLook: worn.get(userId)?.frameLook ?? null, nameStyle: worn.get(userId)?.nameStyle ?? null, perk: worn.get(userId)?.perk ?? null, banner: bannerOf(worn, userId), bannerImage: worn.get(userId)?.bannerImage ?? null });
+  const lookOf = (worn: Awaited<ReturnType<typeof equippedCosmeticsFor>>, userId: string) => ({ frame: worn.get(userId)?.frame ?? null, nameStyle: worn.get(userId)?.nameStyle ?? null, perk: worn.get(userId)?.perk ?? null, banner: bannerOf(worn, userId), bannerImage: worn.get(userId)?.bannerImage ?? null });
   const cosmeticView = (item: DbRow, ownedIds: Set<string>, owners: Map<string, number>, endsAt: Map<string, string | null>) => ({
     id: textValue(item.id),
     name: textValue(item.name_en),
@@ -2239,8 +2231,6 @@ export function createLegacyXRouter() {
     const profileLookOwn = profileLookRow.error ? null : readProfileLook(profileLookRow.data as DbRow | null);
     const profileBannerRow = user ? await db().from("profile_banners").select("updated_at").eq("user_id", user.id).maybeSingle() : { data: null, error: null };
     const profileBannerOwn = !profileBannerRow.error && profileBannerRow.data ? `/api/v1/profile-banner/${user!.id}?v=${Date.parse(textValue((profileBannerRow.data as DbRow).updated_at)) || 0}` : null;
-    const frameLookRow = user ? await db().from("frame_looks").select("look").eq("user_id", user.id).maybeSingle() : { data: null, error: null };
-    const frameLookOwn = frameLookRow.error ? null : readFrameLook((frameLookRow.data as DbRow | null)?.look);
     const bgLookRows = user ? await db().from("background_looks").select("item_id,look").eq("user_id", user.id) : { data: [] as DbRow[], error: null };
     const backgroundLooks: Record<string, unknown> = {};
     if (!bgLookRows.error) for (const row of (bgLookRows.data ?? []) as DbRow[]) { const look = readBackgroundLook(row.look); if (look) backgroundLooks[textValue(row.item_id)] = look; }
@@ -2266,7 +2256,6 @@ export function createLegacyXRouter() {
       /** The settings this player saved for each background they own (keyed by item id). */
       backgroundLooks,
       /** The settings of the Crystal Orb this player picked (null: none yet, the website shows the preset). */
-      frameLook: frameLookOwn,
       equippedNameColor: wearing.get("name_color") ?? null,
       equippedNameGlow: wearing.get("name_glow") ?? null,
       equippedBanner: wearing.get("banner") ?? null,
@@ -2412,16 +2401,6 @@ export function createLegacyXRouter() {
     const saved = await db().from("background_looks").upsert({ user_id: user.id, item_id: input.item, look: input.look, updated_at: new Date().toISOString() }, { onConflict: "user_id,item_id" });
     legacyXError(saved.error, "Unable to save your background");
     res.json({ item: input.item, look: readBackgroundLook(input.look) });
-  }));
-  // The settings of the Crystal Orb frame (owner request 2026-11-01): everything the React Bits ball has, saved by its owner and read back for every viewer of their profile.
-  router.put("/cosmetics/frame-look", userRoute(async (req, res, user) => {
-    const look = frameLookSchema.parse(req.body);
-    const { data, error: ownedError } = await db().from("cosmetic_owned").select("item_id,expires_at").eq("user_id", user.id).eq("item_id", "crystal-orb").maybeSingle();
-    legacyXError(ownedError, "Unable to check your cosmetics");
-    if (!data || !stillRunning((data as DbRow).expires_at)) apiError(403, "You do not own the Crystal Orb yet", "cosmetic_not_owned");
-    const saved = await db().from("frame_looks").upsert({ user_id: user.id, look, updated_at: new Date().toISOString() }, { onConflict: "user_id" });
-    legacyXError(saved.error, "Unable to save your orb");
-    res.json({ look: readFrameLook(look) });
   }));
   // Wear one, or take it off with item: null. The older { frame } body still works.
   // Pick the colour of a custom item you own (a player buys it like any other cosmetic first); saving wears it.
@@ -5354,7 +5333,6 @@ export function createLegacyXRouter() {
         tiktok: tiktok.get(textValue(row.user_id)) ? { username: tiktok.get(textValue(row.user_id))!.username, followers: tiktok.get(textValue(row.user_id))!.followers } : null,
         rank: rank ? { id: numberValue(rank.rank_id), name: textValue(rank.rank_name), imageKey: textValue(rank.rank_image_key) || null } : null,
         frame: worn.get(textValue(row.user_id))?.frame ?? null,
-        frameLook: worn.get(textValue(row.user_id))?.frameLook ?? null,
         nameStyle: worn.get(textValue(row.user_id))?.nameStyle ?? null,
         perk: worn.get(textValue(row.user_id))?.perk ?? null,
         sort: numberValue(row.sort),

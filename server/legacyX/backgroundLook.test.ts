@@ -19,6 +19,6 @@ describe("profile background look", () => {
   });
   it("names background items", () => {
     expect(isBackgroundItem("bg-aurora")).toBe(true);
-    expect(isBackgroundItem("crystal-orb")).toBe(false);
+    expect(isBackgroundItem("some-frame")).toBe(false);
   });
 });
