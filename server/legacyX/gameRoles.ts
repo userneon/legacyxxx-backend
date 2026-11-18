@@ -19,7 +19,7 @@ export type GameMode = (typeof GAME_MODES)[number];
 export type GameCommand = { name: string; flag: string; group: string; summary: string; locked: boolean; stamina?: number };
 
 export const GAME_COMMANDS: GameCommand[] = [
-  { name: "addadmin", flag: "@css/root", group: "Server", summary: "Staff are managed on legacyx.cc", locked: true, stamina: 1000 },
+  { name: "addadmin", flag: "@css/root", group: "Server", summary: "Staff are managed on the website", locked: true, stamina: 1000 },
   { name: "admin", flag: "@css/generic", group: "Basics and votes", summary: "Open admin menu from console", locked: false, stamina: 250 },
   { name: "adminlist", flag: "@css/root", group: "Server", summary: "List authorized staff online", locked: true, stamina: 750 },
   { name: "adminreload", flag: "@css/root", group: "Server", summary: "Re-check online staff with the LXC API", locked: true, stamina: 1000 },
@@ -73,7 +73,7 @@ export const GAME_COMMANDS: GameCommand[] = [
   { name: "noclip", flag: "@css/cheats", group: "Cheats", summary: "Fly through walls, again to stop", locked: false, stamina: 1000 },
   { name: "psay", flag: "@css/chat", group: "Chat and punishments", summary: "Private say (console)", locked: false, stamina: 250 },
   { name: "rcon", flag: "@css/rcon", group: "Server", summary: "Send RCON command from console", locked: true, stamina: 1000 },
-  { name: "removeadmin", flag: "@css/root", group: "Server", summary: "Staff are managed on legacyx.cc", locked: true, stamina: 1000 },
+  { name: "removeadmin", flag: "@css/root", group: "Server", summary: "Staff are managed on the website", locked: true, stamina: 1000 },
   { name: "rename", flag: "@css/slay", group: "Fun", summary: "Rename a player", locked: false, stamina: 750 },
   { name: "respawn", flag: "@css/cheats", group: "Cheats", summary: "Bring a dead player back to life", locked: false, stamina: 1000 },
   { name: "rr", flag: "@css/generic", group: "Basics and votes", summary: "Send the server back to warmup", locked: false, stamina: 500 },
