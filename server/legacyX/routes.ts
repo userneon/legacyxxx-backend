@@ -70,6 +70,7 @@ import { apnsConfig, createApnsSender, pushDeviceSchema, pushTick, supabasePushS
 import { grantQaCosmetics, isActiveQa, revokeStaleQaCosmetics } from "./qaAccess";
 import { activeBannedUserIds, activeBans, bannedPlayer, checkBansSchema, issueBan, issueBanSchema, issueIpBan, issueIpBanSchema, listActiveBans, revokeAllBans, revokeAllBansSchema, revokeBans, revokeBanSchema, revokeIpBans, revokeIpBanSchema } from "./bans";
 import { authorizationRequestSchema, loadGameRoles, resolveAuthorizations } from "./adminAuthorization";
+import { AD_HOURS, AD_PRICES, AD_SLOTS, bannerFromThumbnail, creatorAdDecisionSchema, creatorAdSchema, creatorTikTokHandle, fetchOEmbed, oembedHandle, parseTikTokVideoUrl } from "./creatorAds";
 import { CREATOR_TIER_LABEL, cleanCreatorLinks, creatorApplicationSchema, creatorDecisionSchema, creatorTier, ownCreatorLinksSchema, sortCreators, upsertCreatorSchema } from "./creators";
 import { boosterPlaceOf, endBoosterFrames, grantBoosterFrames, isBoostingNow, syncBoosterPodium } from "./boosterRewards";
 import { cleanClanLinks, clanLinksSchema } from "./clanLinks";
@@ -6087,6 +6088,137 @@ export function createLegacyXRouter() {
     legacyXError(error, "Unable to check the creator");
     if (!data) apiError(403, "Only content creators can connect TikTok", "creator_required");
   };
+  // Creator ads on Home (owner request 2026-11-18, supabase/legacy_x_creator_ads.sql, creatorAds.ts): a content creator pays 5,000 FOL$ (24 h) or 8,000 (48 h) to show one of their
+  // TikTok videos as a banner in the Home slider. Only the link is sent; the banner and title come from TikTok. Staff approve, and the price is taken at approval.
+  const adImageUrl = (id: string) => `/api/v1/public/creator-ads/${id}/image`;
+  router.get("/creators/me/ads", userRoute(async (_req, res, user) => {
+    await requireCreator(user.id);
+    const [mine, wallet, profile] = await Promise.all([
+      db().from("creator_ads").select("id,tiktok_url,handle,title,hours,price,status,note,created_at,starts_at,ends_at").eq("user_id", user.id).order("created_at", { ascending: false }).limit(20),
+      db().from("wallets").select("balance").eq("user_id", user.id).maybeSingle(),
+      db().from("content_creators").select("links").eq("user_id", user.id).maybeSingle(),
+    ]);
+    legacyXError(mine.error, "Unable to load your ads");
+    const handle = creatorTikTokHandle(cleanCreatorLinks((profile.data as DbRow | null)?.links).tiktok);
+    res.set("Cache-Control", "no-store");
+    res.json({
+      prices: Object.fromEntries(AD_HOURS.map((hours) => [hours, AD_PRICES[hours]])),
+      balance: numberValue((wallet.data as DbRow | null)?.balance),
+      tiktokHandle: handle,
+      ads: ((mine.data ?? []) as DbRow[]).map((row) => ({
+        id: textValue(row.id), url: textValue(row.tiktok_url), handle: textValue(row.handle), title: textValue(row.title), hours: numberValue(row.hours), price: numberValue(row.price),
+        status: textValue(row.status), note: textValue(row.note), createdAt: textValue(row.created_at), startsAt: row.starts_at ? textValue(row.starts_at) : null, endsAt: row.ends_at ? textValue(row.ends_at) : null,
+        imageUrl: adImageUrl(textValue(row.id)),
+      })),
+    });
+  }));
+  router.post("/creators/me/ads", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
+    await requireCreator(user.id);
+    const input = creatorAdSchema.parse(req.body);
+    const video = parseTikTokVideoUrl(input.url);
+    if (!video) apiError(400, "Send the TikTok video link: https://www.tiktok.com/@name/video/123...", "ad_bad_link");
+    const price = AD_PRICES[input.hours];
+    const [profile, wallet, open] = await Promise.all([
+      db().from("content_creators").select("links").eq("user_id", user.id).maybeSingle(),
+      db().from("wallets").select("balance").eq("user_id", user.id).maybeSingle(),
+      db().from("creator_ads").select("id,status,ends_at").eq("user_id", user.id).in("status", ["pending", "approved"]),
+    ]);
+    const own = creatorTikTokHandle(cleanCreatorLinks((profile.data as DbRow | null)?.links).tiktok);
+    if (!own) apiError(409, "Add your TikTok profile link to your creator links first, so we can check the video is yours.", "ad_no_tiktok");
+    if (own !== video.handle) apiError(403, `This video is from ${video.handle}; your TikTok is ${own}.`, "ad_not_yours");
+    if (numberValue((wallet.data as DbRow | null)?.balance) < price) apiError(402, `An ad of ${input.hours} h costs ${price.toLocaleString("en")} FOL$.`, "ad_balance");
+    const busy = ((open.data ?? []) as DbRow[]).some((row) => textValue(row.status) === "pending" || Date.parse(textValue(row.ends_at)) > Date.now());
+    if (busy) apiError(409, "You already have an ad waiting or running.", "ad_busy");
+    let banner: Buffer;
+    let title = "";
+    try {
+      const embed = await fetchOEmbed(video.url);
+      const author = oembedHandle(embed.authorUrl);
+      if (author && author !== video.handle) apiError(403, "TikTok says this video is from another account.", "ad_not_yours");
+      title = embed.title;
+      banner = await bannerFromThumbnail(embed.thumbnailUrl);
+    } catch (failure) {
+      if (failure instanceof Error && "statusCode" in failure) throw failure;
+      apiError(422, failure instanceof Error ? failure.message : "The video could not be read", "ad_video");
+    }
+    const { data, error } = await db().from("creator_ads").insert({
+      user_id: user.id, tiktok_url: video.url, video_id: video.videoId, handle: video.handle, title, image_mime: "image/webp", image_data: `\\x${banner.toString("hex")}`, hours: input.hours, price,
+    }).select("id").single();
+    legacyXError(error, "Unable to save your ad");
+    await db().from("audit_logs").insert({ actor_type: "user", actor_id: user.id, action: "creator_ad.submit", target_type: "creator_ads", target_id: textValue((data as DbRow).id), metadata: { hours: input.hours } });
+    res.status(201).json({ id: textValue((data as DbRow).id), status: "pending", title, imageUrl: adImageUrl(textValue((data as DbRow).id)) });
+  }));
+  router.delete("/creators/me/ads/:id", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
+    await requireCreator(user.id);
+    const id = z.string().uuid().parse(req.params.id);
+    const { data, error } = await db().from("creator_ads").update({ status: "cancelled", decided_at: new Date().toISOString() }).eq("id", id).eq("user_id", user.id).eq("status", "pending").select("id").maybeSingle();
+    legacyXError(error, "Unable to cancel the ad");
+    if (!data) apiError(409, "Only an ad that is still waiting can be cancelled", "ad_not_pending");
+    res.json({ id, status: "cancelled" });
+  }));
+  router.get("/public/creator-ads", asyncRoute(async (_req, res) => {
+    const { data, error } = await db().from("creator_ads").select("id,tiktok_url,handle,title,starts_at,ends_at").eq("status", "approved").gt("ends_at", new Date().toISOString()).order("starts_at", { ascending: true }).limit(AD_SLOTS);
+    legacyXError(error, "Unable to load the ads");
+    res.set("Cache-Control", "public, max-age=60").json({ ads: ((data ?? []) as DbRow[]).map((row) => ({ id: textValue(row.id), url: textValue(row.tiktok_url), handle: textValue(row.handle), title: textValue(row.title), imageUrl: adImageUrl(textValue(row.id)), endsAt: textValue(row.ends_at) })) });
+  }));
+  router.get("/public/creator-ads/:id/image", asyncRoute(async (req, res) => {
+    const id = z.string().uuid().parse(req.params.id);
+    const { data, error } = await db().from("creator_ads").select("image_data,status").eq("id", id).maybeSingle();
+    legacyXError(error, "Unable to load the picture");
+    // Only a running ad's picture is public; staff look at a waiting one through the staff list's own link, which is the same address, so a waiting picture is served too (it holds nothing private).
+    if (!data || !["pending", "approved"].includes(textValue((data as DbRow).status))) apiError(404, "No picture");
+    const hex = String((data as DbRow).image_data);
+    res.set({ "Content-Type": "image/webp", "Cache-Control": "public, max-age=3600", "Content-Disposition": "inline", "X-Content-Type-Options": "nosniff" }).send(Buffer.from(hex.startsWith("\\x") ? hex.slice(2) : hex, "hex"));
+  }));
+  router.get("/staff/creator-ads", userRoute(async (_req, res, user) => {
+    await requireClanModerator(user.id);
+    const { data, error } = await db().from("creator_ads").select("id,user_id,tiktok_url,handle,title,hours,price,created_at").eq("status", "pending").order("created_at", { ascending: true }).limit(50);
+    legacyXError(error, "Unable to load the ads");
+    const rows = (data ?? []) as DbRow[];
+    const players = rows.length ? await db().from("users").select("id,steam_id,username,avatar").in("id", rows.map((row) => textValue(row.user_id))) : { data: [] as DbRow[], error: null };
+    legacyXError(players.error, "Unable to load the creators");
+    const playerById = new Map(((players.data ?? []) as DbRow[]).map((player) => [textValue(player.id), player]));
+    res.set("Cache-Control", "no-store");
+    res.json({ ads: rows.map((row) => {
+      const player = playerById.get(textValue(row.user_id));
+      return { id: textValue(row.id), url: textValue(row.tiktok_url), handle: textValue(row.handle), title: textValue(row.title), hours: numberValue(row.hours), price: numberValue(row.price), createdAt: textValue(row.created_at), imageUrl: adImageUrl(textValue(row.id)), creator: { steamId: textValue(player?.steam_id), username: textValue(player?.username), avatar: textValue(player?.avatar) } };
+    }) });
+  }));
+  router.put("/staff/creator-ads/:id", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
+    await requireClanModerator(user.id);
+    const id = z.string().uuid().parse(req.params.id);
+    const input = creatorAdDecisionSchema.parse(req.body);
+    const { data: ad, error: readError } = await db().from("creator_ads").select("id,user_id,hours,price,status").eq("id", id).maybeSingle();
+    legacyXError(readError, "Unable to read the ad");
+    if (!ad) apiError(404, "Ad not found");
+    if (textValue(ad.status) !== "pending") apiError(409, "This ad was already answered", "ad_answered");
+    const owner = textValue(ad.user_id);
+    let endsAt: string | null = null;
+    if (input.decision === "approve") {
+      // One transaction in the database: claim the row, take the price from the wallet, start the clock. A short wallet refuses it and nothing changes.
+      const { data, error } = await legacyXDb().rpc("creator_ad_approve", { p_ad: id, p_staff: user.id });
+      if (error) {
+        if (/balance|insufficient|funds/i.test(error.message)) apiError(402, "The creator does not have enough FOL$ any more.", "ad_balance");
+        if (/already answered/i.test(error.message)) apiError(409, "This ad was already answered", "ad_answered");
+        legacyXError(error, "Unable to approve the ad");
+      }
+      endsAt = typeof data === "string" ? data : null;
+    } else {
+      const { data, error } = await db().from("creator_ads").update({ status: "rejected", note: input.note, decided_by: user.id, decided_at: new Date().toISOString() }).eq("id", id).eq("status", "pending").select("id").maybeSingle();
+      legacyXError(error, "Unable to save the answer");
+      if (!data) apiError(409, "This ad was already answered", "ad_answered");
+    }
+    const approved = input.decision === "approve";
+    const { error: tellError } = await db().from("notifications").insert({
+      user_id: owner, kind: "system",
+      title: approved ? "Your Home banner is live" : "Your Home banner was declined",
+      body: approved ? `It runs for ${numberValue(ad.hours)} h and ${numberValue(ad.price).toLocaleString("en")} FOL$ was taken.` : (input.note || "Nothing was taken from your wallet."),
+      metadata: { kind: "creator_ad" },
+    });
+    if (tellError) console.warn("[legacy-x-api] creator ad notification not saved", tellError.message);
+    await db().from("audit_logs").insert({ actor_type: "user", actor_id: user.id, action: approved ? "creator_ad.approve" : "creator_ad.reject", target_type: "creator_ads", target_id: id, metadata: { hours: numberValue(ad.hours), price: numberValue(ad.price) } });
+    res.json({ id, status: approved ? "approved" : "rejected", endsAt });
+  }));
   router.get("/creators/me/tiktok", userRoute(async (_req, res, user) => {
     await requireCreator(user.id);
     res.set("Cache-Control", "no-store");
