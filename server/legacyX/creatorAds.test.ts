@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { AD_PRICES, creatorAdDecisionSchema, creatorAdSchema, creatorTikTokHandle, oembedHandle, parseTikTokVideoUrl, trustedImageHost } from "./creatorAds";
+import { AD_PRICES, creatorAdDecisionSchema, creatorAdSchema, creatorTikTokHandle, oembedHandle, parseTikTokVideoUrl, readVideoPage, trustedImageHost } from "./creatorAds";
 
 describe("creator ads", () => {
   it("prices: 24 h is 5,000 and 48 h is 8,000", () => {
@@ -35,5 +35,15 @@ describe("creator ads", () => {
     expect(creatorAdSchema.safeParse({ url: "https://www.tiktok.com/@a_b/video/7301234567890123456", hours: 12 }).success).toBe(false);
     expect(creatorAdDecisionSchema.safeParse({ decision: "approve" }).success).toBe(true);
     expect(creatorAdDecisionSchema.safeParse({ decision: "maybe" }).success).toBe(false);
+  });
+  it("reads the cover, caption and poster from the public video page", () => {
+    const page = (item: unknown) => `<html><script id="__UNIVERSAL_DATA_FOR_REHYDRATION__" type="application/json">${JSON.stringify({ __DEFAULT_SCOPE__: { "webapp.video-detail": { itemInfo: { itemStruct: item } } } })}</script></html>`;
+    const item = { id: "7301234567890123456", desc: "  Clutch\n of the   week ", author: { uniqueId: "LXC.mn" }, video: { originCover: "https://p16-sign.tiktokcdn-us.com/a.jpeg", cover: "https://p16-sign.tiktokcdn-us.com/b.jpeg" } };
+    expect(readVideoPage(page(item), "7301234567890123456")).toEqual({ title: "Clutch of the week", handle: "@lxc.mn", thumbnailUrl: "https://p16-sign.tiktokcdn-us.com/a.jpeg" });
+    // another video id, no cover, a cover that is not https, and a page without the data are all refused
+    expect(readVideoPage(page(item), "7399999999999999999")).toBeNull();
+    expect(readVideoPage(page({ ...item, video: {} }), "7301234567890123456")).toBeNull();
+    expect(readVideoPage(page({ ...item, video: { cover: "http://x/a.jpeg" } }), "7301234567890123456")).toBeNull();
+    expect(readVideoPage("<html></html>", "7301234567890123456")).toBeNull();
   });
 });

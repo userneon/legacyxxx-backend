@@ -70,7 +70,7 @@ import { apnsConfig, createApnsSender, pushDeviceSchema, pushTick, supabasePushS
 import { grantQaCosmetics, isActiveQa, revokeStaleQaCosmetics } from "./qaAccess";
 import { activeBannedUserIds, activeBans, bannedPlayer, checkBansSchema, issueBan, issueBanSchema, issueIpBan, issueIpBanSchema, listActiveBans, revokeAllBans, revokeAllBansSchema, revokeBans, revokeBanSchema, revokeIpBans, revokeIpBanSchema } from "./bans";
 import { authorizationRequestSchema, loadGameRoles, resolveAuthorizations } from "./adminAuthorization";
-import { AD_HOURS, AD_PRICES, AD_SLOTS, bannerFromThumbnail, creatorAdDecisionSchema, creatorAdSchema, creatorTikTokHandle, fetchOEmbed, oembedHandle, parseTikTokVideoUrl } from "./creatorAds";
+import { AD_HOURS, AD_PRICES, AD_SLOTS, bannerFromThumbnail, creatorAdDecisionSchema, creatorAdSchema, creatorTikTokHandle, fetchVideoInfo, parseTikTokVideoUrl } from "./creatorAds";
 import { CREATOR_TIER_LABEL, cleanCreatorLinks, creatorApplicationSchema, creatorDecisionSchema, creatorTier, ownCreatorLinksSchema, sortCreators, upsertCreatorSchema } from "./creators";
 import { boosterPlaceOf, endBoosterFrames, grantBoosterFrames, isBoostingNow, syncBoosterPodium } from "./boosterRewards";
 import { cleanClanLinks, clanLinksSchema } from "./clanLinks";
@@ -6132,11 +6132,10 @@ export function createLegacyXRouter() {
     let banner: Buffer;
     let title = "";
     try {
-      const embed = await fetchOEmbed(video.url);
-      const author = oembedHandle(embed.authorUrl);
-      if (author && author !== video.handle) apiError(403, "TikTok says this video is from another account.", "ad_not_yours");
-      title = embed.title;
-      banner = await bannerFromThumbnail(embed.thumbnailUrl);
+      const info = await fetchVideoInfo(video);
+      if (info.handle && info.handle !== video.handle) apiError(403, "TikTok says this video is from another account.", "ad_not_yours");
+      title = info.title;
+      banner = await bannerFromThumbnail(info.thumbnailUrl);
     } catch (failure) {
       if (failure instanceof Error && "statusCode" in failure) throw failure;
       apiError(422, failure instanceof Error ? failure.message : "The video could not be read", "ad_video");

@@ -49,6 +49,46 @@ export async function fetchOEmbed(videoUrl: string, fetcher: typeof fetch = fetc
   return { title, authorUrl, thumbnailUrl };
 }
 
+/** What the public video page says about a video (title, who posted it, the cover picture). */
+export type VideoInfo = { title: string; handle: string | null; thumbnailUrl: string };
+
+const BROWSER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36";
+
+/** Reads the JSON TikTok puts in the public video page (__UNIVERSAL_DATA_FOR_REHYDRATION__): the cover picture, the caption and the poster's handle. */
+export function readVideoPage(html: string, videoId: string): VideoInfo | null {
+  const match = /<script id="__UNIVERSAL_DATA_FOR_REHYDRATION__"[^>]*>([\s\S]*?)<\/script>/.exec(html);
+  if (!match) return null;
+  try {
+    const data = JSON.parse(match[1]) as Record<string, unknown>;
+    const scope = (data.__DEFAULT_SCOPE__ ?? {}) as Record<string, unknown>;
+    const detail = (scope["webapp.video-detail"] ?? {}) as Record<string, unknown>;
+    const item = ((detail.itemInfo ?? {}) as Record<string, unknown>).itemStruct as Record<string, unknown> | undefined;
+    if (!item || String(item.id ?? "") !== videoId) return null;
+    const video = (item.video ?? {}) as Record<string, unknown>;
+    const cover = [video.originCover, video.cover, video.dynamicCover].find((value): value is string => typeof value === "string" && value.startsWith("https://"));
+    if (!cover) return null;
+    const author = (item.author ?? {}) as Record<string, unknown>;
+    const unique = typeof author.uniqueId === "string" && /^[A-Za-z0-9._]{2,24}$/.test(author.uniqueId) ? `@${author.uniqueId.toLowerCase()}` : null;
+    const title = typeof item.desc === "string" ? item.desc.replace(CONTROL_MARKS, " ").replace(/\s+/g, " ").trim().slice(0, 200) : "";
+    return { title, handle: unique, thumbnailUrl: cover };
+  } catch {
+    return null;
+  }
+}
+
+/** The video's cover and caption: from the public page first (TikTok's oEmbed answers with only the player now), from oEmbed when the page gives nothing. */
+export async function fetchVideoInfo(video: TikTokVideo, fetcher: typeof fetch = fetch): Promise<VideoInfo> {
+  try {
+    const response = await fetcher(video.url, { signal: AbortSignal.timeout(12_000), headers: { "User-Agent": BROWSER_AGENT, "Accept-Language": "en-US,en;q=0.9", Accept: "text/html" } });
+    if (response.ok) {
+      const info = readVideoPage(await response.text(), video.videoId);
+      if (info) return info;
+    }
+  } catch { /* fall through to oEmbed */ }
+  const embed = await fetchOEmbed(video.url, fetcher);
+  return { title: embed.title, handle: oembedHandle(embed.authorUrl), thumbnailUrl: embed.thumbnailUrl };
+}
+
 /** The handle named by the oEmbed answer's author link (https://www.tiktok.com/@name), lower case. */
 export function oembedHandle(authorUrl: string): string | null {
   try {
