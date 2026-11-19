@@ -1290,16 +1290,24 @@ export function createLegacyXRouter() {
     const avatarBySteamId = new Map<string, string>();
     // The rank on the site, for a player whose game server did not report one.
     const rankBySteamId = new Map<string, { rankId: number; rankName: string | null; rankImageKey: string | null }>();
+    const userIdBySteamId = new Map<string, string>();
     if (steamIds.length > 0) {
-      const { data: avatarRows, error: avatarError } = await db().from("competitive_player_profiles").select("steam_id,avatar,rank_id,rank_name,rank_image_key").in("steam_id", steamIds);
+      const { data: avatarRows, error: avatarError } = await db().from("competitive_player_profiles").select("user_id,steam_id,avatar,rank_id,rank_name,rank_image_key").in("steam_id", steamIds);
       if (avatarError) console.error("Unable to load live match avatars", avatarError);
       for (const row of (avatarRows ?? []) as DbRow[]) {
         const avatar = textValue(row.avatar);
+        if (textValue(row.user_id)) userIdBySteamId.set(textValue(row.steam_id), textValue(row.user_id));
         if (avatar.startsWith("https://")) avatarBySteamId.set(textValue(row.steam_id), avatar);
         if (numberValue(row.rank_id)) rankBySteamId.set(textValue(row.steam_id), { rankId: numberValue(row.rank_id), rankName: textValue(row.rank_name) || null, rankImageKey: textValue(row.rank_image_key) || null });
       }
     }
-    const withAvatar = <T extends { steamId: string; rankId?: number | null }>(players: T[]) => players.map(player => ({ ...player, ...(player.rankId == null ? rankBySteamId.get(player.steamId) : null), avatar: avatarBySteamId.get(player.steamId) ?? null }));
+    // The frame, name colour and clan tag each player wears (best effort: a failure leaves the lines plain).
+    const liveIds = Array.from(userIdBySteamId.values());
+    const [liveWorn, liveTags] = liveIds.length ? await Promise.all([equippedCosmeticsFor(liveIds).catch(() => new Map()), clanTagsFor(liveIds).catch(() => new Map())]) : [new Map(), new Map()];
+    const withAvatar = <T extends { steamId: string; rankId?: number | null }>(players: T[]) => players.map(player => {
+      const userId = userIdBySteamId.get(player.steamId) ?? "";
+      return { ...player, ...(player.rankId == null ? rankBySteamId.get(player.steamId) : null), avatar: avatarBySteamId.get(player.steamId) ?? null, frame: liveWorn.get(userId)?.frame ?? null, nameStyle: liveWorn.get(userId)?.nameStyle ?? null, clanTag: liveTags.get(userId)?.tag ?? null, clanLook: liveTags.get(userId)?.look ?? null };
+    });
     res.json({
       liveMatch: {
         serverId,
@@ -3367,6 +3375,7 @@ export function createLegacyXRouter() {
     const { data: memberRows, error } = await db().from("clan_members").select("user_id,created_at,users(id,steam_id,username,avatar)").eq("clan_id", clanId);
     legacyXError(error, "Unable to load clan stats");
     const members = (memberRows ?? []) as DbRow[];
+    const statsWorn = await equippedCosmeticsFor(members.map((row) => textValue(row.user_id))).catch(() => new Map());
     const joined = new Map(members.map((row) => [textValue(row.user_id), Date.parse(textValue(row.created_at))]));
     const earliest = members.length ? new Date(Math.min(...members.map((row) => Date.parse(textValue(row.created_at))))).toISOString() : new Date().toISOString();
     const rows = members.length ? await db().from("competitive_match_exp").select("user_id,match_id,outcome,exp_delta,exp_breakdown,stats,created_at").in("user_id", Array.from(joined.keys())).eq("counts_as_ranked", true).gte("created_at", earliest).order("created_at", { ascending: false }).limit(5000) : { data: [] as DbRow[], error: null };
@@ -3380,7 +3389,7 @@ export function createLegacyXRouter() {
     const person = (line: { userId: string } | null, value: number | null) => {
       if (!line) return null;
       const user = firstRow(members.find((row) => textValue(row.user_id) === line.userId)?.users);
-      return { id: line.userId, steamId: textValue(user?.steam_id), name: textValue(user?.username) || "Player", avatar: textValue(user?.avatar), value };
+      return { id: line.userId, steamId: textValue(user?.steam_id), name: textValue(user?.username) || "Player", avatar: textValue(user?.avatar), value, frame: statsWorn.get(line.userId)?.frame ?? null, nameStyle: statsWorn.get(line.userId)?.nameStyle ?? null };
     };
     res.json({
       totals: stats.totals,
@@ -3414,9 +3423,11 @@ export function createLegacyXRouter() {
       line.total += numberValue(row.amount);
       donors.set(id, line);
     }
+    const topDonors = Array.from(donors.values()).sort((a, b) => b.total - a.total).slice(0, 10);
+    const donorWorn = await equippedCosmeticsFor(topDonors.map((donor) => donor.id)).catch(() => new Map());
     res.json({
       balance: numberValue(bank.data?.balance),
-      donors: Array.from(donors.values()).sort((a, b) => b.total - a.total).slice(0, 10),
+      donors: topDonors.map((donor) => ({ ...donor, frame: donorWorn.get(donor.id)?.frame ?? null, nameStyle: donorWorn.get(donor.id)?.nameStyle ?? null })),
       log: entries.slice(0, 30).map((row) => ({ amount: numberValue(row.amount), reason: textValue(row.reason), at: timestampValue(row.created_at), name: textValue(firstRow(row.users)?.username) || null })),
       slotPrice: COIN_RULES.clanSlotPrice,
     });
@@ -4829,7 +4840,13 @@ export function createLegacyXRouter() {
     legacyXError(teamsResult.error || registrationsResult.error || matchesResult.error, "Unable to load tournament");
     const teamRows = (teamsResult.data ?? []) as DbRow[];
     const registrations = (registrationsResult.data ?? []) as DbRow[];
-    const { teams, soloPlayers } = groupTeams(teamRows, registrations);
+    const grouped = groupTeams(teamRows, registrations);
+    // The frame, name colour and clan tag each entrant wears (best effort: a failure leaves the lines plain).
+    const entrantIds = registrations.map((registration) => textValue(registration.user_id));
+    const [entrantWorn, entrantTags] = await Promise.all([equippedCosmeticsFor(entrantIds).catch(() => new Map()), clanTagsFor(entrantIds).catch(() => new Map())]);
+    const withLook = <T extends { userId: string }>(player: T) => ({ ...player, frame: entrantWorn.get(player.userId)?.frame ?? null, nameStyle: entrantWorn.get(player.userId)?.nameStyle ?? null, clanTag: entrantTags.get(player.userId)?.tag ?? null, clanLook: entrantTags.get(player.userId)?.look ?? null });
+    const teams = grouped.teams.map((team) => ({ ...team, players: team.players.map(withLook) }));
+    const soloPlayers = grouped.soloPlayers.map(withLook);
     const teamNames = new Map(teams.map((team) => [team.id, team.name]));
     const matches = ((matchesResult.data ?? []) as DbRow[]).map((match) => mapTournamentPlayerMatch(match, teamNames));
     const own = viewer ? registrations.find((registration) => registration.user_id === viewer.id) : undefined;
@@ -6303,7 +6320,9 @@ export function createLegacyXRouter() {
     const unique = Array.from(new Set(userIds));
     if (unique.length === 0) return new Map<string, DbRow>();
     const { data } = await db().from("users").select("id,username,avatar,steam_id").in("id", unique);
-    return new Map(((data ?? []) as DbRow[]).map((row) => [textValue(row.id), row]));
+    // The frame, name colour and clan tag the seller wears (best effort: a failure leaves the seller plain).
+    const [worn, tags] = await Promise.all([equippedCosmeticsFor(unique).catch(() => new Map()), clanTagsFor(unique).catch(() => new Map())]);
+    return new Map(((data ?? []) as DbRow[]).map((row) => [textValue(row.id), { ...row, ...lookOf(worn, textValue(row.id)), clan_tag: tags.get(textValue(row.id))?.tag ?? null, clan_look: tags.get(textValue(row.id))?.look ?? null } as DbRow]));
   };
   const marketCard = (row: DbRow, sellers: Map<string, DbRow>, cover: string | null) => {
     const seller = sellers.get(textValue(row.user_id));
@@ -6314,7 +6333,7 @@ export function createLegacyXRouter() {
       cover: cover ? marketImageUrl(cover) : null,
       status: textValue(row.status),
       createdAt: textValue(row.created_at),
-      seller: { id: textValue(row.user_id), name: seller ? textValue(seller.username) : "Player", avatar: seller?.avatar ? textValue(seller.avatar) : null, steamId: seller ? textValue(seller.steam_id) : "" },
+      seller: { id: textValue(row.user_id), name: seller ? textValue(seller.username) : "Player", avatar: seller?.avatar ? textValue(seller.avatar) : null, steamId: seller ? textValue(seller.steam_id) : "", frame: seller?.frame ?? null, nameStyle: seller?.nameStyle ?? null, clanTag: seller?.clan_tag ?? null, clanLook: seller?.clan_look ?? null },
     };
   };
   const marketCovers = async (listingIds: string[]) => {
