@@ -1,8 +1,8 @@
 /**
  * Picking your own colour (owner request 2026-11-14): after buying a colour design the player picks the colour with a colour picker and, for the smoke, one of
- * our own shapes (no uploads). The first pick is free; every later change costs CUSTOM_CHANGE_PRICE FOL$, as often as they like. Colours are kept vivid.
+ * our own shapes (no uploads). The first pick is free; after it, a change of the colour and a change of the effect (the smoke's picture) cost CUSTOM_CHANGE_PRICE FOL$ EACH (owner 2026-11-21: 500 each, so both at once is 1000). Colours are kept vivid.
  */
-export const CUSTOM_CHANGE_PRICE = 100;
+export const CUSTOM_CHANGE_PRICE = 500;
 
 /** The pictures a smoke can shed (the Workshop addon's particles); null is the plain glowing dot. */
 export const SMOKE_MOTIFS = ["star", "heart", "diamond", "bolt", "sparkle"] as const;
@@ -37,8 +37,13 @@ export function vividColour(hex: string): string {
 
 type Pick = { color: string | null; color2: string | null; fx: string | null };
 
-/** Whether saving `next` over `previous` is a change that costs money: there was a pick already and something in it differs. */
-export function pickCosts(previous: Pick | null, next: Pick): boolean {
-  if (!previous) return false;
-  return previous.color !== next.color || previous.color2 !== next.color2 || previous.fx !== next.fx;
+/** How many paid changes saving `next` over `previous` makes: the colour (either of the two) and the effect (the picture) count one each; the first pick is free. */
+export function pickChanges(previous: Pick | null, next: Pick): number {
+  if (!previous) return 0;
+  return Number(previous.color !== next.color || previous.color2 !== next.color2) + Number(previous.fx !== next.fx);
+}
+
+/** What saving `next` over `previous` costs in FOL$: CUSTOM_CHANGE_PRICE for each paid change. */
+export function pickPrice(previous: Pick | null, next: Pick): number {
+  return pickChanges(previous, next) * CUSTOM_CHANGE_PRICE;
 }
