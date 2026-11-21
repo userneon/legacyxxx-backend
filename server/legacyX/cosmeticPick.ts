@@ -1,6 +1,6 @@
 /**
  * Picking your own colour (owner request 2026-11-14): after buying a colour design the player picks the colour with a colour picker and, for the smoke, one of
- * our own shapes (no uploads). Colour is free to change as often as you like once the design is bought; changing the effect (the smoke's picture) costs CUSTOM_CHANGE_PRICE FOL$ (owner 2026-11-21: 500). Colours are kept vivid.
+ * our own shapes (no uploads). The first pick is free; after it, a change of the colour and a change of the effect (the smoke's picture) cost CUSTOM_CHANGE_PRICE FOL$ EACH (owner 2026-11-21: 500 each, so both at once is 1000). Colours are kept vivid.
  */
 export const CUSTOM_CHANGE_PRICE = 500;
 
@@ -37,8 +37,13 @@ export function vividColour(hex: string): string {
 
 type Pick = { color: string | null; color2: string | null; fx: string | null };
 
-/** Whether saving `next` over `previous` costs money: only a change of the effect (the picture) does, after a first free pick; a colour is never charged. */
-export function pickCosts(previous: Pick | null, next: Pick): boolean {
-  if (CUSTOM_CHANGE_PRICE <= 0 || !previous) return false;
-  return previous.fx !== next.fx;
+/** How many paid changes saving `next` over `previous` makes: the colour (either of the two) and the effect (the picture) count one each; the first pick is free. */
+export function pickChanges(previous: Pick | null, next: Pick): number {
+  if (!previous) return 0;
+  return Number(previous.color !== next.color || previous.color2 !== next.color2) + Number(previous.fx !== next.fx);
+}
+
+/** What saving `next` over `previous` costs in FOL$: CUSTOM_CHANGE_PRICE for each paid change. */
+export function pickPrice(previous: Pick | null, next: Pick): number {
+  return pickChanges(previous, next) * CUSTOM_CHANGE_PRICE;
 }

@@ -37,7 +37,7 @@ import { headToHead } from "./compare";
 import { MARKET_LIMITS, cleanLine, imageUrl as marketImageUrl, marketListingSchema, marketQuerySchema, marketReportSchema, marketStatusSchema, processMarketImage } from "./market";
 import { KIT_DAILY_LIMIT, KIT_ITEMS, KIT_KEEP_HOURS, KitRenderQueue, kitExt, kitFilePath, kitRenderEnabled, kitRenderSchema, removeKitJobFiles } from "./kitRender";
 import { PICK_DEFAULT_2, isColourable, isTwoColour, itemColours } from "./cosmeticColours";
-import { CUSTOM_CHANGE_PRICE, SMOKE_MOTIFS, isSmokeMotif, pickCosts, vividColour } from "./cosmeticPick";
+import { CUSTOM_CHANGE_PRICE, SMOKE_MOTIFS, isSmokeMotif, pickPrice, vividColour } from "./cosmeticPick";
 import { NADES, NADE_KINDS, itemsByNade, slotOverrides, type NadeKind } from "./cosmeticNades";
 import { LEVEL_PERKS, clanAchievements, clanStats, levelFor } from "./clanProgress";
 import { fetchSteamAccountCreatedAt, fetchSteamBans, syncSteamUserProfile } from "./steamProfile";
@@ -2496,27 +2496,27 @@ export function createLegacyXRouter() {
     const { data, error: ownedError } = await db().from("cosmetic_owned").select("item_id,expires_at").eq("user_id", user.id).eq("item_id", input.item).maybeSingle();
     legacyXError(ownedError, "Unable to check your cosmetics");
     if (!data || !stillRunning((data as DbRow).expires_at)) apiError(403, "You do not own this yet", "cosmetic_not_owned");
-    // The first pick is free and a colour is always free; a change of the effect (the smoke picture) after that costs CUSTOM_CHANGE_PRICE FOL$.
+    // The first pick is free and a change of the colour and a change of the effect (the smoke picture) after that cost CUSTOM_CHANGE_PRICE FOL$ each.
     const before = await db().from("cosmetic_custom").select("color,color2,fx").eq("user_id", user.id).eq("item_id", input.item).maybeSingle();
     legacyXError(before.error, "Unable to read your colour");
     const previous = before.data ? { color: textValue((before.data as DbRow).color) || null, color2: textValue((before.data as DbRow).color2) || null, fx: textValue((before.data as DbRow).fx) || null } : null;
-    const costs = pickCosts(previous, { color: input.color, color2, fx: motif });
+    const price = pickPrice(previous, { color: input.color, color2, fx: motif });
     const now = new Date().toISOString();
     const ref = `cosmetic-pick:${input.item}:${user.id}:${Math.floor(Date.now() / 10_000)}`;
-    if (costs) {
+    if (price > 0) {
       try {
-        await applyWalletChange(legacyXDb(), { userId: user.id, amount: -CUSTOM_CHANGE_PRICE, kind: "spend", reason: `Changed the effect of ${textValue(item.name_en)}`, ref, actor: user.id });
+        await applyWalletChange(legacyXDb(), { userId: user.id, amount: -price, kind: "spend", reason: `Changed the look of ${textValue(item.name_en)}`, ref, actor: user.id });
       } catch (error) {
-        if (error instanceof NotEnoughCoinsError) apiError(402, `Changing the effect costs ${CUSTOM_CHANGE_PRICE} LX`, "cosmetic_no_coins");
+        if (error instanceof NotEnoughCoinsError) apiError(402, `This change costs ${price} LX`, "cosmetic_no_coins");
         throw error;
       }
     }
     const saved = await db().from("cosmetic_custom").upsert({ user_id: user.id, item_id: input.item, color: input.color, color2, fx: motif, updated_at: now }, { onConflict: "user_id,item_id" });
-    if (saved.error && costs) await applyWalletChange(legacyXDb(), { userId: user.id, amount: CUSTOM_CHANGE_PRICE, kind: "refund", reason: "Effect change failed", ref: `${ref}:refund`, actor: user.id }).catch((refundError) => console.error("[legacy-x-api] colour refund failed", ref, refundError));
+    if (saved.error && price > 0) await applyWalletChange(legacyXDb(), { userId: user.id, amount: price, kind: "refund", reason: "Look change failed", ref: `${ref}:refund`, actor: user.id }).catch((refundError) => console.error("[legacy-x-api] colour refund failed", ref, refundError));
     legacyXError(saved.error, "Unable to save the colour");
     const worn = await db().from("cosmetic_equipped").upsert({ user_id: user.id, kind: textValue(item.kind), item_id: input.item, updated_at: now }, { onConflict: "user_id,kind" });
     legacyXError(worn.error, "Unable to wear it");
-    res.json({ kind: textValue(item.kind), item: input.item, color: input.color, color2, motif, charged: costs ? CUSTOM_CHANGE_PRICE : 0 });
+    res.json({ kind: textValue(item.kind), item: input.item, color: input.color, color2, motif, charged: price });
   }));
   router.put("/cosmetics/equip", userRoute(async (req, res, user) => {
     const input = z.union([
