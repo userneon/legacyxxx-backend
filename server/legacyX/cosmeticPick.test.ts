@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isSmokeMotif, pickCosts, vividColour } from "./cosmeticPick";
+import { CUSTOM_CHANGE_PRICE, isSmokeMotif, pickCosts, vividColour } from "./cosmeticPick";
 
 describe("vivid colours", () => {
   it("keeps a strong colour as it is", () => {
@@ -22,9 +22,10 @@ describe("what a pick costs", () => {
   const pick = { color: "#ff0000", color2: null, fx: "star" };
   it("is free the first time", () => expect(pickCosts(null, pick)).toBe(false));
   it("is free when nothing changed", () => expect(pickCosts(pick, { ...pick })).toBe(false));
-  it("costs when the colour or the shape changes", () => {
-    expect(pickCosts(pick, { ...pick, color: "#00ff00" })).toBe(true);
-    expect(pickCosts(pick, { ...pick, fx: "heart" })).toBe(true);
+  it("is free to change the colour or the shape as often as you like (owner 2026-11-21)", () => {
+    expect(CUSTOM_CHANGE_PRICE).toBe(0);
+    expect(pickCosts(pick, { ...pick, color: "#00ff00" })).toBe(false);
+    expect(pickCosts(pick, { ...pick, fx: "heart" })).toBe(false);
   });
 });
 

@@ -1,8 +1,8 @@
 /**
  * Picking your own colour (owner request 2026-11-14): after buying a colour design the player picks the colour with a colour picker and, for the smoke, one of
- * our own shapes (no uploads). The first pick is free; every later change costs CUSTOM_CHANGE_PRICE FOL$, as often as they like. Colours are kept vivid.
+ * our own shapes (no uploads). Buy once, then change the colour as often as you like (owner 2026-11-21): CUSTOM_CHANGE_PRICE is 0, set it above 0 to charge for a change again. Colours are kept vivid.
  */
-export const CUSTOM_CHANGE_PRICE = 100;
+export const CUSTOM_CHANGE_PRICE = 0;
 
 /** The pictures a smoke can shed (the Workshop addon's particles); null is the plain glowing dot. */
 export const SMOKE_MOTIFS = ["star", "heart", "diamond", "bolt", "sparkle"] as const;
@@ -39,6 +39,6 @@ type Pick = { color: string | null; color2: string | null; fx: string | null };
 
 /** Whether saving `next` over `previous` is a change that costs money: there was a pick already and something in it differs. */
 export function pickCosts(previous: Pick | null, next: Pick): boolean {
-  if (!previous) return false;
+  if (CUSTOM_CHANGE_PRICE <= 0 || !previous) return false;
   return previous.color !== next.color || previous.color2 !== next.color2 || previous.fx !== next.fx;
 }
