@@ -2496,7 +2496,7 @@ export function createLegacyXRouter() {
     const { data, error: ownedError } = await db().from("cosmetic_owned").select("item_id,expires_at").eq("user_id", user.id).eq("item_id", input.item).maybeSingle();
     legacyXError(ownedError, "Unable to check your cosmetics");
     if (!data || !stillRunning((data as DbRow).expires_at)) apiError(403, "You do not own this yet", "cosmetic_not_owned");
-    // The first pick is free; every change after it costs CUSTOM_CHANGE_PRICE FOL$, as often as the player likes.
+    // The first pick is free and a colour is always free; a change of the effect (the smoke picture) after that costs CUSTOM_CHANGE_PRICE FOL$.
     const before = await db().from("cosmetic_custom").select("color,color2,fx").eq("user_id", user.id).eq("item_id", input.item).maybeSingle();
     legacyXError(before.error, "Unable to read your colour");
     const previous = before.data ? { color: textValue((before.data as DbRow).color) || null, color2: textValue((before.data as DbRow).color2) || null, fx: textValue((before.data as DbRow).fx) || null } : null;
@@ -2505,14 +2505,14 @@ export function createLegacyXRouter() {
     const ref = `cosmetic-pick:${input.item}:${user.id}:${Math.floor(Date.now() / 10_000)}`;
     if (costs) {
       try {
-        await applyWalletChange(legacyXDb(), { userId: user.id, amount: -CUSTOM_CHANGE_PRICE, kind: "spend", reason: `Changed the colour of ${textValue(item.name_en)}`, ref, actor: user.id });
+        await applyWalletChange(legacyXDb(), { userId: user.id, amount: -CUSTOM_CHANGE_PRICE, kind: "spend", reason: `Changed the effect of ${textValue(item.name_en)}`, ref, actor: user.id });
       } catch (error) {
-        if (error instanceof NotEnoughCoinsError) apiError(402, `Changing it costs ${CUSTOM_CHANGE_PRICE} LX`, "cosmetic_no_coins");
+        if (error instanceof NotEnoughCoinsError) apiError(402, `Changing the effect costs ${CUSTOM_CHANGE_PRICE} LX`, "cosmetic_no_coins");
         throw error;
       }
     }
     const saved = await db().from("cosmetic_custom").upsert({ user_id: user.id, item_id: input.item, color: input.color, color2, fx: motif, updated_at: now }, { onConflict: "user_id,item_id" });
-    if (saved.error && costs) await applyWalletChange(legacyXDb(), { userId: user.id, amount: CUSTOM_CHANGE_PRICE, kind: "refund", reason: "Colour change failed", ref: `${ref}:refund`, actor: user.id }).catch((refundError) => console.error("[legacy-x-api] colour refund failed", ref, refundError));
+    if (saved.error && costs) await applyWalletChange(legacyXDb(), { userId: user.id, amount: CUSTOM_CHANGE_PRICE, kind: "refund", reason: "Effect change failed", ref: `${ref}:refund`, actor: user.id }).catch((refundError) => console.error("[legacy-x-api] colour refund failed", ref, refundError));
     legacyXError(saved.error, "Unable to save the colour");
     const worn = await db().from("cosmetic_equipped").upsert({ user_id: user.id, kind: textValue(item.kind), item_id: input.item, updated_at: now }, { onConflict: "user_id,kind" });
     legacyXError(worn.error, "Unable to wear it");

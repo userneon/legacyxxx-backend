@@ -22,10 +22,14 @@ describe("what a pick costs", () => {
   const pick = { color: "#ff0000", color2: null, fx: "star" };
   it("is free the first time", () => expect(pickCosts(null, pick)).toBe(false));
   it("is free when nothing changed", () => expect(pickCosts(pick, { ...pick })).toBe(false));
-  it("is free to change the colour or the shape as often as you like (owner 2026-11-21)", () => {
-    expect(CUSTOM_CHANGE_PRICE).toBe(0);
+  it("never charges for a colour (owner 2026-11-21)", () => {
     expect(pickCosts(pick, { ...pick, color: "#00ff00" })).toBe(false);
-    expect(pickCosts(pick, { ...pick, fx: "heart" })).toBe(false);
+    expect(pickCosts(pick, { ...pick, color: "#00ff00", color2: "#0000ff" })).toBe(false);
+  });
+  it("charges 500 FOL$ for a change of the effect", () => {
+    expect(CUSTOM_CHANGE_PRICE).toBe(500);
+    expect(pickCosts(pick, { ...pick, fx: "heart" })).toBe(true);
+    expect(pickCosts(pick, { ...pick, fx: null })).toBe(true);
   });
 });
 
