@@ -11,6 +11,7 @@ import { isReaction, tallyReactions } from "./reactions";
 import { mayApproveLifts, mayModerate, mayModerateClans, mayPenalize, mayTouchBan, needsLiftApproval, needsReview, termFields, type ModerationCapability } from "./moderation";
 import { CLAN_LIMITS, canManage, canRemove, clanRole, describeClanAction, leaveCooldownLeftMs, verifiedClanIds } from "./clans";
 import { CLAN_ART_LIMITS, artMarker, artUrl, checkClanArt, type ClanArtKind } from "./clanArt";
+import { COSMETIC_IMAGE_MAX_BYTES, checkCosmeticImage, cosmeticImageUrl } from "./cosmeticImage";
 import { parseCookieHeader } from "../_core/cookieHeader";
 import {
   authenticatePlugin,
@@ -2173,9 +2174,13 @@ export function createLegacyXRouter() {
   const cosmeticPrices = (basePrice: number) => Object.fromEntries(COSMETIC_DURATIONS.map((duration) => [duration.key, Math.max(1, Math.round((basePrice * duration.percent) / 100))]));
   const stillRunning = (expiresAt: unknown, now = Date.now()) => !expiresAt || Date.parse(textValue(expiresAt)) > now;
   const loadCosmeticCatalog = async () => {
-    const { data, error } = await db().from("cosmetic_items").select("id,kind,name_en,name_mn,unlock,price,requirement,sort,color,color2,glow,fx,rarity,featured").eq("enabled", true).in("kind", [...COSMETIC_KINDS]).order("sort");
+    const columns = "id,kind,name_en,name_mn,unlock,price,requirement,sort,color,color2,glow,fx,rarity,featured";
+    const load = (extra: string) => db().from("cosmetic_items").select(`${columns}${extra}`).eq("enabled", true).in("kind", [...COSMETIC_KINDS]).order("sort");
+    let { data, error } = await load(",image_v");
+    // A database that has not had legacy_x_cosmetic_images.sql yet has no image_v: the items load without pictures instead of failing.
+    if (error && /image_v/.test(error.message)) ({ data, error } = await load(""));
     legacyXError(error, "Unable to load cosmetics");
-    return (data ?? []) as DbRow[];
+    return (data ?? []) as unknown as DbRow[];
   };
   /** Which of these players have Profile customize running right now (their rental has not run out). */
   const profileCustomizeUsers = async (userIds: string[]): Promise<string[]> => {
@@ -2279,6 +2284,8 @@ export function createLegacyXRouter() {
     ...(item.color2 ? { color2: textValue(item.color2) } : {}),
     ...(item.glow ? { glow: textValue(item.glow) } : {}),
     ...(item.fx ? { fx: textValue(item.fx) } : {}),
+    /** The item's picture (a weapon model's, for one), put there by staff: an address of this API; absent when it has none. */
+    ...(cosmeticImageUrl(textValue(item.id), item.image_v) ? { image: cosmeticImageUrl(textValue(item.id), item.image_v) } : {}),
   });
   // Visitors see the whole catalogue too (audit 2026-10-11: a shop behind a sign-in wall sells nothing); owning and wearing need an account.
   router.get("/cosmetics", optionalUserRoute(async (_req, res, user) => {
@@ -5779,15 +5786,56 @@ export function createLegacyXRouter() {
   // Staff → Shop → Cosmetics (Owner or Manager): prices, names and on/off of every cosmetic, so a price change is not an SQL edit.
   router.get("/staff/cosmetics", userRoute(async (_req, res, user) => {
     await requireClanModerator(user.id);
+    const staffItems = async () => {
+      const first = await db().from("cosmetic_items").select("id,kind,name_en,name_mn,unlock,price,requirement,sort,enabled,image_v").order("kind").order("sort").limit(500);
+      if (first.error && /image_v/.test(first.error.message)) return db().from("cosmetic_items").select("id,kind,name_en,name_mn,unlock,price,requirement,sort,enabled").order("kind").order("sort").limit(500);
+      return first;
+    };
     const [items, owners] = await Promise.all([
-      db().from("cosmetic_items").select("id,kind,name_en,name_mn,unlock,price,requirement,sort,enabled").order("kind").order("sort").limit(500),
+      staffItems(),
       db().from("cosmetic_owned").select("item_id").limit(50000),
     ]);
     legacyXError(items.error || owners.error, "Unable to load the cosmetics");
     const owned = new Map<string, number>();
     for (const row of (owners.data ?? []) as DbRow[]) owned.set(textValue(row.item_id), (owned.get(textValue(row.item_id)) ?? 0) + 1);
     res.set("Cache-Control", "no-store");
-    res.json({ items: ((items.data ?? []) as DbRow[]).map((row) => ({ id: textValue(row.id), kind: textValue(row.kind), nameEn: textValue(row.name_en), nameMn: textValue(row.name_mn), unlock: textValue(row.unlock), price: numberValue(row.price), requirement: textValue(row.requirement), sort: numberValue(row.sort), enabled: row.enabled !== false, owners: owned.get(textValue(row.id)) ?? 0 })) });
+    res.json({ items: ((items.data ?? []) as DbRow[]).map((row) => ({ id: textValue(row.id), kind: textValue(row.kind), nameEn: textValue(row.name_en), nameMn: textValue(row.name_mn), unlock: textValue(row.unlock), price: numberValue(row.price), requirement: textValue(row.requirement), sort: numberValue(row.sort), enabled: row.enabled !== false, owners: owned.get(textValue(row.id)) ?? 0, image: cosmeticImageUrl(textValue(row.id), (row as DbRow).image_v) })) });
+  }));
+  // A cosmetic item's picture: served to everyone (the address carries ?v= and changes with every upload, so it is cached for good), put and removed by staff only.
+  router.get("/cosmetics/:id/image", asyncRoute(async (req, res) => {
+    const id = cosmeticIdSchema.parse(req.params.id);
+    const { data, error } = await db().from("cosmetic_images").select("mime,data").eq("item_id", id).maybeSingle();
+    legacyXError(error, "Unable to load the picture");
+    if (!data) apiError(404, "No picture");
+    const hex = String(data.data);
+    res.set({ "Content-Type": String(data.mime), "Cache-Control": "public, max-age=31536000, immutable", "Content-Disposition": "inline", "X-Content-Type-Options": "nosniff" }).send(Buffer.from(hex.startsWith("\\x") ? hex.slice(2) : hex, "hex"));
+  }));
+  router.put("/staff/cosmetics/:id/image", sensitiveMutationRateLimit, express.raw({ type: () => true, limit: COSMETIC_IMAGE_MAX_BYTES + 1 }), userRoute(async (req, res, user) => {
+    await requireClanModerator(user.id);
+    const id = cosmeticIdSchema.parse(req.params.id);
+    const bytes = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+    const verdict = checkCosmeticImage(bytes);
+    if (!verdict.ok) apiError(verdict.status, verdict.message);
+    const exists = await db().from("cosmetic_items").select("id").eq("id", id).maybeSingle();
+    legacyXError(exists.error, "Unable to find the cosmetic");
+    if (!exists.data) apiError(404, "No such cosmetic");
+    const version = Date.now();
+    const saved = await db().from("cosmetic_images").upsert({ item_id: id, mime: verdict.mime, data: `\\x${bytes.toString("hex")}`, updated_at: new Date(version).toISOString() });
+    legacyXError(saved.error, "Unable to save the picture");
+    const marker = await db().from("cosmetic_items").update({ image_v: version }).eq("id", id);
+    legacyXError(marker.error, "Unable to save the picture");
+    await db().from("audit_logs").insert({ actor_type: "user", actor_id: user.id, action: "cosmetic.image", target_type: "cosmetic_items", target_id: id, metadata: { bytes: bytes.length, mime: verdict.mime } });
+    res.json({ id, image: cosmeticImageUrl(id, version) });
+  }));
+  router.delete("/staff/cosmetics/:id/image", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
+    await requireClanModerator(user.id);
+    const id = cosmeticIdSchema.parse(req.params.id);
+    const removed = await db().from("cosmetic_images").delete().eq("item_id", id);
+    legacyXError(removed.error, "Unable to remove the picture");
+    const marker = await db().from("cosmetic_items").update({ image_v: null }).eq("id", id);
+    legacyXError(marker.error, "Unable to remove the picture");
+    await db().from("audit_logs").insert({ actor_type: "user", actor_id: user.id, action: "cosmetic.image.remove", target_type: "cosmetic_items", target_id: id, metadata: {} });
+    res.status(204).end();
   }));
   router.put("/staff/cosmetics/:id", sensitiveMutationRateLimit, userRoute(async (req, res, user) => {
     await requireClanModerator(user.id);
